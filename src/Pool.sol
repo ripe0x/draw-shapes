@@ -353,6 +353,14 @@ contract Pool is PoolBooks {
         _payClaims();
     }
 
+    /// @notice Adds `msg.value` to `maintenance`. Anyone may call it; the operator tops the bucket
+    ///         up from Shapes mint fee revenue when the basefee outruns the maintenance inflow.
+    function fundMaintenance() external payable {
+        if (msg.value == 0) revert ZeroAmount();
+        maintenance += msg.value;
+        emit MaintenanceFunded(msg.sender, msg.value);
+    }
+
     /// @notice Accepts ETH from Shapes redemptions and FWA proceeds. The ETH is booked by the
     ///         function that triggered the transfer.
     receive() external payable {}

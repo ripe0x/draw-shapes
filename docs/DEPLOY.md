@@ -65,6 +65,11 @@ whenever `settleDue() != None`. A nonzero value means a batch, an age or a thin 
 queued. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL track. `settle` lists while the
 factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on.
 
+Keeper funding: `maintenanceBps` 100 covers mint and list gas up to about 2 gwei. Above that, top the bucket up with
+`Pool.fundMaintenance()` (payable, anyone) from Shapes mint fee revenue, which the operator receives at the Shapes
+contract. Watch `maintenance()` on Lens or Pool; refunds stop when it is empty and the board relists only on the thin
+trigger until it is refilled.
+
 The keeper also reads `rotateDue()` and calls `Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the
 spacing since `lastRotateAt` has passed and a reason holds: Claim, GrailStep or Held. A rotate that leaves
 inventory unchanged keeps its reason true, so the keeper simulates the call or backs off between attempts.

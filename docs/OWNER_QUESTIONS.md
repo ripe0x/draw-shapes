@@ -112,7 +112,10 @@ e. Measured, 500 a day for 7 days at cooldown 0: 40 rotates (all GrailStep), 174
    average 91. At 100 a day: 21 rotates, 117 settles, 0.024 ETH refunds against 0.33 ETH.
 f. Lab, 365 days at 500 a day and 1 gwei: keeper cost 34 ETH fully refunded from 62.5 ETH of
    maintenance; the bucket runs dry above about 3 gwei because the per-item mint and list gas
-   (about 27 ETH per gwei per year) is structural. Levers: `maintenanceBps`, the tip, batch size.
+   (about 27 ETH per gwei per year) is structural. Decided (spec author, 2026-10-13):
+   `maintenanceBps` stays 100; `fundMaintenance()` (payable, anyone) lets the operator top the
+   bucket up from Shapes mint fee revenue, which at 1 gwei is about six times the gas per item
+   and at 6 gwei about equal. Break-even without top-ups is about 2 gwei.
 
 ## Guesses taken during the run
 

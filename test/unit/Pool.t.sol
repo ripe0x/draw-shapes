@@ -695,6 +695,18 @@ contract PoolTest is PoolFixture {
 
     // ---------------------------------------------------------------- withdraw
 
+    function test_fundMaintenanceAddsToTheBucket() public {
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.MaintenanceFunded(alice, 0.4 ether);
+        IPool(address(pool)).fundMaintenance{value: 0.4 ether}();
+        assertEq(pool.maintenance(), 0.4 ether, "bucket");
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance(), "I1");
+        vm.expectRevert(IPoolTypes.ZeroAmount.selector);
+        IPool(address(pool)).fundMaintenance{value: 0}();
+    }
+
     function test_withdrawPaysInFullFromCash() public {
         _deposit(alice, 10 ether);
         uint256 before = alice.balance;
