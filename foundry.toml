@@ -17,12 +17,15 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
-# Pool.sol and lib/draw-packs compile with via_ir (docs/OWNER_QUESTIONS.md entry 23: legacy codegen
+# Pool, PoolAdmin and lib/draw-packs compile with via_ir (docs/OWNER_QUESTIONS.md entry 23: legacy codegen
 # puts Pool at 26,166 B runtime, over EIP-170). Everything else uses the legacy pipeline.
 additional_compiler_profiles = [{ name = "via-ir", via_ir = true, optimizer_runs = 200 }]
 compilation_restrictions = [
     { paths = "lib/draw-packs/src/**", via_ir = true },
     { paths = "src/Pool.sol", via_ir = true },
+    { paths = "src/PoolAdmin.sol", via_ir = true },
+    { paths = "src/PoolBooks.sol", via_ir = true },
+    { paths = "src/PoolStorage.sol", via_ir = true },
 ]
 bytecode_hash = "none"
 cbor_metadata = false
@@ -30,3 +33,14 @@ fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = 
 # Fork suites read MAINNET_RPC_URL (default: Tenderly public gateway) and FORK_BLOCK from the
 # environment in test/fork/ForkBase.sol. Pin FORK_BLOCK so ~/.foundry/cache/rpc compounds.
 no_storage_caching = false
+
+# Sepolia build: the testnet ladder (unit 0.0001 ETH). Every other setting inherits from default.
+[profile.sepolia]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "solady/=lib/solady/src/",
+    "shapes/=lib/shapes/src/",
+    "ladder/=lib/shapes/ladders/testnet/",
+    "@openzeppelin/contracts/=lib/shapes/lib/openzeppelin-contracts/contracts/",
+    "draw-packs/=lib/draw-packs/src/",
+]

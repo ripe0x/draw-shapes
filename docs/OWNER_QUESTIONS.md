@@ -15,6 +15,22 @@ the named place; none of them is load bearing for the others unless the entry sa
 
 ## Guesses taken during the run
 
+0. **The admin and exit surface lives in a delegatecall module. SPEC 3 forbids delegatecall
+   libraries; this is the one guess that changes architecture, read it first.** The feature
+   complete Pool measured 29,714 B runtime under via_ir, 5,138 B over EIP-170, with every
+   SPEC function present and all suites green. Measured per group: admin setters 3,269 B
+   (`setMix` alone 1,515), `sweep` plus `adminCall` 1,126, exit export side 2,706, successor
+   import side 1,688, GRAIL compose 862. Merging setters saves 170 B, a generic `setParam` is
+   larger, optimizer runs save 146 B, dropping events 88 B. Guess taken: `PoolAdmin.sol`, a
+   module contract that inherits the same `PoolStorage` layout as `Pool`, reached through
+   Pool's `fallback` by delegatecall; it holds the setters, `sweep`, `adminCall`, `startExit`,
+   `exportStep`, `transferGrailEstate` and the successor import functions. Hot paths (deposit,
+   withdraw, pull, settle, rotate, GRAIL, liquidate) stay in `Pool`. The alternative that keeps
+   one contract: cut GRAIL compose (862), replace `setMix` with `setRowShare` plus `addRow`
+   (about 1,000), reduce `adminCall`'s post-check to I1 plus unchanged `backing` (about 500),
+   and move migration to ETH value instead of tokens (about 2,100); that lands near 24.5 KB with
+   no room for any later fix. Place: `src/PoolAdmin.sol`, `src/PoolStorage.sol`, `Pool.fallback`.
+
 1. **Harvest equality versus direct purchases.** SPEC 9 step 4 says the harvested amount must
    equal booked receivables. Direct FWA purchases (SPEC 12) have no recorded base, so equality is
    unreachable. Guess: `_harvest` reverts only when `received < expected`; the surplus is booked
@@ -147,6 +163,43 @@ the named place; none of them is load bearing for the others unless the entry sa
    foundry.toml, and record it in SPEC 3. Alternatives: a delegatecall library for exit and admin
    (about 4 KB, SPEC forbids), or dropping functions (none are optional under SPEC). Place:
    `foundry.toml`.
+
+24. **`withdraw` is closed during a migration.** After `startExit(successor)` moved items leave the
+   old pool's NAV before the successor has minted shares, so a withdrawal between export steps
+   is underpaid and the remainder lands on migrators. Guess: `withdraw` reverts during a
+   migration; `migrateHolder` is the only exit, queued claims still pay through `liquidate`.
+   Retirement keeps `withdraw`. SPEC 13 should say so. Place: `Pool.withdraw`.
+
+25. **Deposits and withdrawals on a successor pause while an import is open.** Imported items
+   enter NAV before `finalizeImport` mints their shares. Guess: `deposit`, `redeemAndDeposit`
+   and `withdraw` revert `ImportInProgress` from the first import until finalize. Place:
+   `Pool._deposit`, `Pool.withdraw`.
+
+26. **Items the successor cannot register are redeemed, not moved.** `importItem` needs a
+   matching row; the old pool asks `canImport` first and redeems locally into cash when false,
+   so the export cannot brick on a mix mismatch. Place: `Pool.exportStep`.
+
+27. **`startExit` disables FWA purchases.** Otherwise a direct buyer keeps the FWA pool busy and
+   every `exportStep` reverts. SPEC 13 says pulls close; FWA's own buy path must close too.
+
+28. **Admin trust in the exit.** `adminCall` on the old pool can reach the successor's import
+   functions with arbitrary arguments. Double import is blocked by a registry check; cash
+   imports cost the admin their own ETH; a forged `finalizeImport` could misprice migration. The
+   admin is trusted in SPEC 2, so this is recorded, not blocked.
+
+29. **Migration dust.** `migrateHolder` rounds down per holder, so a few wei of shares stay
+   unassigned in the successor's `totalShares`, which keeps NAV per share conservative.
+
+30. **Sepolia FWA values were read live.** The carried `sepolia.env` implementation and VRF service
+   did not match the factory in `dependencies.json`; the deploy worker filled them from the
+   factory's `implementation()` and `vrfService()` on 2026-10-13. `DRAW_PACKS` is empty on
+   Sepolia (the recorded collections are three-unit), so the wrapper refuses until a two-unit
+   Draw Packs is deployed there. Place: `script/env/sepolia.env`.
+
+31. **Anvil pool creation impersonates the FWA factory owner.** On the mainnet fork the factory
+   charges 50,000 FWA and allows one pool per wallet; with `CREATE_POOL=1` the wrapper sets the
+   fee to `EXPECTED_CREATION_FEE`, lifts the beta gate and raises the wallet limit, anvil only.
+   On mainnet the admin needs allowance and the FWA token fee before `createFwaPool`.
 
 8. **Launch `minItems` must exceed `concurrency`.** FWA `maxOutstandingRequestsPerPool` is 10 on
    mainnet. With `minItems` 10 the board is `BoardTooThin` after the first capture until the
