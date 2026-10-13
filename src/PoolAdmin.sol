@@ -104,6 +104,11 @@ contract PoolAdmin is PoolBooks {
         _setProbCap(bps);
     }
 
+    function setRepriceMinBps(uint256 bps) external onlyDelegated {
+        _admin();
+        _setRepriceMinBps(bps);
+    }
+
     function setPaused(bool pulls, bool deposits) external onlyDelegated {
         _admin();
         pullsPaused = pulls;

@@ -75,6 +75,7 @@ contract Pool is PoolBooks {
         _setFeeSplit(p.feeSplit);
         _setCurve(p.curve);
         _setProbCap(p.grailProbCapBps);
+        _setRepriceMinBps(p.repriceMinBps);
 
         _initGrail(MINOR, p.minor);
         _initGrail(MAJOR, p.major);
@@ -200,14 +201,17 @@ contract Pool is PoolBooks {
 
     /// @notice Pays queued claims in request order once the head claim is at least `rotateInterval`
     ///         old. Pays from `cash`, then redeems up to `MAX_LIQUIDATE_ITEMS` held items and
-    ///         withdrawn listed items until the head claim is covered. Does nothing when the queue
-    ///         is empty.
+    ///         withdrawn listed items until the head claim is covered. Listed items are withdrawn
+    ///         only once `rotateInterval` has passed since `lastRotateAt`, and a withdrawal sets
+    ///         `lastRotateAt`. Does nothing when the queue is empty.
     function liquidate() external nonReentrant {
         _sync();
         uint256 head = claimHead;
         if (head == claimQueue.length) return;
         if (block.timestamp < claimQueue[head].requestedAt + rotateInterval) revert ClaimNotDue();
-        _clearClaims();
+        uint256 listedBefore = listedCount;
+        _clearClaims(block.timestamp < lastRotateAt + rotateInterval);
+        if (listedCount < listedBefore) lastRotateAt = block.timestamp;
     }
 
     /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, restocks
@@ -221,7 +225,7 @@ contract Pool is PoolBooks {
 
         bool changed = _settleAndHarvest();
         uint256 claimsBefore = claims;
-        bool inventoryChanged = _clearClaims();
+        bool inventoryChanged = _clearClaims(false);
         bool heldPending = _held.length != 0;
         bool minted = _restock() != 0;
         bool busy = _busy();
@@ -234,16 +238,20 @@ contract Pool is PoolBooks {
     }
 
     /// @notice Adds one `stepWei` of backing to GRAIL track `t` from `grail[t].bucket` and lists
-    ///         the pack at `backing * listBps / 10_000`. Books FWA results first. Reverts
-    ///         `GrailNotReady` unless the bucket covers the step and its mint fees and `backing`
-    ///         is below `targetWei`, and `FwaBusy` while FWA holds unsettled acquisitions.
+    ///         the pack at `backing * listBps / 10_000`. Books FWA results first and sets
+    ///         `lastRotateAt`. Reverts `RotateTooSoon` before `rotateInterval` has passed since
+    ///         `lastRotateAt`, `GrailNotReady` unless the bucket covers the step and its mint fees
+    ///         and `backing` is below `targetWei`, and `FwaBusy` while FWA holds unsettled
+    ///         acquisitions.
     function growGrail(uint8 t) external nonReentrant {
         _requireLive();
+        if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
         if (t > MAJOR) revert GrailNotReady();
         _sync();
         uint256 status = _growGrail(t, _unsettled() != 0);
         if (status == 1) revert GrailNotReady();
         if (status == 2) revert FwaBusy();
+        lastRotateAt = block.timestamp;
     }
 
     /// @notice Buys `count` FWA acquisitions for `msg.sender` at the quoted fee. Overpayment is
@@ -382,11 +390,11 @@ contract Pool is PoolBooks {
         }
     }
 
-    /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Returns
-    ///      whether an item was redeemed.
-    function _clearClaims() internal returns (bool redeemed) {
+    /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Listed items
+    ///      are withdrawn only when `gated` is false. Returns whether an item was redeemed.
+    function _clearClaims(bool gated) internal returns (bool redeemed) {
         _payClaims();
-        redeemed = _liquidateForClaims(MAX_LIQUIDATE_ITEMS);
+        redeemed = _liquidateForClaims(MAX_LIQUIDATE_ITEMS, gated);
         if (redeemed) _payClaims();
     }
 
@@ -418,18 +426,18 @@ contract Pool is PoolBooks {
     /// @dev Redeems up to `maxItems` ordinary items while `cash` is below the head claim, if the
     ///      head claim is at least `rotateInterval` old. Held items go first and need no FWA call.
     ///      Listed items follow, each the last listed item of the row most over its share. They are
-    ///      skipped while FWA holds unsettled acquisitions, which lock withdrawals, or while the
-    ///      booking walk is behind FWA's processing queue, which leaves captured listings in
-    ///      `_listed`. Stops when the head claim does not exceed the mint fees of the next item.
-    ///      Returns whether an item was redeemed.
-    function _liquidateForClaims(uint256 maxItems) internal returns (bool redeemed) {
+    ///      skipped when `gated`, while FWA holds unsettled acquisitions, which lock withdrawals, or
+    ///      while the booking walk is behind FWA's processing queue, which leaves captured listings
+    ///      in `_listed`. Stops when the head claim does not exceed the re-mint cost of the next
+    ///      item. Returns whether an item was redeemed.
+    function _liquidateForClaims(uint256 maxItems, bool gated) internal returns (bool redeemed) {
         uint256 head = claimHead;
         if (head == claimQueue.length || block.timestamp < claimQueue[head].requestedAt + rotateInterval) {
             return false;
         }
         if (_held.length == 0 && listedCount == 0) return false;
         uint256 mintFee = _mintFee();
-        bool locked = listedCount != 0 && _busy();
+        bool locked = listedCount != 0 && (gated || _busy());
         for (uint256 n; n < maxItems && cash < claimQueue[head].amount; ++n) {
             if (!_liquidateOne(head, mintFee, locked)) break;
             redeemed = true;
@@ -437,9 +445,10 @@ contract Pool is PoolBooks {
     }
 
     /// @dev Redeems the last held item, or else the last listed item of the most overweight row,
-    ///      into `cash` and deducts the mint fees of the redeemed Shapes from the claim at `head`.
-    ///      The deducted ETH stays in `cash` for the replacement mint. Returns false and changes
-    ///      nothing when there is no item to redeem or the claim does not exceed the fee.
+    ///      into `cash` and deducts the re-mint cost of its row (`fee`, the mint fees of its Shapes)
+    ///      from the claim at `head`. The deducted ETH stays in `cash` to fund the re-mint of the row
+    ///      for the remaining holders. Returns false and changes nothing when there is no item to
+    ///      redeem or the claim does not exceed the fee.
     function _liquidateOne(uint256 head, uint256 mintFee, bool locked) internal returns (bool) {
         uint256 held = _held.length;
         uint256 row;
@@ -510,7 +519,6 @@ contract Pool is PoolBooks {
             deadline
         );
         _recordBases(fwa, fee, ids);
-        _recordPulls(count);
         emit Pulled(purchaser, count, fee, ids);
 
         _upkeep();
@@ -587,20 +595,6 @@ contract Pool is PoolBooks {
             }
         }
         return grailWeight * BPS > total * grailProbCapBps;
-    }
-
-    /// @dev Adds `count` pulls to the current clock hour. A slot last written in an earlier hour
-    ///      is reset first.
-    function _recordPulls(uint256 count) internal {
-        uint64 hour = uint64(block.timestamp / 1 hours);
-        PullSlot storage slot = _pullSlots[hour % PULL_SLOTS];
-        uint256 current = slot.hour == hour ? slot.count : 0;
-        slot.hour = hour;
-        slot.count = SafeCastLib.toUint192(current + count);
-        for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = grail[t];
-            if (g.listingId != 0) g.pullsSinceList += count;
-        }
     }
 
     /// @dev Pays queued claims, mints replacements from the queue, then new inventory toward the
@@ -766,8 +760,8 @@ contract Pool is PoolBooks {
     ///      or lowers the list price by the decay accrued since the last listing or reprice. The
     ///      new price is `PricingLib.decayedNotional`, which is at least `floorWei`. A listed
     ///      track is repriced only when its listing is Active and the new price is below the
-    ///      current one, and any track only when the new price keeps the listed GRAIL weight within
-    ///      `grailProbCapBps`. Returns whether the FWA listing changed. `busy` is true while FWA
+    ///      current one by at least `repriceMinBps` of it, and any track only when the new price
+    ///      keeps the listed GRAIL weight within `grailProbCapBps`. Returns whether the FWA listing changed. `busy` is true while FWA
     ///      holds unsettled acquisitions, which lock repricing and withdrawal.
     function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
         if (_growGrail(t, busy) == 0) return true;
@@ -777,7 +771,10 @@ contract Pool is PoolBooks {
         uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
         if (
             listingId != 0
-                && (next >= g.notional || _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active))
+                && (
+                    next >= g.notional || g.notional - next < g.notional * repriceMinBps / BPS
+                        || _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)
+                )
         ) {
             return false;
         }

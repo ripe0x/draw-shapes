@@ -155,6 +155,22 @@ contract PoolHarness is Pool {
         margin = amount;
     }
 
+    function setLastRotateAt(uint256 timestamp) external {
+        lastRotateAt = timestamp;
+    }
+
+    function setNextSequenceToBook(uint64 sequence) external {
+        nextSequenceToBook = sequence;
+    }
+
+    /// @dev Raises the four booked receivables without moving ETH.
+    function addReceivables(uint256 ordinary, uint256 maintenanceWei, uint256 minorWei, uint256 majorWei) external {
+        receivable += ordinary;
+        maintenanceReceivable += maintenanceWei;
+        grail[MINOR].receivable += minorWei;
+        grail[MAJOR].receivable += majorWei;
+    }
+
     function setMintLineOwed(uint256 amount) external {
         mintLineOwed = amount;
     }
@@ -227,6 +243,14 @@ abstract contract PoolFixture is Test {
         p.openingDeadline = 24 hours;
         p.minItems = 10;
         p.grailProbCapBps = 2_000;
+        p.repriceMinBps = 0;
+    }
+
+    /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `growGrail`
+    ///      and the listed-item part of `liquidate` wait for. A later timestamp is kept.
+    function _warpPastRotateGate(Pool target) internal {
+        uint256 at = target.lastRotateAt() + target.rotateInterval();
+        if (block.timestamp < at) vm.warp(at);
     }
 
     function _deploy(IPoolTypes.Params memory p) internal returns (PoolHarness) {
@@ -332,6 +356,19 @@ contract PoolConstructorTest is PoolFixture {
         p.grailProbCapBps = 10_001;
         vm.expectRevert(IPoolTypes.GrailProbCapOutOfRange.selector);
         new PoolHarness(p);
+    }
+
+    function test_revert_repriceMinBpsTooHigh() public {
+        IPoolTypes.Params memory p = _params();
+        p.repriceMinBps = 10_001;
+        vm.expectRevert(IPoolTypes.RepriceBpsOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_constructorStoresRepriceMinBps() public {
+        IPoolTypes.Params memory p = _params();
+        p.repriceMinBps = 10_000;
+        assertEq(_deploy(p).repriceMinBps(), 10_000);
     }
 
     function test_constructorStoresBoardParams() public {

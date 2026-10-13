@@ -123,7 +123,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _open(pool, clone);
         assertEq(pool.listedCount(), 60, "board");
 
+        _warpPastRotateGate(pool);
         pool.growGrail(0);
+        _warpPastRotateGate(pool);
         pool.growGrail(1);
         warpPastCooldown(clone);
 
@@ -973,6 +975,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function test_importGrailRedeemsAPackArrivingAtAnOccupiedTrack() public {
         _buildA();
         _buildB();
+        _warpPastRotateGate(succ);
         succ.growGrail(0);
         (uint256 bucketBefore, uint256 packBefore, uint256 backingBefore,,) = _grail(succ, 0);
         assertTrue(packBefore != 0);
@@ -994,6 +997,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function test_importGrailAcceptsABucketOnlyImport() public {
         _buildA();
         _buildB();
+        _warpPastRotateGate(succ);
         succ.growGrail(0);
         vm.deal(address(pool), 1 ether);
         (uint256 bucketBefore,,,,) = _grail(succ, 0);

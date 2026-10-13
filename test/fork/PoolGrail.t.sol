@@ -107,6 +107,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
     }
 
     function _grow(uint256 t) internal {
+        _warpPastRotateGate(pool);
         vm.prank(keeper);
         pool.growGrail(uint8(t));
     }
@@ -156,6 +157,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
     function test_revert_growGrailForAnUnknownTrack() public {
         _openReady();
+        _warpPastRotateGate(pool);
         vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(2);
     }
@@ -164,10 +166,12 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _openReady();
         uint256 cost = _cost(0.05 ether);
         pool.loseGrailBucket(0, _bucket(0) - cost + 1);
+        _warpPastRotateGate(pool);
         vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(0);
 
         pool.addGrailBucket{value: 1}(0);
+        _warpPastRotateGate(pool);
         pool.growGrail(0);
         assertEq(_bucket(0), 0, "the step spent the bucket exactly");
         assertEq(_backing(0), 0.05 ether);
@@ -180,6 +184,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256[] memory ids = _pullAs(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
+        _warpPastRotateGate(pool);
         vm.expectRevert(IPoolTypes.FwaBusy.selector);
         pool.growGrail(0);
 
@@ -292,6 +297,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(bucketBefore - _bucket(0), 10 * _cost(0.05 ether), "I5: ten steps, ten costs");
         assertEq(_notional(0), 0.4 ether);
 
+        _warpPastRotateGate(pool);
         vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(0);
         _assertI1();
@@ -384,14 +390,67 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _assertI1();
     }
 
+    function test_repriceBelowTheMinimumIsSkippedAndAtTheMinimumIsApplied() public {
+        _openReady();
+        for (uint256 i; i < 10; ++i) {
+            _grow(0);
+        }
+        uint256 listingId = _listing(0);
+        assertEq(_notional(0), 0.4 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setRepriceMinBps(100);
+
+        // The minimum is 1% of 0.4 ETH: 0.004 ETH, four pulls at 0.001 ETH.
+        pool.recordPulls(3);
+        _warpToRotation();
+        vm.recordLogs();
+        pool.rotate();
+        (uint256 listed,) = _countTrack(vm.getRecordedLogs(), IPoolTypes.GrailListed.selector, 0);
+        assertEq(listed, 0, "no reprice of the minor track");
+        assertEq(_notional(0), 0.4 ether, "decay of 0.003 ETH is below the minimum");
+        assertEq(_pulls(0), 3, "the skipped decay keeps accruing");
+
+        pool.recordPulls(1);
+        _warpToRotation();
+        vm.recordLogs();
+        pool.rotate();
+        (listed,) = _countTrack(vm.getRecordedLogs(), IPoolTypes.GrailListed.selector, 0);
+        assertEq(listed, 1);
+        assertEq(_listing(0), listingId, "repriced in place");
+        assertEq(_notional(0), 0.396 ether, "decay of 0.004 ETH meets the minimum");
+        assertEq(_pulls(0), 0);
+        _assertI1();
+    }
+
+    function test_revert_growGrailInsideTheRotateInterval() public {
+        _openReady();
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
+        pool.growGrail(0);
+
+        _warpToRotation();
+        pool.growGrail(0);
+        assertEq(pool.lastRotateAt(), block.timestamp, "growth restarts the interval");
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
+        pool.growGrail(0);
+
+        vm.warp(block.timestamp + pool.rotateInterval() - 1);
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
+        pool.growGrail(0);
+        vm.warp(block.timestamp + 1);
+        pool.growGrail(0);
+        assertEq(_backing(0), 0.1 ether);
+    }
+
     function test_growthRelistResetsThePullCount() public {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
         uint256[] memory ids = _pullAs(player, 2);
-        assertEq(_pulls(0), 2, "pulls count towards decay");
+        assertEq(_pulls(0), 0, "pulls count towards decay when booked");
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
         fulfill(clone, ids[1], wordAvoiding(clone, _listing(0)));
+        pool.settle(5);
+        assertEq(_pulls(0), 2, "booked pulls count towards decay");
         _grow(0);
         assertEq(_pulls(0), 0, "relisting restarts the count");
     }
@@ -410,7 +469,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.rotate();
 
         assertEq(_notional(0), 0.4 ether, "locked while an acquisition is unsettled");
-        assertEq(_pulls(0), 101, "the pulls keep accruing");
+        assertEq(_pulls(0), 100, "the unsettled pull is counted once booked");
 
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
         _warpToRotation();

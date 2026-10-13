@@ -114,6 +114,8 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setGrailProbCap(1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setRepriceMinBps(1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setPaused(true, true);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setAdmin(stranger);
@@ -310,6 +312,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         _openReady();
         vm.prank(admin);
         IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
+        _warpPastRotateGate(pool);
         pool.growGrail(0);
         pool.recordPulls(3);
         uint256[12] memory before_ = _grailWords(0);
@@ -424,6 +427,18 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
     }
 
+    function test_setRepriceMinBps() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.RepriceBpsOutOfRange.selector);
+        IPool(address(pool)).setRepriceMinBps(10_001);
+        _expectParamSet(IPool.setRepriceMinBps.selector);
+        IPool(address(pool)).setRepriceMinBps(10_000);
+        assertEq(pool.repriceMinBps(), 10_000);
+        IPool(address(pool)).setRepriceMinBps(0);
+        assertEq(pool.repriceMinBps(), 0);
+        vm.stopPrank();
+    }
+
     // ---------------------------------------------------------------- pause and admin
 
     function test_setPausedClosesPullsAndDeposits() public {
@@ -491,6 +506,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         _openReady();
         vm.prank(admin);
         IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
+        _warpPastRotateGate(pool);
         pool.growGrail(0);
         (, uint256 packId,,,,,,,,,,) = pool.grail(0);
         assertGt(packId, 0);

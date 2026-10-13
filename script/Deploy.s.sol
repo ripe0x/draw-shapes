@@ -98,6 +98,7 @@ contract Deploy is Script {
         p.openingDeadline = vm.envUint("OPENING_DEADLINE_SECONDS");
         p.minItems = vm.envUint("MIN_ITEMS");
         p.grailProbCapBps = vm.envUint("GRAIL_PROB_CAP_BPS");
+        p.repriceMinBps = vm.envUint("REPRICE_MIN_BPS");
     }
 
     /// @dev Rows are separated by `;`, each row is `rung,rung,...:shareBps`.
@@ -179,6 +180,7 @@ contract Deploy is Script {
         require(pool.openingDeadline() == p.openingDeadline, "openingDeadline");
         require(pool.minItems() == p.minItems, "minItems");
         require(pool.grailProbCapBps() == p.grailProbCapBps, "grailProbCapBps");
+        require(pool.repriceMinBps() == p.repriceMinBps, "repriceMinBps");
 
         (uint16 premium, uint16 maint, uint16 feed, uint16 minorShare) = pool.feeSplit();
         require(

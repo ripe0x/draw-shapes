@@ -36,7 +36,8 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Books up to `maxItems` FWA acquisitions in sequence order from `nextSequenceToBook`
-    ///      to `end`. Returns the new `nextSequenceToBook`. A Fulfilled acquisition is a capture:
+    ///      to `end`. Returns the new `nextSequenceToBook`. Every sequence passed counts as one pull
+    ///      of demand, whatever its status, at the hour of booking. A Fulfilled acquisition is a capture:
     ///      FWA pays the owner `paid - (paid - base) / 2`, and a request without a recorded base
     ///      books zero proceeds, which `_bookSurplus` books from FWA's owner proceeds. A refunded
     ///      delivery returns its token to held items. A DeliveryPending acquisition is written off:
@@ -44,7 +45,8 @@ abstract contract PoolBooks is PoolStorage {
     ///      replacement. If the delivery later completes, FWA accrues owner proceeds and
     ///      `_bookSurplus` books them. If the purchaser later refunds, the admin recovers the token
     ///      with `adminCall(recoverRefundedNFT)` and `sweep`. Expired, Refunded and TimedOut
-    ///      acquisitions book nothing. The walk stops at any other status.
+    ///      acquisitions book nothing. FWA only advances its processing queue past acquisitions in
+    ///      those statuses, so any other status books nothing and the walk passes it.
     function _walk(IFWAClone fwa, uint64 end, uint256 maxItems) internal returns (uint64 seq) {
         seq = nextSequenceToBook;
         if (seq >= end) return seq;
@@ -60,17 +62,12 @@ abstract contract PoolBooks is PoolStorage {
                 _recoverRefunded(fwa, listingId);
             } else if (status == uint256(IFWAClone.AcquisitionStatus.DeliveryPending)) {
                 _writeOff(requestId, listingId);
-            } else if (
-                status != uint256(IFWAClone.AcquisitionStatus.Expired)
-                    && status != uint256(IFWAClone.AcquisitionStatus.Refunded)
-                    && status != uint256(IFWAClone.AcquisitionStatus.TimedOut)
-            ) {
-                break;
             }
             ++seq;
         }
         if (seq != start) {
             nextSequenceToBook = seq;
+            _recordPulls(seq - start);
             emit Settled(seq);
         }
     }
@@ -187,13 +184,17 @@ abstract contract PoolBooks is PoolStorage {
 
     /// @dev Withdraws FWA owner proceeds and credits them to the buckets. Returns false when
     ///      the booking walk is behind FWA's processing queue or no proceeds are held. Proceeds
-    ///      above the booked receivables enter as margin through `_bookSurplus`.
+    ///      above the booked receivables enter as margin through `_bookSurplus`. Proceeds below them
+    ///      emit `HarvestShortfall` and the gap is written down through `_writeDownReceivables`.
     function _harvest() internal returns (bool) {
         if (nextSequenceToBook < _nextToProcess() || _ownerProceeds() == 0) return false;
 
         uint256 received = _call(address(fwaPool), IFWAClone.withdrawOwnerProceeds.selector, 0, 0);
         uint256 expected = _bookedReceivables();
-        if (received < expected) revert HarvestShortfall(received, expected);
+        if (received < expected) {
+            _writeDownReceivables(expected - received);
+            emit HarvestShortfall(received, expected);
+        }
 
         uint256 surplus = _bookSurplus(received);
         cash += receivable;
@@ -206,6 +207,37 @@ abstract contract PoolBooks is PoolStorage {
         grail[MAJOR].receivable = 0;
         emit Harvested(received, surplus);
         return true;
+    }
+
+    /// @dev Lowers the booked receivables by `gap`: `receivable` first, then `maintenanceReceivable`,
+    ///      then the MINOR and MAJOR GRAIL receivables. `gap` is at most their sum.
+    function _writeDownReceivables(uint256 gap) internal {
+        uint256 cut = gap < receivable ? gap : receivable;
+        receivable -= cut;
+        gap -= cut;
+        cut = gap < maintenanceReceivable ? gap : maintenanceReceivable;
+        maintenanceReceivable -= cut;
+        gap -= cut;
+        for (uint256 t; t <= MAJOR; ++t) {
+            Grail storage g = grail[t];
+            cut = gap < g.receivable ? gap : g.receivable;
+            g.receivable -= cut;
+            gap -= cut;
+        }
+    }
+
+    /// @dev Adds `count` pulls to the current clock hour. A slot last written in an earlier hour
+    ///      is reset first. Each listed GRAIL track's `pullsSinceList` rises by `count`.
+    function _recordPulls(uint256 count) internal {
+        uint64 hour = uint64(block.timestamp / 1 hours);
+        PullSlot storage slot = _pullSlots[hour % PULL_SLOTS];
+        uint256 current = slot.hour == hour ? slot.count : 0;
+        slot.hour = hour;
+        slot.count = SafeCastLib.toUint192(current + count);
+        for (uint256 t; t <= MAJOR; ++t) {
+            Grail storage g = grail[t];
+            if (g.listingId != 0) g.pullsSinceList += count;
+        }
     }
 
     /// @dev FWA and Shapes reads used at several call sites. Each is one function so the external

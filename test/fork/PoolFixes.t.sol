@@ -109,6 +109,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     }
 
     function _grow(uint256 t) internal {
+        _warpPastRotateGate(pool);
         vm.prank(keeper);
         pool.growGrail(uint8(t));
     }
@@ -236,8 +237,8 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         uint256 price;
         (price, status) = _price(stagedId);
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by rotate");
-        assertEq(price, 0.03 ether, "10 pulls at 0.001 ETH");
-        assertEq(_notional(0), 0.03 ether);
+        assertEq(price, 0.029 ether, "11 pulls at 0.001 ETH: 10 recorded and the booked pull");
+        assertEq(_notional(0), 0.029 ether);
     }
 
     // ---------------------------------------------------------------- A2: refund gate

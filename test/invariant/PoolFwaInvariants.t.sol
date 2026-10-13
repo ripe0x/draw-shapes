@@ -59,6 +59,8 @@ contract PoolFwaHandler is ForkBase {
     uint256 public grailGrowths;
     uint256 public griefs;
     uint256 public harvests;
+    /// @dev Number of `HarvestShortfall` events: FWA paid less than the booked receivables.
+    uint256 public harvestShortfalls;
     uint256 public directPurchases;
     uint256 public pulls;
     uint256 public rotations;
@@ -121,6 +123,8 @@ contract PoolFwaHandler is ForkBase {
             } else if (topic == IPoolTypes.Harvested.selector) {
                 (uint256 received,) = abi.decode(logs[i].data, (uint256, uint256));
                 ghostHarvestReceived += received;
+            } else if (topic == IPoolTypes.HarvestShortfall.selector) {
+                ++harvestShortfalls;
             } else if (topic == IPoolTypes.SurplusBooked.selector) {
                 ghostSurplus += abi.decode(logs[i].data, (uint256));
             } else if (topic == IPoolTypes.Withdrawn.selector) {
@@ -349,6 +353,8 @@ contract PoolFwaHandler is ForkBase {
         uint256 t = trackSeed % 2;
         (uint256 bucket,, uint256 backing,, uint256 target,,,,,,,) = pool.grail(t);
         if (backing >= target || bucket < _growthCost(t) || clone.unsettledAcquisitionCount() != 0) return;
+        uint256 at = pool.lastRotateAt() + pool.rotateInterval();
+        if (block.timestamp < at) vm.warp(at);
         pool.growGrail(uint8(t));
     }
 
@@ -942,6 +948,13 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             int256(handler.ghostCapturedProceeds() + handler.ghostSurplus())
                 - int256(handler.ghostCapturedValue() + handler.ghostWrittenOff() + handler.ghostMarginSplit())
         );
+    }
+
+    /// @dev FWA always pays at least the booked receivables, so no harvest writes a receivable down.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_harvestNeverFallsShort() public view {
+        assertEq(handler.harvestShortfalls(), 0);
     }
 
     /// @dev Booked receivables are held at FWA as owner proceeds. A successful harvest leaves all four

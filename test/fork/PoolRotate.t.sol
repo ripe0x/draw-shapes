@@ -453,6 +453,39 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         assertEq(pool.claims(), 0);
     }
 
+    function test_liquidateInsideTheRotateIntervalPaysFromCashAndWithdrawsNothing() public {
+        _openReady();
+        _drainCash(400 ether, 0.3 ether);
+        uint256 queued = _exiterLeaves();
+        vm.deal(saver, 1 ether);
+        vm.prank(saver);
+        pool.deposit{value: 0.2 ether}();
+        uint256 cashBefore = pool.cash();
+        assertGt(cashBefore, 0);
+        _warpInterval();
+        // A restart of the interval after the head claim became due.
+        pool.setLastRotateAt(block.timestamp);
+        uint256 rotatedAt = pool.lastRotateAt();
+        uint256 listedBefore = pool.listedCount();
+
+        pool.liquidate();
+
+        assertEq(pool.cash(), 0, "cash paid the head claim");
+        assertEq(pool.claims(), queued - cashBefore, "claims fell by the cash payment only");
+        assertEq(pool.listedCount(), listedBefore, "no FWA withdrawal inside the interval");
+        assertEq(pool.lastRotateAt(), rotatedAt);
+        _assertRegistry();
+        _assertI1();
+
+        _warpInterval();
+        pool.liquidate();
+
+        assertLt(pool.listedCount(), listedBefore, "withdraws once the interval has passed");
+        assertEq(pool.lastRotateAt(), block.timestamp, "the withdrawal restarts the interval");
+        _assertRegistry();
+        _assertI1();
+    }
+
     function test_unsettledAcquisitionLocksLiquidationUntilFulfilment() public {
         _openReady();
         _drainCash(400 ether, 0.3 ether);

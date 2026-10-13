@@ -89,6 +89,7 @@ interface IPoolTypes {
         uint256 openingDeadline;
         uint256 minItems;
         uint256 grailProbCapBps;
+        uint256 repriceMinBps;
     }
 
     error ZeroAddress();
@@ -107,6 +108,7 @@ interface IPoolTypes {
     error InsufficientShares();
     error ClaimNotDue();
     error GrailProbCapOutOfRange();
+    error RepriceBpsOutOfRange();
     error NotOpening();
     error FwaPoolExists();
     error FwaPoolMissing();
@@ -122,7 +124,6 @@ interface IPoolTypes {
     error BoardTooThin();
     error GrailProbTooHigh();
     error UnknownListing(uint256 listingId);
-    error HarvestShortfall(uint256 received, uint256 expected);
     error BooksBehind();
     error NavZero();
     error RotateTooSoon();
@@ -158,11 +159,15 @@ interface IPoolTypes {
     event Captured(uint256 indexed requestId, uint256 indexed listingId, uint16 row, uint256 value, uint256 proceeds);
     event MarginSplit(uint256 mintLineCover, uint256 premiumShare, uint256 maintenanceShare, uint256 feedShare);
     event Harvested(uint256 received, uint256 surplus);
+    /// @dev Emitted when FWA pays out `received` wei of owner proceeds, below the `expected` booked
+    ///      receivables. The gap is written off the receivables before the harvest is credited.
+    event HarvestShortfall(uint256 received, uint256 expected);
     event SurplusBooked(uint256 surplus);
     event Settled(uint64 nextSequenceToBook);
     event WrittenOff(uint256 indexed requestId, uint256 indexed listingId, uint256 value);
-    /// @dev `fee` is the amount deducted from the head claim for the mint fees of the redeemed Shapes.
-    ///      `listingId` is zero for a held item.
+    /// @dev `fee` is the re-mint cost of the redeemed item's row: the mint fees of its Shapes. It is
+    ///      deducted from the head claim and stays in `cash`, which funds the re-mint of the row for
+    ///      the remaining holders. `listingId` is zero for a held item.
     event Liquidated(uint256 indexed listingId, uint256 value, uint256 fee);
     event Rotated(bool changed, bool inventoryChanged, uint256 refund);
     /// @dev `backing` is the track's backing after the step. `notional` is the list price after it.
@@ -233,6 +238,7 @@ interface IPool is IPoolTypes {
     function openingDeadlineAt() external view returns (uint256);
     function minItems() external view returns (uint256);
     function grailProbCapBps() external view returns (uint256);
+    function repriceMinBps() external view returns (uint256);
     function fwaPool() external view returns (IFWAClone);
     function maxBatch() external view returns (uint256);
     function concurrency() external view returns (uint256);
@@ -299,6 +305,7 @@ interface IPool is IPoolTypes {
     function setRotateInterval(uint256 seconds_) external;
     function setMinItems(uint256 n) external;
     function setGrailProbCap(uint256 bps) external;
+    function setRepriceMinBps(uint256 bps) external;
     function setPaused(bool pulls, bool deposits) external;
     function setAdmin(address newAdmin) external;
     function sweep(address token, uint256 id, address to) external;

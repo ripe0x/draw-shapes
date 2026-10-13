@@ -63,6 +63,9 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 public openingDeadlineAt;
     uint256 public minItems;
     uint256 public grailProbCapBps;
+    /// @notice Smallest GRAIL list price decrease, in bps of the current price, that `rotate` applies
+    ///         as a reprice.
+    uint256 public repriceMinBps;
 
     IFWAClone public fwaPool;
     uint256 public maxBatch;
@@ -322,6 +325,11 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     function _setProbCap(uint256 bps) internal {
         if (bps == 0 || bps > BPS) revert GrailProbCapOutOfRange();
         grailProbCapBps = bps;
+    }
+
+    function _setRepriceMinBps(uint256 bps) internal {
+        if (bps > BPS) revert RepriceBpsOutOfRange();
+        repriceMinBps = bps;
     }
 
     /// @dev Replaces the mix table. Each row must have rungs inside the Shapes ladder. A row that

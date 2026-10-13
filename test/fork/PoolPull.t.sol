@@ -432,18 +432,140 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(clone.ownerProceeds(), 0);
     }
 
-    function test_revert_harvestShortfall() public {
+    /// @dev Books one pack capture, then raises the booked receivables by the amounts given so that
+    ///      `ownerProceeds` falls short of them by their sum.
+    function _shortfallFixture(uint256 ordinary, uint256 maintenanceWei, uint256 minorWei, uint256 majorWei)
+        internal
+        returns (uint256 owed, uint256 expected)
+    {
         _openReady();
         (uint256[] memory ids,,) = _pullAs(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
+        owed = clone.ownerProceeds();
+        pool.addReceivables(ordinary, maintenanceWei, minorWei, majorWei);
+        expected = pool.receivable() + pool.maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
+        assertEq(expected - owed, ordinary + maintenanceWei + minorWei + majorWei);
+    }
 
-        uint256 owed = clone.ownerProceeds();
-        pool.setReceivable(pool.receivable() + 1);
-        uint256 expected =
-            pool.receivable() + pool.maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
-        vm.expectRevert(abi.encodeWithSelector(IPoolTypes.HarvestShortfall.selector, owed, expected));
-        pool.harvest();
+    function test_harvestShortfallWritesDownOrdinaryReceivable() public {
+        (uint256 owed, uint256 expected) = _shortfallFixture(7, 0, 0, 0);
+        uint256 cashBefore = pool.cash();
+        uint256 receivableBefore = pool.receivable();
+        uint256 maintenanceBefore = pool.maintenanceReceivable();
+        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        uint256 minorR = pool.grailReceivable(0);
+        uint256 majorR = pool.grailReceivable(1);
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit IPoolTypes.HarvestShortfall(owed, expected);
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit IPoolTypes.Harvested(owed, 0);
+        assertTrue(pool.harvest());
+
+        assertEq(pool.cash(), cashBefore + receivableBefore - 7, "ordinary receivable written down by the gap");
+        assertEq(pool.maintenance(), maintenanceBefore);
+        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
+        assertEq(minorAfter - minorBefore, minorR);
+        assertEq(majorAfter - majorBefore, majorR);
+        assertEq(pool.receivable(), 0);
+        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(pool.grailReceivable(0), 0);
+        assertEq(pool.grailReceivable(1), 0);
+        assertEq(clone.ownerProceeds(), 0);
+        _assertI1();
+    }
+
+    function test_harvestShortfallSpillsIntoMaintenanceReceivable() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        pool.settle(5);
+        uint256 ordinary = pool.receivable();
+        uint256 maintenanceR = pool.maintenanceReceivable();
+        pool.addReceivables(0, ordinary + 5, 0, 0);
+        uint256 cashBefore = pool.cash();
+        uint256 maintenanceBefore = pool.maintenance();
+
+        assertTrue(pool.harvest());
+
+        assertEq(pool.cash(), cashBefore, "ordinary receivable written down to zero");
+        assertEq(pool.maintenance(), maintenanceBefore + maintenanceR + ordinary, "5 wei taken from maintenance");
+        assertEq(pool.maintenanceReceivable(), 0);
+        _assertI1();
+    }
+
+    function test_harvestShortfallSpillsIntoGrailReceivables() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        pool.settle(5);
+        uint256 ordinary = pool.receivable();
+        uint256 maintenanceR = pool.maintenanceReceivable();
+        uint256 minorR = pool.grailReceivable(0);
+        uint256 majorR = pool.grailReceivable(1);
+        assertGt(minorR, 3);
+        pool.addReceivables(0, 0, 0, ordinary + maintenanceR + 3);
+        uint256 cashBefore = pool.cash();
+        uint256 maintenanceBefore = pool.maintenance();
+        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+
+        assertTrue(pool.harvest());
+
+        assertEq(pool.cash(), cashBefore);
+        assertEq(pool.maintenance(), maintenanceBefore);
+        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
+        assertEq(minorAfter - minorBefore, minorR - 3, "MINOR takes the first GRAIL cut");
+        assertEq(majorAfter - majorBefore, majorR + ordinary + maintenanceR + 3);
+        _assertI1();
+    }
+
+    function test_withdrawCompletesThroughHarvestShortfall() public {
+        (uint256 owed, uint256 expected) = _shortfallFixture(1, 0, 0, 0);
+        uint256 shares = pool.sharesOf(alice);
+        uint256 supply = pool.totalShares();
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit IPoolTypes.HarvestShortfall(owed, expected);
+        vm.expectEmit(true, false, false, false, address(pool));
+        emit IPoolTypes.Withdrawn(alice, 0, 0, 0);
+        vm.prank(alice);
+        pool.withdraw(shares / 2);
+
+        assertEq(pool.totalShares(), supply - shares / 2);
+        assertEq(pool.receivable(), 0, "harvested");
+        assertEq(clone.ownerProceeds(), 0);
+        _assertI1();
+    }
+
+    function test_walkPassesAnUnhandledStatusAndSettleClearsTheLag() public {
+        _openReady();
+        // Sequence 0 never exists at FWA, so its status is None.
+        pool.setNextSequenceToBook(0);
+        assertLt(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
+
+        vm.recordLogs();
+        vm.prank(bob);
+        pool.settle(5);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 poolEvents;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(pool)) continue;
+            ++poolEvents;
+            assertEq(logs[i].topics[0], IPoolTypes.Settled.selector, "only Settled");
+        }
+        assertEq(poolEvents, 1);
+        assertEq(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function test_syncClearsALaggingWalkWithoutBooksBehind() public {
+        _openReady();
+        pool.setNextSequenceToBook(0);
+        vm.prank(alice);
+        pool.deposit{value: 1 ether}();
+        assertEq(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
     }
 
     function test_upkeepSliceSettlesAndMintsOneReplacementInsideNextPull() public {
@@ -542,6 +664,54 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.maintenanceReceivable(), 0);
         assertEq(pool.nav(), navBefore - it.value + owed, "harvest moves receivable to cash");
         _assertI1();
+    }
+
+    function test_directAcquireCountsAsDemandForRowTargets() public {
+        _openReady();
+        pool.recordPulls(10);
+        assertEq(pool.trailingPulls(), 10);
+        assertEq(pool.rowCount(0), 7);
+        assertEq(pool.rowCount(1), 3);
+
+        uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
+        _capture(requestId, _listingOfRow(0, 0));
+        assertEq(pool.trailingPulls(), 10, "counted when the capture is booked");
+        vm.warp(pool.lastRotateAt() + pool.rotateInterval());
+        pool.rotate();
+
+        assertEq(pool.trailingPulls(), 11);
+        assertEq(pool.rowCount(0), 8, "row target 11 * 7,000 bps rounded up, against 7 at 10 pulls");
+        assertEq(pool.rowCount(1), 4, "row target 11 * 3,000 bps rounded up, against 3 at 10 pulls");
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function test_directAcquireAdvancesPullsSinceListOfAListedGrail() public {
+        _openReady();
+        vm.warp(pool.lastRotateAt() + pool.rotateInterval());
+        pool.growGrail(0);
+        warpPastCooldown(clone);
+        (,,,,,,,,, uint256 pullsBefore,, uint256 grailListing) = pool.grail(0);
+        assertEq(pullsBefore, 0);
+        assertTrue(grailListing != 0);
+
+        uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
+        _capture(requestId, _listingOfRow(0, 0));
+        pool.settle(5);
+
+        (,,,,,,,,, uint256 pullsAfter,,) = pool.grail(0);
+        assertEq(pullsAfter, 1);
+    }
+
+    function test_poolPullIsCountedOnceWhenBooked() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        assertEq(pool.trailingPulls(), 0, "not counted at request time");
+        _capture(ids[0], _listingOfRow(0, 0));
+        pool.settle(5);
+        assertEq(pool.trailingPulls(), 1);
+        pool.settle(5);
+        assertEq(pool.trailingPulls(), 1, "a booked sequence is not counted again");
     }
 
     function test_directAcquireOfPackSplitsSurplusMarginAtSettle() public {

@@ -199,6 +199,7 @@ contract LensForkTest is ForkBase, PoolFixture {
 
     function test_grailViewCarriesTheTrackAndItsWeight() public {
         _open(false);
+        _warpPastRotateGate(pool);
         pool.growGrail(0);
         Lens.GrailView memory g = lens.grail(0);
         (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = pool.grail(0);
