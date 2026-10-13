@@ -256,3 +256,13 @@ No entry is open.
    toggles the operator. External dependency: the FWA site update that routes buys through the pool. The gate is off at
    launch until it ships, and settlement books direct FWA buys and counts them for demand sizing and decay. Place:
    `Pool.acquire`, `Pool.acquireBatch`, `Pool.canPurchase`, `PoolAdmin.setPurchaseGate`. SPEC 8 and 12.
+
+35. **Relisting an unlisted GRAIL pack whose decayed price breaks the cap.** (deferred) In `_rotateGrail`
+   an unlisted pack whose decayed price would exceed `grailProbCapBps` stays unlisted until the board
+   deepens. Trying the face price `backing * listBps / 10_000` before giving up would relist sooner.
+   Spec author's second pass, 2026-10-13: low, not worth Pool's remaining margin in v1.
+
+36. **Size plan for a future Pool change.** (decided) Pool is 23,711 B of 24,576. The first lever when
+   a Pool change is required: move the views `rowCount`, `mixLength`, `listedRowCount` and `mixRow`
+   into `PoolAdmin`, reachable through the fallback, which frees several hundred bytes with no ABI
+   change. Any Pool change is a redeploy, so the margin is accepted for v1.

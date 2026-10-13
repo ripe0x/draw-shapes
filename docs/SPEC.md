@@ -251,6 +251,10 @@ receivable and then its bucket, `packId = 0`, `backing = 0`.
 Probability cap. When the listed GRAIL weight exceeds `grailProbCapBps`, `rotate` lifts a track's `notional` to the
 smallest price that restores the cap, at most `backing * listBps / 10_000`. The lift mirrors decay: it needs an Active
 listing and no unsettled acquisitions, and it resets `pullsSinceList`. Purchases carry no cap check.
+Growth needs no cap check. The purchase path keeps at least `concurrency` ordinary items listed through the board
+depth guard, and growth only raises a track's price. With ten 0.01 ETH items listed, a first minor listing at 0.075 ETH
+holds about 1.3 percent of selection weight and a first major step at 0.375 ETH about 0.3 percent, both under a 10
+percent cap; a breach needs fewer than two ordinary items listed.
 
 ## 12. Admin
 
