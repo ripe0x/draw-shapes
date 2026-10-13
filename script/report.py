@@ -4,11 +4,12 @@
 usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [REFERENCE_JSON]] [--no-html]
 
 Each RUN_DIR holds pulls.csv, hourly.csv and claims.csv. The tables print one column per run. With --fwa
-two reference columns are added from REFERENCE_JSON (default evidence/fwa/reference.json, a static copy):
-"FWA V1 observed" (2,401 draws of the V1 main pool valued at the 90 percent ETH cashout) and
-"FWA V2 main, expected" (launch snapshot of the V2 main pool; only the ticket, the expected cashout over
-ticket and the listing count are known). Unless --no-html is given, report.html is written into each RUN_DIR.
-Standard library only.
+one reference column "FWA V2 main, expected" is added from REFERENCE_JSON (default evidence/fwa/reference.json,
+a static copy of the V2 main pool launch snapshot; only the ticket, the expected cashout over ticket and the
+listing count are known). Neither side includes VRF or gas: a run's ticket is the FWA acquisition fee with the
+VRF fee at zero at the fork block, and the V2 ticket is the acquisition_fee getter. Where both sides have a
+value, the ticket and expected return rows mark the better side for the player with an asterisk. Unless
+--no-html is given, report.html is written into each RUN_DIR. Standard library only.
 """
 import csv
 import json
@@ -52,11 +53,21 @@ def read_csv(path):
         return list(csv.DictReader(f))
 
 
+def read_text(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return f.read().splitlines()
+
+
 def analyze(run_dir):
     pulls = read_csv(os.path.join(run_dir, "pulls.csv"))
     hourly = read_csv(os.path.join(run_dir, "hourly.csv"))
     claims = read_csv(os.path.join(run_dir, "claims.csv"))
     m = {"name": os.path.basename(os.path.normpath(run_dir)).replace("test_", "")}
+    for line in read_text(os.path.join(run_dir, "run.txt")):
+        if line.startswith("pullsPerDay="):
+            m["name"] = f"Shapes run ({line.split('=', 1)[1].strip()}/day)"
 
     counted = [r for r in pulls if r["kind"] in RETURN_KINDS]
     ratios = sorted(int(r["backingReceived"]) / int(r["paid"]) for r in counted)
@@ -175,11 +186,26 @@ ROWS = [
 ] + [(f"rotate trigger {t}", "rot_" + t, lambda v: _n(v)) for t in TRIGGERS]
 
 
+# Rows compared across columns: key -> True when a higher value is better for the player.
+BETTER_HIGH = {"ticket": False, "mean": True}
+
+
+def better_columns(cols, key):
+    """Indices of the best column for the player on a row, among columns holding a number. Ties give none."""
+    vals = [(i, c[key]) for i, c in enumerate(cols) if isinstance(c.get(key), (int, float))]
+    if len(vals) < 2:
+        return set()
+    best = (max if BETTER_HIGH[key] else min)(v for _, v in vals)
+    winners = {i for i, v in vals if v == best}
+    return winners if len(winners) == 1 else set()
+
+
 def render_table(cols):
     names = [c["name"] for c in cols]
     label_w = max(len(r[0]) for r in ROWS)
     col_w = [max(len(n), 12) for n in names]
-    lines = ["".ljust(label_w) + "  " + "  ".join(n.rjust(w) for n, w in zip(names, col_w))]
+    marked = False
+    lines = ["".ljust(label_w) + "  " + "  ".join(n.rjust(w + 1) for n, w in zip(names, col_w))]
     header = None
     for label, key, fmt in ROWS:
         if key is None:
@@ -191,17 +217,22 @@ def render_table(cols):
             lines += ["", header]
             header = None
         cells = []
-        for c, w in zip(cols, col_w):
+        best = better_columns(cols, key) if key in BETTER_HIGH else set()
+        marked = marked or bool(best)
+        for i, (c, w) in enumerate(zip(cols, col_w)):
             v = c.get(key)
-            cells.append((v if isinstance(v, str) else fmt(v) if key in c else "-").rjust(w))
+            text = v if isinstance(v, str) else fmt(v) if key in c else "-"
+            cells.append((text + ("*" if i in best else " ")).rjust(w + 1))
         lines.append(label.ljust(label_w) + "  " + "  ".join(cells))
+    if marked:
+        lines += ["", "* better for the player: lower ticket, higher return"]
     lines.append("")
     lines.append("Return buckets, share of pulls by value / ticket")
     for i, lab in enumerate(bucket_labels()):
         cells = []
         for c, w in zip(cols, col_w):
             h = c.get("hist")
-            cells.append((_pct(h[i]) if h else "-").rjust(w))
+            cells.append((_pct(h[i]) if h else "-").rjust(w + 1))
         lines.append(lab.ljust(label_w) + "  " + "  ".join(cells))
     return "\n".join(lines)
 
@@ -286,7 +317,6 @@ def write_html(m, fwa):
         ),
     ]
     hist_series = [(m["name"], m["hist"])] if "hist" in m else []
-    hist_series += [(f["name"], f["hist"]) for f in fwa if "hist" in f]
     charts.append(histogram("Player return, share of pulls by value / ticket", hist_series))
     table = render_table([m] + fwa)
     html = (
@@ -340,32 +370,20 @@ def main(argv):
 
 
 def reference_header(ref):
-    v1, v2 = ref["v1"], ref["v2"]
+    v2 = ref["v2"]
     return (
-        f"FWA V1 observed: pool {v1['pool'][:10]}, {v1['draws']:,} draws, {v1['window']}, valued at the "
-        f"{100 * v1['cashoutFraction']:.0f}% ETH cashout. "
-        f"FWA V2 main, expected: pool {v2['pool'][:10]}, block {v2['block']:,}, ticket {v2['ticketWei'] / ETH:.6f} ETH, "
+        f"FWA V2 main, expected: pool {v2['pool'][:10]}, block {v2['block']:,}, "
+        f"ticket {v2['ticketWei'] / ETH:.6f} ETH (acquisition_fee getter, VRF excluded), "
         f"{v2['activeListings']} listings, {v2['ethSettlementDiscountBps'] / 100:g}% settlement discount. "
+        "Shapes run ticket: FWA acquisition fee, VRF fee zero at the fork block. "
         f"Excluded: {ref['exclusions']}."
     )
 
 
 def reference_columns(ref):
-    """Maps reference.json onto the metric keys of analyze(): the V1 observed column and the V2 expected column."""
-    v1, v2, s = ref["v1"], ref["v2"], ref["v1"]["stats"]
+    """Maps reference.json onto the metric keys of analyze(): the V2 expected column."""
+    v2 = ref["v2"]
     return [
-        {
-            "name": "FWA V1 observed",
-            "pulls": v1["draws"],
-            "ticket": v1["ticketMeanWei"] / ETH,
-            "mean": s["mean"],
-            "median": s["median"],
-            "p5": s["p5"],
-            "p95": s["p95"],
-            "ge1": s["shareAtOrAbove"],
-            "lt_half": s["shareBelowHalf"],
-            "hist": v1["histogram"]["share"],
-        },
         {
             "name": "FWA V2 main, expected",
             "ticket": v2["ticketWei"] / ETH,

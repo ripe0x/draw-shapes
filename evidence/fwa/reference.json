@@ -1,94 +1,5 @@
 {
- "provenance": "Copied from shapes-on-fwa-v2 evidence/fee-odds-review on 2026-10-13; no chain fetch. V1: 2,401 allocations joined request to allocation to settlement, valued at the verified 90 percent ETH cashout. V2: main pool public getters at the pinned block; win frequency unknown.",
- "v1": {
-  "pool": "0xB276F62DB0ce8CA2Ca5bc522695bE604521eAc1c",
-  "blocks": [
-   25964020,
-   25984020
-  ],
-  "window": "2026-09-12 21:27 UTC to 2026-09-15 16:20 UTC",
-  "draws": 2401,
-  "ticketMeanWei": 51917284918116544,
-  "ticketMedianWei": 51198223085026309,
-  "cashoutFraction": 0.9,
-  "stats": {
-   "mean": 0.8999434091456442,
-   "median": 0.7147898149551813,
-   "p5": 0.4074046605173975,
-   "p10": 0.4368119810759025,
-   "p90": 1.2305968582518299,
-   "p95": 1.9164097064382795,
-   "shareAtOrAbove": 0.3019575177009579,
-   "shareBelowHalf": 0.4177426072469804,
-   "share2xPlus": 0.04664723032069971,
-   "max": 19.32497952176665
-  },
-  "undiscountedBacking": {
-   "aggregate_payout_to_fee": 1.0004241613278941,
-   "break_even": 0,
-   "count": 2401,
-   "losses": 1471,
-   "max_payout_ratio": 21.472199468629608,
-   "mean_payout_ratio": 0.9999371212729379,
-   "median_payout_ratio": 0.794210905505757,
-   "p10_payout_ratio": 0.4853466456398917,
-   "p90_payout_ratio": 1.367329842502033,
-   "two_x_or_more_rate": 0.052478134110787174,
-   "win_rate": 0.3873386089129529,
-   "wins": 930
-  },
-  "ethSettledOnly": {
-   "aggregate_payout_to_fee": 0.9285285264583808,
-   "break_even": 0,
-   "count": 2145,
-   "losses": 1446,
-   "max_payout_ratio": 19.32497952176665,
-   "mean_payout_ratio": 0.9281387450410247,
-   "median_payout_ratio": 0.8207472778871369,
-   "p10_payout_ratio": 0.4374464280000387,
-   "p90_payout_ratio": 1.3491923074195964,
-   "two_x_or_more_rate": 0.05034965034965035,
-   "win_rate": 0.3258741258741259,
-   "wins": 699
-  },
-  "histogram": {
-   "edges": [
-    0,
-    0.25,
-    0.5,
-    0.75,
-    1,
-    1.25,
-    1.5,
-    2,
-    3,
-    5,
-    10
-   ],
-   "share": [
-    0.0,
-    0.4177426072469804,
-    0.085381091211995,
-    0.19491878384006664,
-    0.20241566014160767,
-    0.013327780091628489,
-    0.03956684714702208,
-    0.024573094543940025,
-    0.01582673885880883,
-    0.0029154518950437317,
-    0.003331945022907122
-   ]
-  },
-  "counts": {
-   "allocations": 2401,
-   "matched_eth_cash_settlements": 2145,
-   "matched_nft_kept": 34,
-   "matched_token_cash_equivalent_settlements": 201,
-   "matched_unsettled_finalized": 0,
-   "requests": 2401,
-   "unresolved_in_observation": 21
-  }
- },
+ "provenance": "Copied from shapes-on-fwa-v2 evidence/fee-odds-review on 2026-10-13; no chain fetch. V2 main pool public getters at the pinned block; win frequency unknown. The ticket is the acquisition_fee getter and excludes VRF.",
  "v2": {
   "pool": "0x958C41181182e76F221331b2755b77D9e1426A98",
   "block": 25991175,
@@ -102,5 +13,5 @@
   "tokenRouteBudgetOverTicket": 0.880952380952381,
   "winFrequency": "unknown"
  },
- "exclusions": "wallet gas, VRF, FWA token rewards, epoch rewards, NFT resale value"
+ "exclusions": "wallet gas, VRF (zero in the simulation, excluded from the V2 ticket), FWA token rewards, epoch rewards, NFT resale value"
 }
