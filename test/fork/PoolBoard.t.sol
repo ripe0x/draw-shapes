@@ -53,18 +53,12 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     function _create(IPoolTypes.Params memory p) internal {
         pool = new PoolHarness(p);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
     }
 
     function _open() internal {
-        vm.warp(pool.openingDeadlineAt());
-        pool.open();
-    }
-
-    function _openWithPulls(uint256 pulls) internal {
-        vm.warp(pool.openingDeadlineAt());
-        pool.recordPulls(pulls);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
     }
 
@@ -107,10 +101,10 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     function test_createFwaPoolRecordsCloneAndLimits() public view {
         assertTrue(factory.isPool(address(clone)));
         assertEq(clone.owner(), address(pool));
-        assertEq(pool.maxBatch(), factory.maxAcquisitionsPerTx());
-        assertEq(pool.concurrency(), factory.maxOutstandingRequestsPerPool());
-        assertEq(pool.openingDeadlineAt(), block.timestamp + 24 hours);
-        assertEq(pool.openingDeadline(), 24 hours);
+        assertEq(IPool(address(pool)).maxBatch(), factory.maxAcquisitionsPerTx());
+        assertEq(IPool(address(pool)).concurrency(), factory.maxOutstandingRequestsPerPool());
+        assertEq(IPool(address(pool)).openingDeadlineAt(), block.timestamp + 24 hours);
+        assertEq(IPool(address(pool)).openingDeadline(), 24 hours);
         assertTrue(shapes.isApprovedForAll(address(pool), address(clone)));
         assertTrue(IERC721(address(drawPacks)).isApprovedForAll(address(pool), address(clone)));
         assertEq(clone.purchaseOperator(), address(pool));
@@ -123,20 +117,20 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         vm.expectEmit(true, false, false, false, address(fresh));
         emit IPoolTypes.FwaPoolCreated(predicted);
         vm.prank(admin);
-        fresh.createFwaPool(0);
+        IPool(address(fresh)).createFwaPool(0);
         assertEq(address(fresh.fwaPool()), predicted);
     }
 
     function test_revert_createFwaPoolTwice() public {
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.FwaPoolExists.selector);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
     }
 
     // ---------------------------------------------------------------- open
 
     function test_revert_openBeforeDeadline() public {
-        vm.warp(pool.openingDeadlineAt() - 1);
+        vm.warp(IPool(address(pool)).openingDeadlineAt() - 1);
         vm.expectRevert(IPoolTypes.OpeningDeadlineNotReached.selector);
         pool.open();
     }
@@ -164,7 +158,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         _create(p);
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         assertFalse(clone.localPurchasesEnabled());
 
         vm.recordLogs();
@@ -184,8 +178,8 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
         assertEq(pool.listedCount(), 60);
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
-        assertEq(pool.rowCount(0), 42);
-        assertEq(pool.rowCount(1), 18);
+        assertEq(IPool(address(pool)).rowCount(0), 42);
+        assertEq(IPool(address(pool)).rowCount(1), 18);
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 opened;
@@ -203,7 +197,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.minItems = 60;
         _create(p);
         pool.bookProceeds{value: 3 * row0Cost + row1Cost}();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         assertGt(pool.listedCount(), 0);
         assertLt(pool.listedCount(), 20);
@@ -242,8 +236,8 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         uint256 cashBefore = pool.cash();
         _open();
 
-        assertEq(pool.rowCount(0), 7);
-        assertEq(pool.rowCount(1), 3);
+        assertEq(IPool(address(pool)).rowCount(0), 7);
+        assertEq(IPool(address(pool)).rowCount(1), 3);
         assertEq(pool.heldCount(), 0);
         assertEq(clone.activeListingCount(), 10);
 
@@ -271,42 +265,6 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(packs, 3);
     }
 
-    function test_reserveKeepsOneCheapestStepUnspent() public {
-        // Row 1 is the cheapest step. Any mint needs cash of that step plus the minted row's step.
-        pool.bookProceeds{value: 2 * row1Cost - 1}();
-        _open();
-        assertEq(pool.backing(), 0);
-        assertEq(pool.cash(), 2 * row1Cost - 1);
-
-        pool.bookProceeds{value: 1}();
-        pool.restock();
-        assertEq(pool.rowCount(1), 1);
-        assertEq(pool.rowCount(0), 0);
-        assertEq(pool.backing(), 0.02 ether);
-        assertEq(pool.cash(), row1Cost);
-        assertEq(clone.activeListingCount(), 1);
-    }
-
-    function test_maxMintsPerRestockBoundsLargeTarget() public {
-        pool.bookProceeds{value: 1_000 ether}();
-        _openWithPulls(100);
-        assertEq(pool.rowCount(0) + pool.rowCount(1), 20);
-        assertEq(pool.rowCount(0), 20);
-        assertEq(clone.activeListingCount(), 20);
-
-        pool.restock();
-        assertEq(pool.rowCount(0), 40);
-        assertEq(clone.activeListingCount(), 40);
-        _checkListings();
-    }
-
-    function test_trailingPullsRaiseTargetDepth() public {
-        pool.bookProceeds{value: 1_000 ether}();
-        _openWithPulls(20);
-        assertEq(pool.rowCount(0), 14);
-        assertEq(pool.rowCount(1), 6);
-    }
-
     function test_replacementsMintedBeforeNewInventory() public {
         pool.pushReplacement(1);
         pool.pushReplacement(1);
@@ -314,9 +272,11 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.bookProceeds{value: 3 * row1Cost + row0Cost}();
         _open();
 
-        assertEq(pool.replacementLength(), 0);
-        assertEq(pool.rowCount(1), 2);
-        assertEq(pool.rowCount(0), 1);
+        // The 2 replacements and 1 row 0 mint are filled. The opening deficit (7 row 0 and 1 row 1
+        // entries beyond the 2 queued) stays queued, minus the row 0 mint.
+        assertEq(pool.replacementLength(), 7);
+        assertEq(IPool(address(pool)).rowCount(1), 2);
+        assertEq(IPool(address(pool)).rowCount(0), 1);
         assertEq(pool.cash(), row1Cost);
         _checkListings();
     }
@@ -327,9 +287,9 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.bookProceeds{value: 2 * row1Cost - 1}();
         _open();
 
-        assertEq(pool.replacementLength(), 1);
-        assertEq(pool.rowCount(1), 1);
-        assertEq(pool.rowCount(0), 0);
+        assertEq(pool.replacementLength(), 9, "the second replacement and the opening deficit stay queued");
+        assertEq(IPool(address(pool)).rowCount(1), 1);
+        assertEq(IPool(address(pool)).rowCount(0), 0);
         assertEq(pool.cash(), row1Cost - 1);
     }
 
@@ -339,19 +299,19 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         // mintShapes pranks the recipient, so the pool itself minted to itself.
         pool.addItem(SHAPES_ADDR, 0, first, 0.1 ether, 0);
         pool.addItem(SHAPES_ADDR, 0, first + 1, 0.1 ether, 0);
-        assertEq(pool.rowCount(0), 2);
+        assertEq(IPool(address(pool)).rowCount(0), 2);
         assertEq(pool.heldCount(), 2);
         assertEq(pool.backing(), 0.2 ether);
 
-        assertEq(pool.restock(), 0);
-        assertEq(pool.rowCount(0), 2);
+        assertEq(pool.restock(), 2);
+        assertEq(IPool(address(pool)).rowCount(0), 2);
         assertEq(pool.heldCount(), 0);
         assertEq(clone.activeListingCount(), 2);
         assertEq(pool.backing(), 0.2 ether);
         _checkListings();
     }
 
-    function test_heldItemsListInChunksOfMaxInventoryBatch() public {
+    function test_heldItemsListTwentyPerCallInOneInventoryBatch() public {
         _open();
         uint256 batch = clone.MAX_INVENTORY_BATCH();
         uint256 count = batch + 5;
@@ -360,10 +320,12 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
             pool.addItem(SHAPES_ADDR, 0, first + i, 0.1 ether, 0);
         }
         uint256 versionBefore = clone.inventoryVersion();
-        assertEq(pool.restock(), 0);
+        assertEq(pool.restock(), batch, "one FWA batch per call");
+        assertEq(pool.heldCount(), 5);
+        assertEq(clone.inventoryVersion(), versionBefore + 1);
+        assertEq(pool.restock(), 5);
         assertEq(pool.heldCount(), 0);
         assertEq(clone.activeListingCount(), count);
-        assertEq(clone.inventoryVersion(), versionBefore + 2);
         assertEq(pool.backing(), count * 0.1 ether);
         _checkListings();
     }
@@ -380,7 +342,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(shapes.ownerOf(id), address(pool));
         assertEq(pool.heldCount(), 0);
         assertEq(pool.backing(), 0);
-        assertEq(pool.rowCount(0), 0);
+        assertEq(IPool(address(pool)).rowCount(0), 0);
 
         _depositAndOpen(100 ether);
         assertEq(shapes.ownerOf(id), address(pool));

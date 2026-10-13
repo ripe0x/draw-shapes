@@ -5,7 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {Pool} from "../../src/Pool.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
-import {IPoolTypes} from "../../src/interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Drives deposits, withdrawals, claim payments and bucket moves, and records the ghost
 ///         state the invariants compare against. Assertion failures inside the handler are
@@ -98,7 +98,7 @@ contract PoolHandler is Test {
         if (pool.cash() != cashBefore - paidNow) i3Broken = true;
 
         if (enqueued != 0) {
-            (address to,, uint256 amount) = pool.claimQueue(_queuedTo.length);
+            (address to,, uint256 amount) = IPool(address(pool)).claimQueue(_queuedTo.length);
             if (to != actor || amount != enqueued) i4Broken = true;
             _queuedTo.push(actor);
             _queuedAmount.push(enqueued);
@@ -139,7 +139,7 @@ contract PoolHandler is Test {
         if (events > 20) i4Broken = true;
         if (paidIndex != pool.claimHead()) i4Broken = true;
         if (paidIndex < _queuedTo.length) {
-            (,, uint256 amountLeft) = pool.claimQueue(paidIndex);
+            (,, uint256 amountLeft) = IPool(address(pool)).claimQueue(paidIndex);
             if (amountLeft != _queuedAmount[paidIndex] - paidInHead) i4Broken = true;
         }
         if (pool.cash() != cashBefore - total || pool.claims() != claimsBefore - total) i4Broken = true;
@@ -197,8 +197,8 @@ contract PoolInvariantsTest is PoolFixture {
     }
 
     function _grailBuckets() internal view returns (uint256 total) {
-        (uint256 minorBucket,,,,,,,,,,,) = pool.grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = pool.grail(1);
+        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
+        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
         return minorBucket + majorBucket;
     }
 

@@ -23,7 +23,8 @@ import sys
 
 ETH = 10**18
 DEFAULT_REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "fwa", "reference.json")
-TRIGGERS = ["Weight", "GrailCap", "Claim", "GrailStep", "Restock", "Quiet"]
+TRIGGERS = ["Claim", "GrailStep", "Decay", "Held"]
+SETTLE_TRIGGERS = ["Batch", "Age", "Thin"]
 # Edges of the return buckets, as multiples of the ticket. The last bucket is open ended.
 EDGES = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3, 5, 10]
 RETURN_KINDS = ("Shape", "Pack", "Grail")
@@ -116,6 +117,11 @@ def analyze(run_dir):
         m["rotates"] = sum(int(r["rotates"]) for r in body)
         for t in TRIGGERS:
             m["rot_" + t] = sum(int(r["rot" + t]) for r in body)
+        m["settles"] = sum(int(r["settles"]) for r in body)
+        for t in SETTLE_TRIGGERS:
+            m["set_" + t] = sum(int(r["set" + t]) for r in body)
+        m["settle_listed"] = sum(int(r["settleListed"]) for r in body)
+        m["settle_refund"] = sum(int(r["settleRefund"]) for r in body) / ETH
         m["inventory_changed"] = sum(int(r["inventoryChanged"]) for r in body)
         m["rejected"] = sum(int(r["rejected"]) for r in body)
         m["wait_per_pull"] = sum(int(r["pullWaitSeconds"]) for r in body) / max(1, sum(int(r["pulls"]) for r in body))
@@ -194,7 +200,11 @@ ROWS = [
     ("purchase pause (min/day)", "pause_min_day", lambda v: _n(v, 1)),
     ("rotate calls", "rotates", lambda v: _n(v)),
     ("rotate calls that changed inventory", "inventory_changed", lambda v: _n(v)),
-] + [(f"rotate trigger {t}", "rot_" + t, lambda v: _n(v)) for t in TRIGGERS]
+] + [(f"rotate trigger {t}", "rot_" + t, lambda v: _n(v)) for t in TRIGGERS] + [
+    ("settle calls", "settles", lambda v: _n(v)),
+    ("items listed by settle", "settle_listed", lambda v: _n(v)),
+    ("settle refunds paid (ETH)", "settle_refund", lambda v: _n(v, 4)),
+] + [(f"settle trigger {t}", "set_" + t, lambda v: _n(v)) for t in SETTLE_TRIGGERS]
 
 
 # Rows compared across columns: key -> True when a higher value is better for the player.

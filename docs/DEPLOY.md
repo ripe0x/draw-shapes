@@ -55,11 +55,15 @@ The pool is Opening and takes deposits at once. The admin then:
    `purchaseOperator` to zero. `setPurchaseGate(true)` sets it back to the pool once the site
    routes purchases through the pool. `purchaseOperator()` on the FWA pool shows the state.
 3. Waits for `openingDeadlineAt`.
-4. Calls `open()` until `lifecycle()` returns Live. Each call runs one restock.
+4. Calls `open()` until `lifecycle()` returns Live. Each call lists at most 20 items.
 
-## Rotation cron
+## Keeper
 
-Run a keeper that reads `Lens.rotateDue()` (or `Pool.rotateDue()`) on a short interval and calls
-`Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the spacing since
-`lastRotateAt` has passed and a trigger holds. A rotate that leaves inventory unchanged keeps the
-trigger true, so the keeper simulates the call or backs off between attempts.
+Run a keeper on a short interval. It reads `Lens.settleDue()` (or `Pool.settleDue()`) and calls `Pool.settle(20)`
+whenever `settleDue() != None`. A nonzero value means a batch, an age or a thin board reason holds and funded work is
+queued. The caller receives a refund from `maintenance` when the call lists at least one item. `settle` lists while the
+factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on.
+
+The keeper also reads `rotateDue()` and calls `Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the
+spacing since `lastRotateAt` has passed and a reason holds: Claim, GrailStep, Decay or Held. A rotate that leaves
+inventory unchanged keeps its reason true, so the keeper simulates the call or backs off between attempts.

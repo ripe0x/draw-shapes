@@ -12,6 +12,7 @@ import {PricingLib} from "./lib/PricingLib.sol";
 import {PoolBooks} from "./PoolBooks.sol";
 import {IFWAClone, FWAConfigKeys} from "./interfaces/IFWAClone.sol";
 import {IFWACloneFactory} from "./interfaces/IFWACloneFactory.sol";
+import {IPool} from "./interfaces/IPool.sol";
 
 /// @title Pool
 /// @notice Depositors hold nontransferable shares of ordinary NAV. ETH held by the pool is
@@ -43,11 +44,17 @@ contract Pool is PoolBooks {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant MAX_CLAIM_ITEMS = 20;
-    uint256 internal constant MAX_MINTS_PER_RESTOCK = 20;
+    uint256 internal constant MAX_OPEN_MINTS = 20;
+    uint256 internal constant MAX_LIST_PER_SETTLE = 10;
+    /// @dev Queued replacements and held items listed by one `rotate`.
+    uint256 internal constant MAX_LIST_PER_ROTATE = 20;
+    /// @dev Listed items above `concurrency` below which `settleDue` returns `Thin`.
+    uint256 internal constant THIN_MARGIN = 5;
     uint256 internal constant SETTLE_BUDGET = 3;
     uint256 internal constant MAX_LIQUIDATE_ITEMS = 25;
     uint256 internal constant MAX_ACTIVATIONS = 20;
-    /// @dev Added to the refund of every `rotate` that changed inventory.
+    /// @dev Added to the refund of every `rotate` that changed inventory and of every `settle` that
+    ///      listed.
     uint256 internal constant ROTATE_TIP = 0.0005 ether;
     /// @dev Intrinsic transaction gas plus the refund transfer, added to the measured gas.
     uint256 internal constant ROTATE_GAS_OVERHEAD = 30_000;
@@ -74,101 +81,39 @@ contract Pool is PoolBooks {
         admin = p.admin;
         navCap = p.navCap;
         rotateInterval = p.rotateInterval;
-        openingDeadline = p.openingDeadline;
+        _openingDeadline = p.openingDeadline;
         minItems = p.minItems;
         _setFeeSplit(p.feeSplit);
         _setCurve(p.curve);
         _setProbCap(p.grailProbCapBps);
-        _setRepriceMinBps(p.repriceMinBps);
-        _setRestockTriggerBps(p.restockTriggerBps);
-        _setQuietInterval(p.quietIntervalSeconds);
+        _setBatch(p.batchMin, p.batchMaxAge);
+        _setReplacement(p.surpriseBps, p.restoreK, p.bandBps);
+        _setReserve(p.reserveBps);
 
         _initGrail(MINOR, p.minor);
         _initGrail(MAJOR, p.major);
         _setMix(p.mix);
     }
 
-    // ------------------------------------------------------------------ views
-
-    /// @notice Listed plus held ordinary items of `row`.
-    function rowCount(uint256 row) external view returns (uint256) {
-        return _rowCount[row];
-    }
-
-    /// @notice Number of mix rows.
-    function mixLength() external view returns (uint256) {
-        return _mix.length;
-    }
-
-    /// @notice Listed items of `row`.
-    function listedRowCount(uint256 row) external view returns (uint256) {
-        return _listedByRow[row].length;
-    }
-
-    /// @notice Pulls in the current clock hour and the four hours before it.
-    function trailingPulls() public view returns (uint256 total) {
-        uint256 hour = block.timestamp / 1 hours;
-        for (uint256 i; i < PULL_SLOTS; ++i) {
-            PullSlot memory slot = _pullSlots[i];
-            if (slot.hour + PULL_SLOTS - 1 >= hour) total += slot.count;
-        }
-    }
-
-    /// @notice Rungs and weight share of mix row `i`.
-    function mixRow(uint256 i) external view returns (uint8[] memory rungs, uint16 shareBps) {
-        uint8[] storage stored = _mix[i].rungs;
-        rungs = new uint8[](stored.length);
-        for (uint256 j; j < rungs.length; ++j) {
-            rungs[j] = stored[j];
-        }
-        shareBps = _mix[i].shareBps;
-    }
-
     // ------------------------------------------------------------------ paths
 
-    /// @notice Creates the FWA pool through the factory, approves it for both collections and sets
-    ///         this contract as its purchase operator. Starts the opening deadline. The factory pulls `expectedFee` of its FWA token from
-    ///         this contract, so the pool must hold that balance first.
-    function createFwaPool(uint256 expectedFee) external onlyAdmin nonReentrant {
-        if (lifecycle != Lifecycle.Opening) revert NotOpening();
-        if (address(fwaPool) != address(0)) revert FwaPoolExists();
-
-        IFWACloneFactory factory = IFWACloneFactory(fwaFactory);
-        if (expectedFee != 0) {
-            SafeTransferLib.safeApprove(
-                address(uint160(_read(fwaFactory, IFWACloneFactory.fwaToken.selector, 0))), fwaFactory, expectedFee
-            );
-        }
-        IFWAClone clone = IFWAClone(factory.createPool(bytes32(0), expectedFee));
-
-        fwaPool = clone;
-        maxBatch = _read(fwaFactory, IFWACloneFactory.maxAcquisitionsPerTx.selector, 0);
-        concurrency = _read(fwaFactory, IFWACloneFactory.maxOutstandingRequestsPerPool.selector, 0);
-        nextSequenceToBook = 1;
-        openingDeadlineAt = block.timestamp + openingDeadline;
-        _call(shapes, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
-        _call(drawPacks, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
-        _call(address(clone), IFWAClone.setPurchaseOperator.selector, uint160(address(this)), 0);
-        emit FwaPoolCreated(address(clone));
-    }
-
     /// @notice Enables FWA acquisitions and builds the board after the opening deadline. Each call
-    ///         runs one restock. The pool becomes Live on the first call that mints fewer than
-    ///         `MAX_MINTS_PER_RESTOCK` tokens, and stays callable while Opening.
+    ///         pays queued claims, queues the items each row lacks against its target depth, then
+    ///         fills and lists the queue and the held items, at most `MAX_OPEN_MINTS` in all. The
+    ///         pool becomes Live on the first call that lists fewer than `MAX_OPEN_MINTS` items,
+    ///         and `open` stays callable while Opening.
     function open() external nonReentrant {
         _notExiting();
         if (lifecycle != Lifecycle.Opening) revert NotOpening();
         IFWAClone fwa = fwaPool;
         if (address(fwa) == address(0)) revert FwaPoolMissing();
-        if (block.timestamp < openingDeadlineAt) revert OpeningDeadlineNotReached();
+        if (block.timestamp < _openingDeadlineAt) revert OpeningDeadlineNotReached();
         if (_read(address(fwa), IFWAClone.localPurchasesEnabled.selector, 0) == 0) {
             _call(address(fwa), IFWAClone.setBool.selector, FWAConfigKeys.ACQUISITIONS_ENABLED, 1);
         }
-        if (_restock() < MAX_MINTS_PER_RESTOCK) {
+        if (_openBoard() < MAX_OPEN_MINTS) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
-            lastRotateCallAt = block.timestamp;
-            ordinaryWeightSnapshot = _ordinaryWeight();
             emit Opened();
         }
     }
@@ -177,7 +122,7 @@ contract Pool is PoolBooks {
     function deposit() external payable nonReentrant {
         _notExiting();
         _sync();
-        _deposit(msg.sender, msg.value);
+        _deposit(msg.sender, msg.value, 0);
     }
 
     /// @notice Burns `shares` and pays their claim at ordinary NAV. Pays `min(claim, cash)` now and
@@ -202,19 +147,19 @@ contract Pool is PoolBooks {
         cash = available - paidNow;
         if (remainder != 0) {
             claims += remainder;
-            claimQueue.push(Claim(msg.sender, uint64(block.timestamp), remainder));
+            _claimQueue.push(Claim(msg.sender, uint64(block.timestamp), remainder));
         }
         emit Withdrawn(msg.sender, shares, paidNow, remainder);
         if (paidNow != 0) SafeTransferLib.safeTransferETH(msg.sender, paidNow);
     }
 
-    /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, restocks
-    ///         and lists the board, activates staged FWA listings, reprices or grows the GRAIL
-    ///         tracks, then refunds the caller from `maintenance`. Reverts `RotateTooSoon` until
-    ///         `rotateInterval` has passed since `lastRotateAt` and `RotateNotDue` while
-    ///         `rotateDue` is `None`. `lastRotateAt` and the weight snapshot move when the
-    ///         rotation changed inventory. `lastRotateCallAt` moves on every call. The refund is
-    ///         paid only when inventory changed, once per `rotateInterval`.
+    /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, lists the
+    ///         queued replacements and held items while `settle` may not list, activates staged
+    ///         FWA listings, reprices or grows the GRAIL tracks, then refunds the caller from
+    ///         `maintenance`. Reverts `RotateTooSoon` until `rotateInterval` has passed since
+    ///         `lastRotateAt` and `RotateNotDue` while `rotateDue` is `None`. `lastRotateAt` moves
+    ///         when the rotation changed inventory. The refund is paid only when inventory
+    ///         changed, once per `rotateInterval`.
     function rotate() external nonReentrant {
         _requireLive();
         uint256 gasStart = gasleft();
@@ -224,30 +169,39 @@ contract Pool is PoolBooks {
         bool changed = _settleAndHarvest();
         uint256 claimsBefore = claims;
         bool inventoryChanged = _clearClaims();
-        bool heldPending = _held.length != 0;
-        bool minted = _restock() != 0;
+        if (!_listingAllowed() && _listBatch(MAX_LIST_PER_ROTATE) != 0) inventoryChanged = true;
         bool busy = _busy();
         if (!busy) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
         bool grailChanged = _rotateGrail(MINOR, busy);
         grailChanged = _rotateGrail(MAJOR, busy) || grailChanged;
-        inventoryChanged = inventoryChanged || heldPending || minted || grailChanged;
-        if (inventoryChanged) {
-            lastRotateAt = block.timestamp;
-            ordinaryWeightSnapshot = _ordinaryWeight();
-        }
-        lastRotateCallAt = block.timestamp;
+        inventoryChanged = inventoryChanged || grailChanged;
+        if (inventoryChanged) lastRotateAt = block.timestamp;
         _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
     }
 
-    /// @notice First reason `rotate` is due, in the order Weight, GrailCap, Claim, GrailStep,
-    ///         Restock, Quiet. `None` when no reason holds, when `rotateInterval` has not passed
-    ///         since `lastRotateAt`, and when the pool is not Live. `rotate` is callable exactly
-    ///         when this returns a value other than `None`.
+    /// @notice First reason `rotate` is due, in the order Claim, GrailStep, Decay, Held. `None`
+    ///         when no reason holds, when `rotateInterval` has not passed since `lastRotateAt`, and
+    ///         when the pool is not Live. `rotate` is callable exactly when this returns a value
+    ///         other than `None`.
     function rotateDue() external view returns (RotateTrigger) {
         if (lifecycle != Lifecycle.Live || block.timestamp < lastRotateAt + rotateInterval) {
             return RotateTrigger.None;
         }
         return _rotateTrigger();
+    }
+
+    /// @notice First reason `settle` lists replacements: `Batch` when `batchMin` replacements are
+    ///         queued, `Age` when the queue has been nonempty for `batchMaxAge`, `Thin` when the
+    ///         listed items beyond the unsettled acquisitions are fewer than `concurrency +
+    ///         THIN_MARGIN`. `None` when no reason holds, when nothing can be listed (no held item
+    ///         and the head of the queue is unaffordable) and when the pool is not Live.
+    function settleDue() public view returns (SettleTrigger) {
+        if (lifecycle != Lifecycle.Live || !_listWork()) return SettleTrigger.None;
+        uint256 queued = _replacementQueue.length - replacementHead;
+        if (queued >= _batchMin) return SettleTrigger.Batch;
+        if (queued != 0 && block.timestamp >= _oldestQueuedAt + _batchMaxAge) return SettleTrigger.Age;
+        if (listedCount < _unsettled() + _concurrency + THIN_MARGIN) return SettleTrigger.Thin;
+        return SettleTrigger.None;
     }
 
     /// @notice FWA `acquire` through the pool: opens one acquisition for `purchaser`, which must be
@@ -276,8 +230,8 @@ contract Pool is PoolBooks {
     /// @notice FWA `acquireBatch` through the pool: opens `count` acquisitions for `purchaser`, which
     ///         must be `msg.sender`. The slippage, minimum weighted value, inventory version and
     ///         deadline arguments go to the FWA pool as given. Overpayment is refunded to the
-    ///         caller. Settles up to `SETTLE_BUDGET` FWA acquisitions, harvests, pays queued claims
-    ///         and mints one queued replacement from `cash`. Returns the request ids.
+    ///         caller. Books up to `SETTLE_BUDGET` FWA acquisitions, harvests and pays queued claims
+    ///         from `cash`. Returns the request ids.
     function acquireBatch(
         address purchaser,
         uint256 count,
@@ -300,17 +254,22 @@ contract Pool is PoolBooks {
         );
     }
 
-    /// @notice Redeems the caller's Shapes `tokenIds` and applies the proceeds and `msg.value` to
-    ///         an `acquireBatch` of `count` with `minWeightedValue` 0 and the FWA pool's own
-    ///         `selectionSlippageBps` and `inventoryVersion`. The caller must have approved this
-    ///         contract for each token.
+    /// @notice Takes the caller's Shapes `tokenIds` and applies their value and `msg.value` to an
+    ///         `acquireBatch` of `count` with `minWeightedValue` 0 and the FWA pool's own
+    ///         `selectionSlippageBps` and `inventoryVersion`. A Shape that matches a single rung mix
+    ///         row stays in the pool as a held item, and `cash` pays for the part of the ticket it
+    ///         covers. A Shape that does not match a row, or that `cash` above the reserve cannot
+    ///         cover, is redeemed. Excess value returns to the caller. The caller must have
+    ///         approved this contract for each token.
     function pullWithShapes(uint256[] calldata tokenIds, uint256 count, uint256 maxFee, uint256 deadline)
         external
         payable
         nonReentrant
     {
         _requireLive();
-        uint256 value = msg.value + _redeemShapes(tokenIds);
+        (uint256 redeemed, Item[] memory kept, uint256 keptValue) = _intakeShapes(tokenIds);
+        cash -= keptValue;
+        _registerKept(kept);
         address fwa = address(fwaPool);
         _acquire(
             msg.sender,
@@ -320,7 +279,7 @@ contract Pool is PoolBooks {
             _read(fwa, IFWAClone.selectionSlippageBps.selector, 0),
             _read(fwa, IFWAClone.inventoryVersion.selector, 0),
             deadline,
-            value
+            msg.value + redeemed + keptValue
         );
     }
 
@@ -340,20 +299,41 @@ contract Pool is PoolBooks {
         return purchaser != 0 && purchaser == uint160(wallet);
     }
 
-    /// @notice Redeems the caller's Shape `tokenId` and deposits the proceeds. The caller must have
-    ///         approved this contract for the token.
+    /// @notice Deposits the value of the caller's Shape `tokenId`. A Shape that matches a single
+    ///         rung mix row stays in the pool as a held item, and the entry contribution comes from
+    ///         `cash`. Any other Shape is redeemed and the proceeds are deposited. The caller must
+    ///         have approved this contract for the token.
     function redeemAndDeposit(uint256 tokenId) external nonReentrant {
         _notExiting();
         _sync();
         uint256[] memory ids = new uint256[](1);
         ids[0] = tokenId;
-        _deposit(msg.sender, _redeemShapes(ids));
+        (uint256 redeemed, Item[] memory kept, uint256 keptValue) = _intakeShapes(ids);
+        _deposit(msg.sender, redeemed + keptValue, keptValue);
+        _registerKept(kept);
     }
 
-    /// @notice Processes up to `maxCount` FWA acquisitions and books their results.
+    /// @notice Processes up to `maxCount` FWA acquisitions, books their results, harvests and
+    ///         activates staged FWA listings. When `settleDue` is not `None` and listing is allowed,
+    ///         fills and lists at most `MAX_LIST_PER_SETTLE` items from the replacement queue and the
+    ///         held items, and refunds the caller `(gasUsed + ROTATE_GAS_OVERHEAD) * basefee +
+    ///         ROTATE_TIP` from `maintenance`, capped by the bucket. The refund needs at least one
+    ///         listed item. Listing is allowed while the factory's `inventoryChangeCooldown` is zero
+    ///         or `listWhilePaused` is set.
     function settle(uint256 maxCount) external nonReentrant {
+        uint256 gasStart = gasleft();
         if (address(fwaPool) == address(0)) revert FwaPoolMissing();
         _processAndSettle(maxCount < MAX_SETTLE_ITEMS ? maxCount : MAX_SETTLE_ITEMS);
+        _harvest();
+        if (!_busy()) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
+        uint256 listed;
+        uint256 refund;
+        if (settleDue() != SettleTrigger.None && _listingAllowed()) {
+            listed = _listBatch(MAX_LIST_PER_SETTLE);
+            if (listed != 0) refund = _chargeRefund(gasStart);
+        }
+        emit Settled(listed, refund);
+        if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
     }
 
     /// @notice Pays queued claims from `cash` in request order, at most `MAX_CLAIM_ITEMS` entries.
@@ -387,6 +367,16 @@ contract Pool is PoolBooks {
 
     // ------------------------------------------------------------------ internal
 
+    /// @dev Reads the row choice from `PoolAdmin.chooseRow`, which holds the sampling code.
+    function _chooseRow(uint256 requestId, uint256 capturedRow)
+        internal
+        view
+        override
+        returns (uint256, bool)
+    {
+        return IPool(address(this)).chooseRow(requestId, capturedRow);
+    }
+
     /// @dev Reverts `ImportInProgress` on a successor between its first import and `finalizeImport`.
     function _notImporting() internal view {
         if (importedNav != 0 && !importFinalized) revert ImportInProgress();
@@ -401,8 +391,10 @@ contract Pool is PoolBooks {
     }
 
     /// @dev Mints shares to `to` for `value`. The entry contribution goes to the GRAIL buckets,
-    ///      split by `minorShareBps`. Shares are priced on NAV before the deposit.
-    function _deposit(address to, uint256 value) internal {
+    ///      split by `minorShareBps`. Shares are priced on NAV before the deposit. `keptValue` is
+    ///      the part of `value` that arrived as held Shapes: `cash` is reduced by it, so `cash`
+    ///      changes by `net - keptValue`.
+    function _deposit(address to, uint256 value, uint256 keptValue) internal {
         _notImporting();
         if (depositsPaused) revert DepositsPaused();
         if (value == 0) revert ZeroAmount();
@@ -419,9 +411,9 @@ contract Pool is PoolBooks {
         if (shares == 0) revert ZeroShares();
 
         uint256 minorPart = contribution * feeSplit.minorShareBps / BPS;
-        grail[MINOR].bucket += minorPart;
-        grail[MAJOR].bucket += contribution - minorPart;
-        cash += net;
+        _grail[MINOR].bucket += minorPart;
+        _grail[MAJOR].bucket += contribution - minorPart;
+        cash = cash + net - keptValue;
         totalShares += shares;
         sharesOf[to] += shares;
         emit Deposited(to, value, contribution, shares);
@@ -433,7 +425,7 @@ contract Pool is PoolBooks {
     ///      that rejects ETH cannot stall the queue.
     function _payClaims() internal {
         uint256 head = claimHead;
-        uint256 pending = claimQueue.length - head;
+        uint256 pending = _claimQueue.length - head;
         uint256 limit = pending < MAX_CLAIM_ITEMS ? pending : MAX_CLAIM_ITEMS;
         address[] memory recipients = new address[](limit);
         uint256[] memory payouts = new uint256[](limit);
@@ -441,7 +433,7 @@ contract Pool is PoolBooks {
         uint256 paidTotal;
         uint256 paidCount;
         while (paidCount < limit && available != 0) {
-            Claim storage c = claimQueue[head];
+            Claim storage c = _claimQueue[head];
             uint256 amount = c.amount;
             uint256 pay = amount < available ? amount : available;
             available -= pay;
@@ -486,15 +478,21 @@ contract Pool is PoolBooks {
     ///      last step.
     function _refund(uint256 gasStart, bool changed, bool inventoryChanged) internal {
         uint256 refund;
-        uint256 bucket = maintenance;
-        if (inventoryChanged && bucket != 0 && block.timestamp >= lastRefundAt + rotateInterval) {
-            lastRefundAt = block.timestamp;
-            uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + ROTATE_TIP;
-            refund = cost < bucket ? cost : bucket;
-            maintenance = bucket - refund;
+        if (inventoryChanged && block.timestamp >= _lastRefundAt + rotateInterval) {
+            _lastRefundAt = block.timestamp;
+            refund = _chargeRefund(gasStart);
         }
         emit Rotated(changed, inventoryChanged, refund);
         if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
+    }
+
+    /// @dev Deducts `min(maintenance, (gas used + ROTATE_GAS_OVERHEAD) * basefee + ROTATE_TIP)` from
+    ///      `maintenance` and returns it. The caller pays it out.
+    function _chargeRefund(uint256 gasStart) internal returns (uint256 refund) {
+        uint256 bucket = maintenance;
+        uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + ROTATE_TIP;
+        refund = cost < bucket ? cost : bucket;
+        maintenance = bucket - refund;
     }
 
     /// @dev Redeems up to `maxItems` ordinary items while `cash` is below the head claim, if the
@@ -506,13 +504,13 @@ contract Pool is PoolBooks {
     ///      item. Returns whether an item was redeemed.
     function _liquidateForClaims(uint256 maxItems) internal returns (bool redeemed) {
         uint256 head = claimHead;
-        if (head == claimQueue.length || block.timestamp < claimQueue[head].requestedAt + rotateInterval) {
+        if (head == _claimQueue.length || block.timestamp < _claimQueue[head].requestedAt + rotateInterval) {
             return false;
         }
         if (_held.length == 0 && listedCount == 0) return false;
         uint256 mintFee = _mintFee();
         bool locked = listedCount != 0 && _busy();
-        for (uint256 n; n < maxItems && cash < claimQueue[head].amount; ++n) {
+        for (uint256 n; n < maxItems && cash < _claimQueue[head].amount; ++n) {
             if (!_liquidateOne(head, mintFee, locked)) break;
             redeemed = true;
         }
@@ -533,7 +531,7 @@ contract Pool is PoolBooks {
         } else {
             return false;
         }
-        Claim storage c = claimQueue[head];
+        Claim storage c = _claimQueue[head];
         uint256 amount = c.amount;
         uint256 fee = mintFee * _mix[row].rungs.length;
         if (amount <= fee) return false;
@@ -587,7 +585,7 @@ contract Pool is PoolBooks {
     ) internal returns (uint256[] memory ids) {
         _requireLive();
         if (pullsPaused) revert PullsPaused();
-        if (count == 0 || count > maxBatch) revert InvalidCount();
+        if (count == 0 || count > _maxBatch) revert InvalidCount();
         _requirePurchasable(value);
 
         IFWAClone fwa = fwaPool;
@@ -612,12 +610,53 @@ contract Pool is PoolBooks {
         if (value > total) SafeTransferLib.safeTransferETH(purchaser, value - total);
     }
 
-    /// @dev Transfers `tokenIds` from the caller and redeems them. Returns the ETH redeemed.
-    function _redeemShapes(uint256[] memory tokenIds) internal returns (uint256) {
-        for (uint256 i; i < tokenIds.length; ++i) {
-            _transfer(shapes, msg.sender, address(this), tokenIds[i]);
+    /// @dev Transfers `tokenIds` from the caller. A Shape whose backing equals a single rung mix row
+    ///      is kept while the running total of kept value stays within `_spendable()`, and every
+    ///      other Shape is redeemed. Returns the ETH redeemed, the kept Shapes as unregistered
+    ///      held items (`_registerKept` books them) and their total value.
+    function _intakeShapes(uint256[] memory tokenIds)
+        internal
+        returns (uint256 redeemed, Item[] memory kept, uint256 keptValue)
+    {
+        uint256 n = tokenIds.length;
+        kept = new Item[](n);
+        uint256[] memory sold = new uint256[](n);
+        uint256 keptCount;
+        uint256 soldCount;
+        uint256 budget = _spendable();
+        for (uint256 i; i < n; ++i) {
+            uint256 id = tokenIds[i];
+            _transfer(shapes, msg.sender, address(this), id);
+            uint256 value = _read(shapes, IShapes.backingOf.selector, id);
+            uint256 row = _shapeRow(value);
+            if (row != type(uint256).max && value <= budget) {
+                budget -= value;
+                keptValue += value;
+                kept[keptCount++] = Item(shapes, uint16(row), id, value, 0);
+            } else {
+                sold[soldCount++] = id;
+            }
         }
-        return IShapes(shapes).redeemBatch(tokenIds);
+        assembly ("memory-safe") {
+            mstore(kept, keptCount)
+            mstore(sold, soldCount)
+        }
+        if (soldCount != 0) redeemed = IShapes(shapes).redeemBatch(sold);
+    }
+
+    /// @dev Books the items returned by `_intakeShapes` as held.
+    function _registerKept(Item[] memory kept) internal {
+        for (uint256 i; i < kept.length; ++i) {
+            _addItem(kept[i]);
+        }
+    }
+
+    /// @dev First one rung mix row whose backing is `value`, or `type(uint256).max`.
+    function _shapeRow(uint256 value) internal view returns (uint256 row) {
+        for (; row < _mix.length; ++row) {
+            if (_rowBackingWei[row] == value && _mix[row].rungs.length == 1) return row;
+        }
+        return type(uint256).max;
     }
 
     /// @dev Records the FWA base price of each request opened by one `acquireBatch`. The batch
@@ -631,21 +670,13 @@ contract Pool is PoolBooks {
         }
     }
 
-    /// @dev Per-pull upkeep: settles up to `SETTLE_BUDGET` acquisitions, harvests, pays queued
-    ///      claims from `cash`, then mints one queued replacement when `cash` covers it. The
-    ///      replacement stays held. A listing here would start the FWA inventory change cooldown
-    ///      and block the next pull.
+    /// @dev Per-pull upkeep: books up to `SETTLE_BUDGET` acquisitions, harvests and pays queued
+    ///      claims from `cash`. A listing inside a purchase would restart FWA's inventory change
+    ///      cooldown, so replacements are listed by `settle` and `rotate`.
     function _upkeep() internal {
         _processAndSettle(SETTLE_BUDGET);
         _harvest();
         _payClaims();
-        uint256 head = replacementHead;
-        if (head == replacementQueue.length) return;
-        uint256 mintFee = _mintFee();
-        uint256 row = replacementQueue[head];
-        if (cash < _rowCost(row, mintFee)) return;
-        replacementHead = head + 1;
-        _mintRow(row, mintFee);
     }
 
     /// @dev Reverts unless a pull may open: the FWA cooldown has passed, the balance covers the
@@ -657,7 +688,7 @@ contract Pool is PoolBooks {
             revert PurchasesCoolingDown();
         }
         if (!_covered(incoming)) revert Insolvent();
-        if (listedCount < _unsettled() + concurrency) revert BoardTooThin();
+        if (listedCount < _unsettled() + _concurrency) revert BoardTooThin();
     }
 
     /// @dev True when the listed GRAIL tracks hold more than `grailProbCapBps` of the FWA selection
@@ -667,7 +698,7 @@ contract Pool is PoolBooks {
         uint256 total = _totalWeight();
         uint256 grailWeight;
         for (uint256 i; i <= MAJOR; ++i) {
-            Grail storage g = grail[i];
+            Grail storage g = _grail[i];
             bool listed = g.listingId != 0;
             if (i == t) {
                 uint256 w = PricingLib.weightOf(price);
@@ -678,126 +709,82 @@ contract Pool is PoolBooks {
                 grailWeight += PricingLib.weightOf(g.notional);
             }
         }
-        return grailWeight * BPS > total * grailProbCapBps;
-    }
-
-    /// @dev FWA `totalWeight` minus the weight at list price of each listed GRAIL track.
-    function _ordinaryWeight() internal view returns (uint256 weight) {
-        weight = _totalWeight();
-        for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = grail[t];
-            if (g.listingId == 0) continue;
-            uint256 grailWeight = PricingLib.weightOf(g.notional);
-            weight = weight > grailWeight ? weight - grailWeight : 0;
-        }
+        return grailWeight * BPS > total * _grailProbCapBps;
     }
 
     /// @dev First reason `rotate` is due. The spacing since `lastRotateAt` is checked by the
-    ///      callers. Weight: ordinary weight is at least `restockTriggerBps` of
-    ///      `ordinaryWeightSnapshot` below the snapshot. GrailCap: listed GRAIL weight exceeds
-    ///      `grailProbCapBps` at current prices. Claim: the head claim is at least `rotateInterval`
-    ///      old. GrailStep: a track below `targetWei` holds a bucket that covers a step. Restock:
-    ///      `_restockDue`. Quiet: `quietIntervalSeconds` passed since `lastRotateCallAt`.
+    ///      callers. Claim: the head claim is at least `rotateInterval` old. GrailStep: a track
+    ///      below `targetWei` holds a bucket that covers a step. Decay: `_repriceDue` holds for a
+    ///      track. Held: `settle` may not list and a replacement or held item can be listed.
     function _rotateTrigger() internal view returns (RotateTrigger) {
-        uint256 snapshot = ordinaryWeightSnapshot;
-        uint256 current = _ordinaryWeight();
-        if (snapshot > current && snapshot - current >= snapshot * restockTriggerBps / BPS) {
-            return RotateTrigger.Weight;
-        }
-        if (_grailCapExceeded(MAJOR + 1, 0)) return RotateTrigger.GrailCap;
         uint256 head = claimHead;
-        if (head < claimQueue.length && block.timestamp >= claimQueue[head].requestedAt + rotateInterval) {
+        if (head < _claimQueue.length && block.timestamp >= _claimQueue[head].requestedAt + rotateInterval) {
             return RotateTrigger.Claim;
         }
         if (_growReady(MINOR) || _growReady(MAJOR)) return RotateTrigger.GrailStep;
-        if (_restockDue()) return RotateTrigger.Restock;
-        if (block.timestamp >= lastRotateCallAt + quietIntervalSeconds) return RotateTrigger.Quiet;
+        if (_repriceDue(MINOR) || _repriceDue(MAJOR)) return RotateTrigger.Decay;
+        if (!_listingAllowed() && _listWork()) return RotateTrigger.Held;
         return RotateTrigger.None;
+    }
+
+    /// @dev True when `settle` may list: FWA's `inventoryChangeCooldown` is zero or `listWhilePaused`
+    ///      is set.
+    function _listingAllowed() internal view returns (bool) {
+        return _listWhilePaused || _read(fwaFactory, IFWACloneFactory.inventoryChangeCooldown.selector, 0) == 0;
+    }
+
+    /// @dev True when a held item exists or the cash above the reserve covers the full cost of the
+    ///      queue head.
+    function _listWork() internal view returns (bool) {
+        if (_held.length != 0) return true;
+        uint256 head = replacementHead;
+        return head < _replacementQueue.length
+            && _spendable() >= _rowCost(_replacementQueue[head], _mintFee());
+    }
+
+    /// @dev True when `_rotateGrail` would reprice track `t` and the track is unlisted or has
+    ///      `pullsSinceList` above zero.
+    function _repriceDue(uint256 t) internal view returns (bool) {
+        Grail storage g = _grail[t];
+        return (g.listingId == 0 || g.pullsSinceList != 0) && _nextPrice(t, g) != 0;
+    }
+
+    /// @dev List price that `_rotateGrail` sets for track `t`, or zero when it sets none: the
+    ///      decayed price of an unlisted pack or of an Active listing when it keeps the probability
+    ///      cap, else the lifted price of an Active listing while the cap is exceeded and the lift
+    ///      raises the price.
+    function _nextPrice(uint256 t, Grail storage g) internal view returns (uint256) {
+        if (g.packId == 0) return 0;
+        uint256 listingId = g.listingId;
+        uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
+        if (listingId == 0) return _grailCapExceeded(t, next) ? 0 : next;
+        if (_listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) return 0;
+        if (next < g.notional && !_grailCapExceeded(t, next)) return next;
+        if (!_grailCapExceeded(MAJOR + 1, 0)) return 0;
+        uint256 lifted = _liftedNotional(t, g);
+        return lifted > g.notional ? lifted : 0;
     }
 
     /// @dev True when track `t` is below `targetWei` and its bucket covers a step and its mint
     ///      fees, the precondition of `_growGrail` other than `busy`.
     function _growReady(uint256 t) internal view returns (bool) {
-        Grail storage g = grail[t];
+        Grail storage g = _grail[t];
         if (g.backing >= g.targetWei) return false;
         (, uint256 cost) = _growCost(g.stepWei);
         return g.bucket >= cost;
     }
 
-    /// @dev True when the listed count is `restockTriggerBps` of the target depth below it, and a
-    ///      held item exists or the cash left after queued claims covers the next queued
-    ///      replacement, or a row below its target depth with one step of the cheapest row in
-    ///      reserve (`_mintToDepth`). The target depth is the sum of `PricingLib.rowDepth` over
-    ///      the mix rows.
-    function _restockDue() internal view returns (bool) {
-        uint256 pulls = trailingPulls();
-        uint256 target;
-        for (uint256 r; r < _mix.length; ++r) {
-            target += PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps);
-        }
-        uint256 listed = listedCount;
-        if (listed >= target || (target - listed) * BPS < target * restockTriggerBps) return false;
-        if (_held.length != 0) return true;
-        uint256 spendable = cash > claims ? cash - claims : 0;
-        uint256 fee = _mintFee();
-        uint256 head = replacementHead;
-        if (head < replacementQueue.length) return spendable >= _rowCost(replacementQueue[head], fee);
-        uint256 reserve = _cheapestRowCost(fee);
-        for (uint256 r; r < _mix.length; ++r) {
-            if (
-                _rowCount[r] < PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps)
-                    && spendable >= reserve + _rowCost(r, fee)
-            ) return true;
-        }
-        return false;
+    /// @dev Cash that a mint or a kept Shape may use: `cash` less `claims` and the reserve of
+    ///      `reserveBps` of ordinary NAV, or zero.
+    function _spendable() internal view returns (uint256) {
+        return _spendableAbove(nav() * _reserveBps / BPS);
     }
 
-    /// @dev Pays queued claims, mints replacements from the queue, then new inventory toward the
-    ///      target depth of each row, then lists every held item. At most `MAX_MINTS_PER_RESTOCK`
-    ///      mints per call. New inventory is minted only when the queue is empty and only from
-    ///      `cash` above one step of the cheapest row. Returns the number of tokens minted.
-    function _restock() internal returns (uint256 mints) {
-        _payClaims();
-        uint256 fee = _mintFee();
-
-        uint256 head = replacementHead;
-        uint256 queued = replacementQueue.length;
-        while (head < queued && mints < MAX_MINTS_PER_RESTOCK) {
-            uint256 row = replacementQueue[head];
-            if (cash < _rowCost(row, fee)) break;
-            ++head;
-            _mintRow(row, fee);
-            ++mints;
-        }
-        replacementHead = head;
-
-        if (head == queued) mints = _mintToDepth(fee, mints);
-        _listHeld(fee);
-    }
-
-    /// @dev Mints toward each row's target depth. Returns `mints` plus the tokens minted here.
-    function _mintToDepth(uint256 fee, uint256 mints) internal returns (uint256) {
-        uint256 rows = _mix.length;
-        uint256 reserve = _cheapestRowCost(fee);
-        uint256 pulls = trailingPulls();
-        for (uint256 r; r < rows; ++r) {
-            uint256 target = PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps);
-            uint256 cost = _rowCost(r, fee);
-            while (_rowCount[r] < target && mints < MAX_MINTS_PER_RESTOCK && cash >= reserve + cost) {
-                _mintRow(r, fee);
-                ++mints;
-            }
-        }
-        return mints;
-    }
-
-    /// @dev Lowest `_rowCost` over the mix rows.
-    function _cheapestRowCost(uint256 fee) internal view returns (uint256 cheapest) {
-        cheapest = type(uint256).max;
-        for (uint256 r; r < _mix.length; ++r) {
-            uint256 cost = _rowCost(r, fee);
-            if (cost < cheapest) cheapest = cost;
-        }
+    /// @dev `cash` less `claims` and `reserve`, or zero. A batch passes the reserve read before its
+    ///      first mint, so the items it has taken out of the books do not lower it.
+    function _spendableAbove(uint256 reserve) internal view returns (uint256) {
+        uint256 held = claims + reserve;
+        return cash > held ? cash - held : 0;
     }
 
     /// @dev Row backing plus the mint fee of every Shape the row mints.
@@ -805,28 +792,144 @@ contract Pool is PoolBooks {
         return _rowBackingWei[row] + fee * _mix[row].rungs.length;
     }
 
-    /// @dev Mints one token of `row` to this contract and books it as held. A one rung row is a
-    ///      Shape. A row of two or more rungs is a Draw Pack created with one Shape per rung.
-    function _mintRow(uint256 row, uint256 fee) internal {
-        uint8[] storage rungs = _mix[row].rungs;
-        uint256 value = _rowBackingWei[row];
-        uint256 cost = value + fee * rungs.length;
-        cash -= cost;
-
-        address collection;
-        uint256 tokenId;
-        if (rungs.length == 1) {
-            collection = shapes;
-            tokenId = _callFull(collection, cost, IShapes.mintBatchTo.selector, value, 1, uint160(address(this)));
-        } else {
-            collection = drawPacks;
-            uint32[] memory counts = new uint32[](Denominations.COUNT);
-            for (uint256 i; i < rungs.length; ++i) {
-                ++counts[rungs[i]];
+    /// @dev Pays queued claims, queues each row's missing items up to `MAX_OPEN_MINTS` entries in
+    ///      all, then fills and lists the queue and the held items, `MAX_OPEN_MINTS` at most.
+    ///      Returns the number listed.
+    function _openBoard() internal returns (uint256) {
+        _payClaims();
+        uint256 queued = _replacementQueue.length - replacementHead;
+        for (uint256 r; r < _mix.length; ++r) {
+            uint256 target = PricingLib.rowDepth(minItems, _mix[r].shareBps);
+            for (; queued < MAX_OPEN_MINTS && _rowCount[r] + _queuedByRow[r] < target; ++queued) {
+                _enqueue(r);
             }
-            tokenId = _createPack(new uint256[](0), counts, cost, value);
         }
-        _addItem(Item(collection, uint16(row), tokenId, value, 0));
+        return _listBatch(MAX_OPEN_MINTS);
+    }
+
+    /// @dev Fills the queued replacements in order and lists them, then lists held items, at most
+    ///      `max` items in all. Returns the number listed.
+    function _listBatch(uint256 max) internal returns (uint256 n) {
+        uint256 fee = _mintFee();
+        Item[] memory batch = new Item[](max);
+        n = _collectQueue(batch, max, fee, nav() * _reserveBps / BPS);
+        while (n < max && _held.length != 0) {
+            batch[n++] = _removeHeld(_held.length - 1);
+        }
+        _listItems(batch, n, fee);
+    }
+
+    /// @dev Fills queue entries from `replacementHead` into `batch[n..max)`. Stops at the first
+    ///      entry `_fill` cannot fund. Sets `oldestQueuedAt` to zero when the queue empties. Returns
+    ///      the new item count.
+    function _collectQueue(Item[] memory batch, uint256 max, uint256 fee, uint256 reserve)
+        internal
+        returns (uint256 n)
+    {
+        uint256 head = replacementHead;
+        uint256 length = _replacementQueue.length;
+        while (head < length && n < max) {
+            uint256 row = _replacementQueue[head];
+            (Item memory it, bool ok) = _fill(row, fee, reserve);
+            if (!ok) break;
+            batch[n++] = it;
+            --_queuedByRow[row];
+            ++head;
+        }
+        replacementHead = head;
+        if (head == length) _oldestQueuedAt = 0;
+        return n;
+    }
+
+    /// @dev Builds one token of `row` owned by this contract and not yet booked. A Shape row takes
+    ///      a held Shape of its rung, else mints one. A Draw Pack row takes a held pack of equal
+    ///      backing, else creates a pack from one held Shape per rung that has one and mints the
+    ///      other rungs. Held items taken here leave the books until `_listItems` books the
+    ///      result. Minting needs `_spendable()` to cover the backing and mint fees of the minted
+    ///      Shapes. Returns `ok` false and changes nothing when it does not.
+    function _fill(uint256 row, uint256 fee, uint256 reserve) internal returns (Item memory it, bool ok) {
+        uint8[] storage rungs = _mix[row].rungs;
+        uint256 n = rungs.length;
+        uint256 value = _rowBackingWei[row];
+        it.row = uint16(row);
+        it.value = value;
+        if (n == 1) {
+            uint256[] storage held = _heldByDenom[rungs[0]];
+            if (held.length != 0) {
+                it = _removeHeld(_heldPos[shapes][held[held.length - 1]] - 1);
+                it.row = uint16(row);
+                return (it, true);
+            }
+            if (_spendableAbove(reserve) < value + fee) return (it, false);
+            cash -= value + fee;
+            it.collection = shapes;
+            it.tokenId = _callFull(shapes, value + fee, IShapes.mintBatchTo.selector, value, 1, uint160(address(this)));
+            return (it, true);
+        }
+
+        if (_heldPacks != 0) {
+            for (uint256 i = _held.length; i != 0; --i) {
+                Item storage candidate = _held[i - 1];
+                if (candidate.collection == drawPacks && candidate.value == value) {
+                    it = _removeHeld(i - 1);
+                    it.row = uint16(row);
+                    return (it, true);
+                }
+            }
+        }
+        uint256[] memory used = new uint256[](Denominations.COUNT);
+        bool[] memory fromHeld = new bool[](n);
+        uint32[] memory counts = new uint32[](Denominations.COUNT);
+        uint256 cost;
+        uint256 minted;
+        for (uint256 i; i < n; ++i) {
+            uint8 d = rungs[i];
+            if (_heldByDenom[d].length > used[d]) {
+                ++used[d];
+                fromHeld[i] = true;
+            } else {
+                ++counts[d];
+                ++minted;
+                cost += Denominations.amountAt(d) + fee;
+            }
+        }
+        if (cost != 0 && _spendableAbove(reserve) < cost) return (it, false);
+        cash -= cost;
+        uint256[] memory ids = new uint256[](n - minted);
+        uint256 k;
+        for (uint256 i; i < n; ++i) {
+            if (!fromHeld[i]) continue;
+            uint256[] storage held = _heldByDenom[rungs[i]];
+            uint256 id = held[held.length - 1];
+            _removeHeld(_heldPos[shapes][id] - 1);
+            _call(shapes, IERC721.approve.selector, uint160(drawPacks), id);
+            ids[k++] = id;
+        }
+        it.collection = drawPacks;
+        it.tokenId = _createPack(ids, counts, cost, value);
+        return (it, true);
+    }
+
+    /// @dev Lists `batch[0..n)` on the FWA pool in chunks of `MAX_INVENTORY_BATCH` and books each
+    ///      item as listed.
+    function _listItems(Item[] memory batch, uint256 n, uint256 fee) internal {
+        if (n == 0) return;
+        uint256 chunk = _read(address(fwaPool), IFWAClone.MAX_INVENTORY_BATCH.selector, 0);
+        FeeSplit memory split = feeSplit;
+        for (uint256 start; start < n; start += chunk) {
+            uint256 m = n - start < chunk ? n - start : chunk;
+            IFWAClone.InventoryInput[] memory inputs = new IFWAClone.InventoryInput[](m);
+            for (uint256 i; i < m; ++i) {
+                Item memory it = batch[start + i];
+                inputs[i] = IFWAClone.InventoryInput(it.collection, it.tokenId, _listingPrice(it, fee, split));
+            }
+            uint256[] memory ids = fwaPool.listNFTs(inputs);
+            for (uint256 i; i < m; ++i) {
+                Item memory it = batch[start + i];
+                it.listingId = ids[i];
+                _addItem(it);
+            }
+        }
     }
 
     /// @dev `status` of FWA listing `listingId`, the eighth word of `listings(listingId)`.
@@ -880,32 +983,7 @@ contract Pool is PoolBooks {
         if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
     }
 
-    /// @dev Lists every held item on the FWA pool in chunks of `MAX_INVENTORY_BATCH` and moves
-    ///      each to the listed map under its listing id.
-    function _listHeld(uint256 fee) internal {
-        uint256 listed = _held.length;
-        if (listed == 0) return;
-        uint256 batch = _read(address(fwaPool), IFWAClone.MAX_INVENTORY_BATCH.selector, 0);
-        FeeSplit memory split = feeSplit;
-        uint256 remaining = listed;
-        while (remaining != 0) {
-            uint256 n = remaining < batch ? remaining : batch;
-            IFWAClone.InventoryInput[] memory inputs = new IFWAClone.InventoryInput[](n);
-            for (uint256 i; i < n; ++i) {
-                Item storage it = _held[remaining - 1 - i];
-                inputs[i] = IFWAClone.InventoryInput(it.collection, it.tokenId, _listingPrice(it, fee, split));
-            }
-            uint256[] memory ids = fwaPool.listNFTs(inputs);
-            for (uint256 i; i < n; ++i) {
-                Item memory it = _removeHeld(remaining - 1 - i);
-                it.listingId = ids[i];
-                _addItem(it);
-            }
-            remaining -= n;
-        }
-    }
-
-    function _listingPrice(Item storage it, uint256 fee, FeeSplit memory split) internal view returns (uint256) {
+    function _listingPrice(Item memory it, uint256 fee, FeeSplit memory split) internal view returns (uint256) {
         uint256 value = it.value;
         return PricingLib.listingPrice(
             value,
@@ -920,29 +998,18 @@ contract Pool is PoolBooks {
     ///      lowers the list price by the decay accrued since the last listing or reprice, or lifts
     ///      the price when the listed GRAIL weight exceeds `grailProbCapBps`. A listed track is
     ///      repriced only when its listing is Active. A decay applies when the new price
-    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is below the current one by at least
-    ///      `repriceMinBps` of it and keeps the listed GRAIL weight within `grailProbCapBps`. A lift
+    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is below the current one and keeps
+    ///      the listed GRAIL weight within `grailProbCapBps`. A lift
     ///      applies when the weight is above the cap at the current price. Returns whether the FWA
     ///      listing changed. `busy` is true while FWA holds unsettled acquisitions, which lock
     ///      repricing and withdrawal.
     function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
         if (_growGrail(t, busy) == 0) return true;
-        Grail storage g = grail[t];
-        if (g.packId == 0 || busy) return false;
-        uint256 listingId = g.listingId;
-        if (listingId != 0 && _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) return false;
-        uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
-        if (
-            (listingId == 0 || (next < g.notional && g.notional - next >= g.notional * repriceMinBps / BPS))
-                && !_grailCapExceeded(t, next)
-        ) {
-            _priceGrail(t, g, next);
-            return true;
-        }
-        if (listingId == 0 || !_grailCapExceeded(MAJOR + 1, 0)) return false;
-        uint256 lifted = _liftedNotional(t, g);
-        if (lifted <= g.notional) return false;
-        _priceGrail(t, g, lifted);
+        if (busy) return false;
+        Grail storage g = _grail[t];
+        uint256 price = _nextPrice(t, g);
+        if (price == 0) return false;
+        _priceGrail(t, g, price);
         return true;
     }
 
@@ -956,12 +1023,12 @@ contract Pool is PoolBooks {
     function _liftedNotional(uint256 t, Grail storage g) internal view returns (uint256 price) {
         uint256 ceiling = g.backing * g.listBps / BPS;
         uint256 rest = _totalWeight() - PricingLib.weightOf(g.notional);
-        Grail storage o = grail[1 - t];
+        Grail storage o = _grail[1 - t];
         uint256 other = o.listingId != 0 ? PricingLib.weightOf(o.notional) : 0;
-        uint256 room = rest * grailProbCapBps;
+        uint256 room = rest * _grailProbCapBps;
         uint256 used = other * BPS;
         if (room <= used) return ceiling;
-        uint256 maxWeight = (room - used) / (BPS - grailProbCapBps);
+        uint256 maxWeight = (room - used) / (BPS - _grailProbCapBps);
         price = PricingLib.NUM / (maxWeight + 1) + 1;
         if (price > ceiling) price = ceiling;
         if (price < g.notional) price = g.notional;
@@ -987,7 +1054,7 @@ contract Pool is PoolBooks {
     ///      (ids from `contentsOf` before `open`) are composed into the first one, and that Shape
     ///      is packed again.
     function _growGrail(uint256 t, bool busy) internal returns (uint256) {
-        Grail storage g = grail[t];
+        Grail storage g = _grail[t];
         if (g.backing >= g.targetWei) return 1;
         uint256 step = g.stepWei;
         (uint32[] memory counts, uint256 cost) = _growCost(step);

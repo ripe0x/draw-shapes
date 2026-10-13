@@ -46,7 +46,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         pool = new PoolHarness(p);
         lens = new Lens(pool);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
@@ -57,8 +57,8 @@ contract LensForkTest is ForkBase, PoolFixture {
     function _open(bool large) internal {
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
-        if (large) pool.recordPulls(60);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        if (large) pool.sizeBoard(60);
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
     }
 
@@ -110,7 +110,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         warpPastCooldown(clone);
 
         assertEq(uint8(lens.quote(0).reason), uint8(Lens.Reason.InvalidCount));
-        assertEq(uint8(lens.quote(pool.maxBatch() + 1).reason), uint8(Lens.Reason.InvalidCount));
+        assertEq(uint8(lens.quote(IPool(address(pool)).maxBatch() + 1).reason), uint8(Lens.Reason.InvalidCount));
 
         vm.prank(admin);
         IPool(address(pool)).setPaused(true, false);
@@ -162,12 +162,11 @@ contract LensForkTest is ForkBase, PoolFixture {
         _open(true);
         Lens.Row[] memory rows = lens.board();
         assertEq(rows.length, 2);
-        uint256 pulls = pool.trailingPulls();
         for (uint256 i; i < rows.length; ++i) {
             uint256[] memory ids = pool.listedIds(i);
             assertEq(rows[i].listed, ids.length);
-            assertEq(rows[i].count, pool.rowCount(i));
-            assertEq(rows[i].target, PricingLib.rowDepth(pool.minItems(), pulls, rows[i].shareBps));
+            assertEq(rows[i].count, IPool(address(pool)).rowCount(i));
+            assertEq(rows[i].target, PricingLib.rowDepth(pool.minItems(), rows[i].shareBps));
             assertEq(rows[i].listingPrice, _price(ids[0]), "list price equals the pool's own FWA price");
         }
         assertEq(rows[0].rungs.length, 1);
@@ -187,7 +186,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         _warpPastRotateGate(pool);
         pool.growTrack(0);
         Lens.GrailView memory g = lens.grail(0);
-        (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = pool.grail(0);
+        (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = IPool(address(pool)).grail(0);
         assertEq(g.bucket, bucket);
         assertEq(g.packId, packId);
         assertEq(g.backing, backing_);
@@ -276,7 +275,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertTrue(r.boardDeep);
         assertEq(r.listedCount, 10);
         assertEq(r.unsettled, 0);
-        assertEq(r.concurrency, pool.concurrency());
+        assertEq(r.concurrency, IPool(address(pool)).concurrency());
 
         warpPastCooldown(clone);
         assertTrue(lens.reopenStatus().cooldownPassed);
@@ -308,13 +307,18 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.navCap, 1_000 ether);
         assertEq(p.rotateInterval, 3_600);
         assertEq(p.openingDeadline, 24 hours);
-        assertEq(p.openingDeadlineAt, pool.openingDeadlineAt());
+        assertEq(p.openingDeadlineAt, IPool(address(pool)).openingDeadlineAt());
         assertEq(p.minItems, 10);
         assertEq(p.grailProbCapBps, 2_000);
-        assertEq(p.restockTriggerBps, 1_000);
-        assertEq(p.quietIntervalSeconds, 12 hours);
-        assertEq(p.maxBatch, pool.maxBatch());
-        assertEq(p.concurrency, pool.concurrency());
+        assertEq(p.batchMin, 5);
+        assertEq(p.batchMaxAge, 1 hours);
+        assertEq(p.surpriseBps, 200);
+        assertEq(p.restoreK, 8);
+        assertEq(p.bandBps, 3_000);
+        assertEq(p.reserveBps, 1_000);
+        assertFalse(p.listWhilePaused);
+        assertEq(p.maxBatch, IPool(address(pool)).maxBatch());
+        assertEq(p.concurrency, IPool(address(pool)).concurrency());
         assertEq(p.lastRotateAt, pool.lastRotateAt());
         assertEq(p.lastRefundAt, 0);
 

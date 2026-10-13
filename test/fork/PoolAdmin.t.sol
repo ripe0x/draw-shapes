@@ -40,7 +40,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         p.major.targetWei = 1_000 ether;
         pool = new PoolHarness(p);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
@@ -51,7 +51,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
     function _openReady() internal {
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         warpPastCooldown(clone);
     }
@@ -114,7 +114,13 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setGrailProbCap(1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setRepriceMinBps(1);
+        IPool(address(pool)).setBatch(1, 1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setReplacement(0, 0, 0);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setReserve(0);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setListWhilePaused(true);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setPaused(true, true);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
@@ -191,25 +197,22 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
 
     function test_setMixGrowsTheTableAndTheBoardFollows() public {
         _openReady();
-        assertEq(pool.mixLength(), 2);
+        assertEq(IPool(address(pool)).mixLength(), 2);
         PricingLib.MixRow[] memory rows = _rows(2, 0, 1, true);
         rows[0].rungs[0] = 2;
         vm.prank(admin);
         IPool(address(pool)).setMix(rows);
 
-        assertEq(pool.mixLength(), 3);
-        assertEq(pool.rowCount(2), 0, "new row starts empty");
-        assertEq(pool.listedRowCount(2), 0);
-        (uint8[] memory rungs, uint16 share) = pool.mixRow(2);
+        assertEq(IPool(address(pool)).mixLength(), 3);
+        assertEq(IPool(address(pool)).rowCount(2), 0, "new row starts empty");
+        assertEq(IPool(address(pool)).listedRowCount(2), 0);
+        (uint8[] memory rungs, uint16 share) = IPool(address(pool)).mixRow(2);
         assertEq(rungs.length, 1);
         assertEq(rungs[0], 1);
         assertEq(share, 1_500);
 
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
-        pool.recordPulls(20);
-        pool.rotate();
-        assertGt(pool.rowCount(2), 0, "rotate mints toward the new row target");
-        assertGt(pool.listedRowCount(2), 0, "and lists it");
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the new row fills through replacement draws");
     }
 
     function test_revert_setMixChangesRungsOfARowWithItems() public {
@@ -232,7 +235,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         rows[1].shareBps = 5_000;
         vm.prank(admin);
         IPool(address(pool)).setMix(rows);
-        (, uint16 share) = pool.mixRow(0);
+        (, uint16 share) = IPool(address(pool)).mixRow(0);
         assertEq(share, 5_000);
     }
 
@@ -250,7 +253,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         PricingLib.MixRow[] memory rows = _rows(1, 1, 0, false);
         vm.prank(admin);
         IPool(address(pool)).setMix(rows);
-        (uint8[] memory rungs,) = pool.mixRow(0);
+        (uint8[] memory rungs,) = IPool(address(pool)).mixRow(0);
         assertEq(rungs[0], 1, "rows without items take new rungs");
 
         rows = new PricingLib.MixRow[](1);
@@ -258,7 +261,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         rows[0].shareBps = 10_000;
         vm.prank(admin);
         IPool(address(pool)).setMix(rows);
-        assertEq(pool.mixLength(), 1, "an empty table row can be dropped");
+        assertEq(IPool(address(pool)).mixLength(), 1, "an empty table row can be dropped");
     }
 
     function test_revert_setMixDropsARowWithAQueuedReplacement() public {
@@ -305,7 +308,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
     }
 
     function _grailWords(uint256 t) internal view returns (uint256[12] memory g) {
-        (g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11]) = pool.grail(t);
+        (g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11]) = IPool(address(pool)).grail(t);
     }
 
     function test_setGrailStoresTheParametersAndLeavesTheTrackState() public {
@@ -346,9 +349,9 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setMaxBatch(live + 1);
         _expectParamSet(IPool.setMaxBatch.selector);
         IPool(address(pool)).setMaxBatch(2);
-        assertEq(pool.maxBatch(), 2);
+        assertEq(IPool(address(pool)).maxBatch(), 2);
         IPool(address(pool)).setMaxBatch(live);
-        assertEq(pool.maxBatch(), live);
+        assertEq(IPool(address(pool)).maxBatch(), live);
         vm.stopPrank();
     }
 
@@ -371,9 +374,9 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setConcurrency(live + 1);
         _expectParamSet(IPool.setConcurrency.selector);
         IPool(address(pool)).setConcurrency(0);
-        assertEq(pool.concurrency(), 0);
+        assertEq(IPool(address(pool)).concurrency(), 0);
         IPool(address(pool)).setConcurrency(live);
-        assertEq(pool.concurrency(), live);
+        assertEq(IPool(address(pool)).concurrency(), live);
         vm.stopPrank();
     }
 
@@ -413,47 +416,6 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
     }
 
-    function test_setRotateIntervalIsAtMostTheQuietInterval() public {
-        vm.startPrank(admin);
-        uint256 quiet = pool.quietIntervalSeconds();
-        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
-        IPool(address(pool)).setRotateInterval(quiet + 1);
-        IPool(address(pool)).setRotateInterval(quiet);
-        assertEq(pool.rotateInterval(), quiet);
-        vm.stopPrank();
-    }
-
-    function test_setQuietIntervalBounds() public {
-        vm.startPrank(admin);
-        uint256 interval = pool.rotateInterval();
-        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
-        IPool(address(pool)).setQuietInterval(interval - 1);
-        _expectParamSet(IPool.setQuietInterval.selector);
-        IPool(address(pool)).setQuietInterval(interval);
-        assertEq(pool.quietIntervalSeconds(), interval);
-        IPool(address(pool)).setQuietInterval(1 days);
-        assertEq(pool.quietIntervalSeconds(), 1 days);
-        vm.stopPrank();
-
-        vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setQuietInterval(1 days);
-    }
-
-    function test_setRestockTriggerBps() public {
-        vm.startPrank(admin);
-        vm.expectRevert(IPoolTypes.RestockTriggerBpsOutOfRange.selector);
-        IPool(address(pool)).setRestockTriggerBps(10_001);
-        _expectParamSet(IPool.setRestockTriggerBps.selector);
-        IPool(address(pool)).setRestockTriggerBps(10_000);
-        assertEq(pool.restockTriggerBps(), 10_000);
-        IPool(address(pool)).setRestockTriggerBps(0);
-        assertEq(pool.restockTriggerBps(), 0);
-        vm.stopPrank();
-
-        vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setRestockTriggerBps(500);
-    }
-
     function test_setMinItemsAndGrailProbCap() public {
         vm.startPrank(admin);
         _expectParamSet(IPool.setMinItems.selector);
@@ -466,21 +428,65 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setGrailProbCap(10_001);
         _expectParamSet(IPool.setGrailProbCap.selector);
         IPool(address(pool)).setGrailProbCap(10_000);
-        assertEq(pool.grailProbCapBps(), 10_000);
+        assertEq(IPool(address(pool)).grailProbCapBps(), 10_000);
         IPool(address(pool)).setGrailProbCap(1);
-        assertEq(pool.grailProbCapBps(), 1);
+        assertEq(IPool(address(pool)).grailProbCapBps(), 1);
         vm.stopPrank();
     }
 
-    function test_setRepriceMinBps() public {
+    function test_setBatchBounds() public {
         vm.startPrank(admin);
-        vm.expectRevert(IPoolTypes.RepriceBpsOutOfRange.selector);
-        IPool(address(pool)).setRepriceMinBps(10_001);
-        _expectParamSet(IPool.setRepriceMinBps.selector);
-        IPool(address(pool)).setRepriceMinBps(10_000);
-        assertEq(pool.repriceMinBps(), 10_000);
-        IPool(address(pool)).setRepriceMinBps(0);
-        assertEq(pool.repriceMinBps(), 0);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setBatch(0, 1);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setBatch(1, 0);
+        _expectParamSet(IPool.setBatch.selector);
+        IPool(address(pool)).setBatch(3, 600);
+        assertEq(IPool(address(pool)).batchMin(), 3);
+        assertEq(IPool(address(pool)).batchMaxAge(), 600);
+        vm.stopPrank();
+    }
+
+    function test_setReplacementBounds() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setReplacement(10_001, 8, 3_000);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setReplacement(200, 101, 3_000);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setReplacement(200, 8, 100_001);
+        _expectParamSet(IPool.setReplacement.selector);
+        IPool(address(pool)).setReplacement(10_000, 100, 100_000);
+        assertEq(IPool(address(pool)).surpriseBps(), 10_000);
+        assertEq(IPool(address(pool)).restoreK(), 100);
+        assertEq(IPool(address(pool)).bandBps(), 100_000);
+        IPool(address(pool)).setReplacement(0, 0, 0);
+        assertEq(IPool(address(pool)).surpriseBps(), 0);
+        assertEq(IPool(address(pool)).restoreK(), 0);
+        assertEq(IPool(address(pool)).bandBps(), 0);
+        vm.stopPrank();
+    }
+
+    function test_setReserveBounds() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setReserve(10_001);
+        _expectParamSet(IPool.setReserve.selector);
+        IPool(address(pool)).setReserve(10_000);
+        assertEq(IPool(address(pool)).reserveBps(), 10_000);
+        IPool(address(pool)).setReserve(0);
+        assertEq(IPool(address(pool)).reserveBps(), 0);
+        vm.stopPrank();
+    }
+
+    function test_setListWhilePaused() public {
+        assertFalse(IPool(address(pool)).listWhilePaused());
+        vm.startPrank(admin);
+        _expectParamSet(IPool.setListWhilePaused.selector);
+        IPool(address(pool)).setListWhilePaused(true);
+        assertTrue(IPool(address(pool)).listWhilePaused());
+        IPool(address(pool)).setListWhilePaused(false);
+        assertFalse(IPool(address(pool)).listWhilePaused());
         vm.stopPrank();
     }
 
@@ -554,7 +560,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
         _warpPastRotateGate(pool);
         pool.growTrack(0);
-        (, uint256 packId,,,,,,,,,,) = pool.grail(0);
+        (, uint256 packId,,,,,,,,,,) = IPool(address(pool)).grail(0);
         assertGt(packId, 0);
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.Accounted.selector);
@@ -611,8 +617,8 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
     function test_revert_adminCallThatDropsTrackedEthBelowTheBuckets() public {
         _openReady();
         uint256 spare = address(pool).balance - pool.cash() - pool.maintenance();
-        (uint256 minorBucket,,,,,,,,,,,) = pool.grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = pool.grail(1);
+        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
+        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
         spare -= minorBucket + majorBucket;
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.InvariantBroken.selector);

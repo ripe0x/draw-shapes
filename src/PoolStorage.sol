@@ -21,8 +21,9 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant MAJOR = 1;
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant MAX_CURVE_CAP_BPS = 2_500;
-    uint256 internal constant PULL_SLOTS = 5;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
+    uint256 internal constant MAX_RESTORE_K = 100;
+    uint256 internal constant MAX_BAND_BPS = 100_000;
 
     // ------------------------------------------------------------------ storage
 
@@ -43,14 +44,14 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 public receivable;
     uint256 public claims;
     uint256 public maintenance;
-    /// @notice Maintenance share of booked margin, still held as FWA owner proceeds.
-    uint256 public maintenanceReceivable;
-    Grail[2] public grail;
+    /// @dev Maintenance share of booked margin, still held as FWA owner proceeds.
+    uint256 internal _maintenanceReceivable;
+    Grail[2] internal _grail;
 
     uint256 public totalShares;
     mapping(address => uint256) public sharesOf;
 
-    Claim[] public claimQueue;
+    Claim[] internal _claimQueue;
     uint256 public claimHead;
 
     PricingLib.MixRow[] internal _mix;
@@ -58,58 +59,70 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     EntryCurve public curve;
     uint256 public navCap;
     uint256 public rotateInterval;
-    /// @notice Duration in seconds from FWA pool creation to the earliest `open()`.
-    uint256 public openingDeadline;
-    uint256 public openingDeadlineAt;
+    /// @dev Duration in seconds from FWA pool creation to the earliest `open()`.
+    uint256 internal _openingDeadline;
+    uint256 internal _openingDeadlineAt;
     uint256 public minItems;
-    uint256 public grailProbCapBps;
-    /// @notice Smallest GRAIL list price decrease, in bps of the current price, that `rotate` applies
-    ///         as a reprice.
-    uint256 public repriceMinBps;
-    /// @notice Ordinary selection weight missing since the last relist, in bps of
-    ///         `ordinaryWeightSnapshot`, at which `rotate` is due.
-    uint256 public restockTriggerBps;
-    /// @notice Seconds without an inventory change after which `rotate` is due. At least
-    ///         `rotateInterval`.
-    uint256 public quietIntervalSeconds;
-    /// @notice Ordinary selection weight after the last `rotate` that changed inventory, or after
-    ///         `open()` made the pool Live. Ordinary weight is FWA `totalWeight` minus the weight
-    ///         of the listed GRAIL tracks at their list prices.
-    uint256 public ordinaryWeightSnapshot;
+    uint256 internal _grailProbCapBps;
+    /// @dev Queued replacements at which `settleDue` returns `Batch`. At least one.
+    uint256 internal _batchMin;
+    /// @dev Seconds since the queue became nonempty after which `settleDue` returns `Age`.
+    uint256 internal _batchMaxAge;
+    /// @dev Probability, in bps, that a replacement draw takes the surprise step.
+    uint256 internal _surpriseBps;
+    /// @dev Multiplier of a row's relative deficit in its replacement draw weight.
+    uint256 internal _restoreK;
+    /// @dev Headroom above its target, in bps, up to which a row may be chosen as a replacement.
+    uint256 internal _bandBps;
+    /// @dev Share of ordinary NAV, in bps, that cash must keep after a mint or a kept Shape.
+    uint256 internal _reserveBps;
+    /// @dev When true `settle` lists while FWA's inventory change cooldown is nonzero.
+    bool internal _listWhilePaused;
 
     IFWAClone public fwaPool;
-    uint256 public maxBatch;
-    uint256 public concurrency;
+    uint256 internal _maxBatch;
+    uint256 internal _concurrency;
 
     /// @dev Backing of one token of each row, indexed like `_mix`.
     uint256[] internal _rowBackingWei;
     /// @dev Listed plus held ordinary items per row.
     uint256[] internal _rowCount;
+    /// @dev Queued replacements per row.
+    uint256[] internal _queuedByRow;
     mapping(uint256 listingId => Item) internal _listed;
+    /// @dev Held ordinary items: unlisted Shapes and Draw Packs counted in `backing`.
     Item[] internal _held;
+    /// @dev Position plus one of each held token inside `_held`.
+    mapping(address collection => mapping(uint256 tokenId => uint256)) internal _heldPos;
+    /// @dev Token ids of held Shapes by ladder index.
+    mapping(uint8 denom => uint256[]) internal _heldByDenom;
+    /// @dev Position of each held Shape inside `_heldByDenom[denom]`.
+    mapping(uint256 tokenId => uint256) internal _denomPos;
+    /// @dev Held Draw Packs.
+    uint256 internal _heldPacks;
 
-    /// @notice FIFO of row indices awaiting a replacement mint.
-    uint16[] public replacementQueue;
+    /// @dev FIFO of row indices awaiting a replacement listing.
+    uint16[] internal _replacementQueue;
     uint256 public replacementHead;
-
-    PullSlot[PULL_SLOTS] internal _pullSlots;
+    /// @dev Time the queue last went from empty to nonempty, zero while it is empty.
+    uint256 internal _oldestQueuedAt;
 
     /// @dev `base + 1` of each request id opened by `acquire` or `acquireBatch`, where `base` is the
     ///      FWA base price at request time. Zero marks a request opened directly at the FWA pool.
     mapping(uint256 requestId => uint256) internal _basePlusOne;
     /// @notice First FWA acquisition sequence the pool has not yet booked.
     uint64 public nextSequenceToBook;
-    /// @notice Booked proceeds minus captured backing, netted across captures. Positive margin is
+    /// @dev Booked proceeds minus captured backing, netted across captures. Positive margin is
     ///         split at once, negative margin carries forward.
-    int256 public margin;
-    /// @notice Replacement mint fees of captured items, covered by margin before it is split.
-    uint256 public mintLineOwed;
+    int256 internal _margin;
+    /// @dev Replacement mint fees of captured items, covered by margin before it is split.
+    uint256 internal _mintLineOwed;
     /// @notice Listed ordinary items.
     uint256 public listedCount;
     /// @notice Timestamp of the last `rotate` that changed inventory, or of `open()` going Live.
     uint256 public lastRotateAt;
-    /// @notice Timestamp of the last `rotate` that paid a refund.
-    uint256 public lastRefundAt;
+    /// @dev Timestamp of the last `rotate` that paid a refund.
+    uint256 internal _lastRefundAt;
     /// @dev FWA listing ids of listed ordinary items, by row.
     uint256[][] internal _listedByRow;
     /// @dev Position of each listing id inside its row's `_listedByRow` array.
@@ -117,23 +130,20 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     /// @notice Destination of the export: this pool for retirement, a successor for migration.
     address public exitDest;
-    /// @notice Share supply at export.
-    uint256 public exportedShares;
-    /// @notice Ordinary NAV plus maintenance at export, including items already moved to the
+    /// @dev Share supply at export.
+    uint256 internal _exportedShares;
+    /// @dev Ordinary NAV plus maintenance at export, including items already moved to the
     ///         successor.
-    uint256 public exportedNav;
+    uint256 internal _exportedNav;
     /// @notice Successor side: NAV received from `oldPool`, and the shares minted against it.
     uint256 public importedNav;
-    uint256 public importedShares;
-    /// @notice Successor side: share supply of `oldPool` at its export, set by `finalizeImport`.
-    uint256 public importedFromShares;
-    /// @notice Successor side: holders whose `oldPool` shares were converted by `migrateHolder`.
-    mapping(address holder => bool) public migrated;
-    /// @notice True while the token is a held or listed ordinary item of this pool.
-    mapping(address collection => mapping(uint256 tokenId => bool)) public registered;
-    /// @notice Timestamp of the last successful `rotate` call, or of `open()` going Live. The Quiet
-    ///         trigger measures from it.
-    uint256 public lastRotateCallAt;
+    uint256 internal _importedShares;
+    /// @dev Successor side: share supply of `oldPool` at its export, set by `finalizeImport`.
+    uint256 internal _importedFromShares;
+    /// @dev Successor side: holders whose `oldPool` shares were converted by `migrateHolder`.
+    mapping(address holder => bool) internal _migrated;
+    /// @dev True while the token is a held or listed ordinary item of this pool.
+    mapping(address collection => mapping(uint256 tokenId => bool)) internal _registered;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -158,7 +168,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     /// @dev I1 with `incoming` wei of the balance still outside the buckets.
     function _covered(uint256 incoming) internal view returns (bool) {
-        return address(this).balance >= incoming + cash + maintenance + grail[MINOR].bucket + grail[MAJOR].bucket;
+        return address(this).balance >= incoming + cash + maintenance + _grail[MINOR].bucket + _grail[MAJOR].bucket;
     }
 
     /// @dev Last listing id of `row`.
@@ -206,11 +216,19 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through
     ///      `_addItem` and `_removeHeld` / `_removeListed`, which keep `backing` equal to the sum
     ///      of `value` over held and listed items (I2), `_rowCount` equal to their number,
-    ///      `_listedByRow` equal to the listing ids of the listed items and `registered` true
-    ///      exactly for their tokens.
+    ///      `_listedByRow` equal to the listing ids of the listed items, `_heldByDenom` equal to the
+    ///      held Shapes and `registered` true exactly for their tokens.
     function _addItem(Item memory it) internal {
         if (it.listingId == 0) {
             _held.push(it);
+            _heldPos[it.collection][it.tokenId] = _held.length;
+            if (it.collection == shapes) {
+                uint256[] storage ids = _heldByDenom[uint8(Denominations.requireIndexOf(it.value))];
+                ids.push(it.tokenId);
+                _denomPos[it.tokenId] = ids.length;
+            } else {
+                ++_heldPacks;
+            }
         } else {
             _listed[it.listingId] = it;
             ++listedCount;
@@ -218,7 +236,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
             _listedIndex[it.listingId] = ids.length;
             ids.push(it.listingId);
         }
-        registered[it.collection][it.tokenId] = true;
+        _registered[it.collection][it.tokenId] = true;
         backing += it.value;
         ++_rowCount[it.row];
     }
@@ -226,9 +244,25 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     function _removeHeld(uint256 index) internal returns (Item memory it) {
         uint256 last = _held.length - 1;
         it = _held[index];
-        if (index != last) _held[index] = _held[last];
+        if (index != last) {
+            Item memory moved = _held[last];
+            _held[index] = moved;
+            _heldPos[moved.collection][moved.tokenId] = index + 1;
+        }
         _held.pop();
-        delete registered[it.collection][it.tokenId];
+        delete _heldPos[it.collection][it.tokenId];
+        if (it.collection == shapes) {
+            uint256[] storage ids = _heldByDenom[uint8(Denominations.requireIndexOf(it.value))];
+            uint256 pos = _denomPos[it.tokenId] - 1;
+            uint256 lastId = ids[ids.length - 1];
+            ids[pos] = lastId;
+            _denomPos[lastId] = pos + 1;
+            ids.pop();
+            delete _denomPos[it.tokenId];
+        } else {
+            --_heldPacks;
+        }
+        delete _registered[it.collection][it.tokenId];
         backing -= it.value;
         --_rowCount[it.row];
     }
@@ -243,7 +277,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         ids[index] = lastId;
         _listedIndex[lastId] = index;
         ids.pop();
-        delete registered[it.collection][it.tokenId];
+        delete _registered[it.collection][it.tokenId];
         backing -= it.value;
         --_rowCount[it.row];
         --listedCount;
@@ -315,7 +349,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         if (g.listBps == 0 || g.listBps > BPS) revert ListBpsOutOfRange();
         if (g.stepWei < 2 * Denominations.UNIT || g.stepWei % Denominations.UNIT != 0) revert GrailStepInvalid();
         if (g.floorWei == 0 || g.floorWei > g.targetWei * g.listBps / BPS) revert GrailFloorInvalid();
-        Grail storage t = grail[track];
+        Grail storage t = _grail[track];
         t.targetWei = g.targetWei;
         t.stepWei = g.stepWei;
         t.listBps = g.listBps;
@@ -337,23 +371,25 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     function _setProbCap(uint256 bps) internal {
         if (bps == 0 || bps > BPS) revert GrailProbCapOutOfRange();
-        grailProbCapBps = bps;
+        _grailProbCapBps = bps;
     }
 
-    function _setRepriceMinBps(uint256 bps) internal {
-        if (bps > BPS) revert RepriceBpsOutOfRange();
-        repriceMinBps = bps;
+    function _setBatch(uint256 minQueued, uint256 maxAge) internal {
+        if (minQueued == 0 || maxAge == 0) revert LimitOutOfRange();
+        _batchMin = minQueued;
+        _batchMaxAge = maxAge;
     }
 
-    function _setRestockTriggerBps(uint256 bps) internal {
-        if (bps > BPS) revert RestockTriggerBpsOutOfRange();
-        restockTriggerBps = bps;
+    function _setReplacement(uint256 surprise, uint256 restore, uint256 band) internal {
+        if (surprise > BPS || restore > MAX_RESTORE_K || band > MAX_BAND_BPS) revert LimitOutOfRange();
+        _surpriseBps = surprise;
+        _restoreK = restore;
+        _bandBps = band;
     }
 
-    /// @dev `seconds_` is at least `rotateInterval`.
-    function _setQuietInterval(uint256 seconds_) internal {
-        if (seconds_ < rotateInterval) revert LimitOutOfRange();
-        quietIntervalSeconds = seconds_;
+    function _setReserve(uint256 bps) internal {
+        if (bps > BPS) revert LimitOutOfRange();
+        _reserveBps = bps;
     }
 
     /// @dev Replaces the mix table. Each row must have rungs inside the Shapes ladder. A row that
@@ -370,8 +406,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
                 if (old[j] != rows[i].rungs[j]) revert RowInUse();
             }
         }
-        for (uint256 q = replacementHead; q < replacementQueue.length; ++q) {
-            if (replacementQueue[q] >= n) revert RowInUse();
+        for (uint256 q = replacementHead; q < _replacementQueue.length; ++q) {
+            if (_replacementQueue[q] >= n) revert RowInUse();
         }
         delete _mix;
         delete _rowBackingWei;
@@ -379,6 +415,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
             _rowBackingWei.push(PricingLib.rowBacking(rows[i]));
             if (_rowCount.length < n) {
                 _rowCount.push();
+                _queuedByRow.push();
                 _listedByRow.push();
             }
             _mix.push();

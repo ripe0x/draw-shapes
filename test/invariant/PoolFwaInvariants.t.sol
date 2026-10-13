@@ -9,6 +9,7 @@ import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "../fork/ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {PoolHandler} from "./PoolInvariants.t.sol";
+import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Drives the pool against a real FWA clone, deployed Shapes and a Draw Packs deployment.
@@ -53,6 +54,12 @@ contract PoolFwaHandler is ForkBase {
     bool public i6Broken;
     bool public harvestBroken;
     bool public booksBehindAfterPricing;
+    /// @dev Set when `settle` pays a refund without listing an item.
+    bool public settleBroken;
+    uint256 public settleListed;
+    uint256 public settleRefunds;
+    /// @dev Shapes `pullWithShapes` and `redeemAndDeposit` left in the pool as held items.
+    uint256 public keptShapes;
     /// @dev Set when `rotate` succeeds while `rotateDue` is `None`.
     bool public rotateGateBroken;
 
@@ -83,8 +90,8 @@ contract PoolFwaHandler is ForkBase {
         _players = players_;
         base = new PoolHandler(pool_, actors_);
         lastMaintenance = pool_.maintenance();
-        (uint256 minorBucket,,,,,,,,,,,) = pool_.grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = pool_.grail(1);
+        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool_)).grail(0);
+        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool_)).grail(1);
         ghostGrailIn[0] = minorBucket;
         ghostGrailIn[1] = majorBucket;
         vm.recordLogs();
@@ -150,6 +157,13 @@ contract PoolFwaHandler is ForkBase {
                 (,, uint256 refund) = abi.decode(logs[i].data, (bool, bool, uint256));
                 ghostRefunds += refund;
                 _batchRefund += refund;
+            } else if (topic == IPoolTypes.Settled.selector) {
+                (uint256 listed, uint256 refund) = abi.decode(logs[i].data, (uint256, uint256));
+                ghostRefunds += refund;
+                _batchRefund += refund;
+                settleListed += listed;
+                if (refund != 0 && listed == 0) settleBroken = true;
+                if (refund != 0) ++settleRefunds;
             }
         }
         uint256 current = pool.maintenance();
@@ -168,7 +182,7 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev Step plus the mint fees of the Shapes in `defaultMakeup(step)` for track `t`.
     function _growthCost(uint256 t) internal view returns (uint256 cost) {
-        (,,,,, uint256 step,,,,,,) = pool.grail(t);
+        (,,,,, uint256 step,,,,,,) = IPool(address(pool)).grail(t);
         uint32[] memory counts = IShapePacks(pool.drawPacks()).defaultMakeup(step);
         uint256 shapeCount;
         for (uint256 i; i < counts.length; ++i) {
@@ -199,7 +213,7 @@ contract PoolFwaHandler is ForkBase {
     function _syncQueue() internal {
         uint256 n = base.queuedLength();
         while (_queuedTo.length < n) {
-            (address to,, uint256 amount) = pool.claimQueue(_queuedTo.length);
+            (address to,, uint256 amount) = IPool(address(pool)).claimQueue(_queuedTo.length);
             _queuedTo.push(to);
             _queuedAmount.push(amount);
         }
@@ -222,7 +236,7 @@ contract PoolFwaHandler is ForkBase {
     function _checkPriced() internal {
         if (
             pool.nextSequenceToBook() != clone.nextSequenceToProcess() || pool.receivable() != 0
-                || pool.maintenanceReceivable() != 0 || pool.grailReceivable(0) != 0 || pool.grailReceivable(1) != 0
+                || IPool(address(pool)).maintenanceReceivable() != 0 || pool.grailReceivable(0) != 0 || pool.grailReceivable(1) != 0
         ) booksBehindAfterPricing = true;
     }
 
@@ -260,7 +274,7 @@ contract PoolFwaHandler is ForkBase {
         if (clone.unsettledAcquisitionCount() != 0 || pool.nextSequenceToBook() != clone.nextSequenceToProcess()) {
             return;
         }
-        uint256 held = pool.maintenance() + pool.maintenanceReceivable();
+        uint256 held = pool.maintenance() + IPool(address(pool)).maintenanceReceivable();
         uint256 sharesBefore = ghostMaintenanceShares;
         vm.recordLogs();
         bool done = IPool(address(pool)).exportStep(1 + itemsSeed % 30);
@@ -400,11 +414,13 @@ contract PoolFwaHandler is ForkBase {
     function redeemAndDeposit(uint8 actorSeed) external recorded {
         if (_exiting() || pool.depositsPaused() || pool.nav() == 0) return;
         address actor = _actors[actorSeed % _actors.length];
-        uint256 tokenId = mintShapes(actor, 0.1 ether, 1);
+        uint256 tokenId = mintShapes(actor, actorSeed % 2 == 0 ? 0.1 ether : 0.01 ether, 1);
+        uint256 heldBefore = pool.heldCount();
         vm.startPrank(actor);
         IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
         pool.redeemAndDeposit(tokenId);
         vm.stopPrank();
+        if (pool.heldCount() > heldBefore) ++keptShapes;
         _checkPriced();
     }
 
@@ -415,8 +431,8 @@ contract PoolFwaHandler is ForkBase {
         if (_exiting() || pool.pullsPaused()) return;
         _warpToResume();
         uint256 count = bound(countSeed, 1, 3);
-        if (count > pool.maxBatch()) return;
-        if (pool.listedCount() < clone.unsettledAcquisitionCount() + count + pool.concurrency()) return;
+        if (count > IPool(address(pool)).maxBatch()) return;
+        if (pool.listedCount() < clone.unsettledAcquisitionCount() + count + IPool(address(pool)).concurrency()) return;
         address player = _players[playerSeed % _players.length];
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
         (uint256 slip, uint256 version) = poolArgs(clone);
@@ -425,6 +441,37 @@ contract PoolFwaHandler is ForkBase {
         pool.acquireBatch{value: total}(player, count, fee, 0, slip, version, block.timestamp + 1 hours);
         ++pulls;
         if (fulfillNow) _fulfillOutstanding(pick, false);
+    }
+
+    /// @dev Pays a one ticket pull with a Shape of 0.01, 0.1 or 1 ETH backing. A Shape that matches a
+    ///      single rung row and fits the spendable cash stays in the pool as a held item.
+    function pullWithShapes(uint8 amountSeed, uint8 playerSeed, uint256 pick, bool fulfillNow) external recorded {
+        if (_exiting() || pool.pullsPaused()) return;
+        _warpToResume();
+        if (pool.listedCount() < clone.unsettledAcquisitionCount() + 1 + IPool(address(pool)).concurrency()) return;
+        address player = _players[playerSeed % _players.length];
+        uint256[3] memory amounts = [uint256(0.01 ether), 0.1 ether, 1 ether];
+        uint256 amount = amounts[amountSeed % 3];
+        uint256 tokenId = mintShapes(player, amount, 1);
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, player.balance + total);
+        uint256 heldBefore = pool.heldCount();
+        vm.startPrank(player);
+        IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = tokenId;
+        pool.pullWithShapes{value: total}(tokenIds, 1, fee, block.timestamp + 1 hours);
+        vm.stopPrank();
+        ++pulls;
+        if (pool.heldCount() > heldBefore) ++keptShapes;
+        if (fulfillNow) _fulfillOutstanding(pick, false);
+    }
+
+    /// @dev Moves the factory's `inventoryChangeCooldown` between 0, where `settle` lists, and 300,
+    ///      where only `rotate` lists.
+    function setCooldown(bool zero) external recorded {
+        vm.prank(factory.owner());
+        factory.setInventoryChangeCooldown(zero ? 0 : 300);
     }
 
     /// @dev A wallet acquires at the FWA pool without going through `Pool.pull`.
@@ -491,13 +538,29 @@ contract PoolFwaHandler is ForkBase {
 
     // ------------------------------------------------------------------ settlement actions
 
-    function settle(uint8 n) external recorded {
-        pool.settle(bound(n, 1, 20));
+    /// @dev Calls `settle` as this contract, which receives the refund. The ETH received must equal
+    ///      the logged refund.
+    function settle(uint8 n) external {
+        _settle(bound(n, 1, 20));
+    }
+
+    /// @dev Books up to `n` acquisitions without the harvest of `settle`.
+    function bookOnly(uint8 n) external recorded {
+        pool.bookOnly(bound(n, 1, 20));
     }
 
     function settleAndHarvest() external recorded {
         pool.settle(20);
         _harvest();
+    }
+
+    function _settle(uint256 count) internal {
+        vm.recordLogs();
+        uint256 balanceBefore = address(this).balance;
+        pool.settle(count);
+        uint256 received = address(this).balance - balanceBefore;
+        _ingest(vm.getRecordedLogs());
+        if (received != _batchRefund) i6Broken = true;
     }
 
     function harvest() external recorded {
@@ -510,7 +573,7 @@ contract PoolFwaHandler is ForkBase {
         bool done = pool.harvest();
         if (done) {
             if (
-                pool.receivable() != 0 || pool.maintenanceReceivable() != 0 || pool.grailReceivable(0) != 0
+                pool.receivable() != 0 || IPool(address(pool)).maintenanceReceivable() != 0 || pool.grailReceivable(0) != 0
                     || pool.grailReceivable(1) != 0 || clone.ownerProceeds() != 0 || pool.cash() < cashBefore
                     || ownerProceedsBefore == 0
             ) harvestBroken = true;
@@ -518,12 +581,6 @@ contract PoolFwaHandler is ForkBase {
         } else if (pool.cash() != cashBefore) {
             harvestBroken = true;
         }
-    }
-
-    /// @dev Lists held items and mints replacements, as a rotation does.
-    function restock() external recorded {
-        if (_exiting()) return;
-        pool.restock();
     }
 
     // ------------------------------------------------------------------ FWA helpers
@@ -547,7 +604,7 @@ contract PoolFwaHandler is ForkBase {
     ///      neither track has an Active listing.
     function _activeGrailListing(uint256 seed) internal view returns (uint256) {
         for (uint256 i; i < 2; ++i) {
-            (,,,,,,,,,,, uint256 listingId) = pool.grail((seed + i) % 2);
+            (,,,,,,,,,,, uint256 listingId) = IPool(address(pool)).grail((seed + i) % 2);
             if (listingId == 0) continue;
             (,,,,,,, IFWAClone.ListingStatus status) = clone.listings(listingId);
             if (status == IFWAClone.ListingStatus.Active) return listingId;
@@ -594,20 +651,28 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
         p.fwaFactory = FACTORY_ADDR;
-        p.mix[1].rungs[0] = 0;
-        p.mix[1].rungs[1] = 0;
+        // Row 0 is a 0.1 Shape (5,000 bps), row 1 a pack of two 0.01 Shapes (3,000), row 2 a 0.01 Shape
+        // (2,000). Held 0.01 Shapes fill row 2 and the components of row 1.
+        p.mix = new PricingLib.MixRow[](3);
+        p.mix[0].rungs = new uint8[](1);
+        p.mix[0].rungs[0] = 2;
+        p.mix[0].shareBps = 5_000;
+        p.mix[1].rungs = new uint8[](2);
+        p.mix[1].shareBps = 3_000;
+        p.mix[2].rungs = new uint8[](1);
+        p.mix[2].shareBps = 2_000;
         pool = new PoolHarness(p);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
 
-        // 60 item board: 42 Shapes and 18 packs.
+        // 60 item board: 30 Shapes of 0.1, 18 packs and 12 Shapes of 0.01.
         vm.prank(alice);
         pool.deposit{value: 200 ether}();
-        vm.warp(pool.openingDeadlineAt());
-        pool.recordPulls(60);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.sizeBoard(60);
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         warpPastCooldown(clone);
 
@@ -621,7 +686,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         }
         handler = new PoolFwaHandler(pool, clone, actors, players);
 
-        bytes4[] memory selectors = new bytes4[](31);
+        bytes4[] memory selectors = new bytes4[](33);
         selectors[0] = PoolFwaHandler.deposit.selector;
         selectors[1] = PoolFwaHandler.withdraw.selector;
         selectors[2] = PoolFwaHandler.payClaims.selector;
@@ -635,7 +700,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[10] = PoolFwaHandler.processOnly.selector;
         selectors[11] = PoolFwaHandler.settle.selector;
         selectors[12] = PoolFwaHandler.harvest.selector;
-        selectors[13] = PoolFwaHandler.restock.selector;
+        selectors[13] = PoolFwaHandler.pullWithShapes.selector;
         selectors[14] = PoolFwaHandler.settleAndHarvest.selector;
         selectors[15] = PoolFwaHandler.griefShapes.selector;
         selectors[16] = PoolFwaHandler.withdrawAfterProcess.selector;
@@ -654,6 +719,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[28] = PoolFwaHandler.setPaused.selector;
         selectors[29] = PoolFwaHandler.setFeeSplit.selector;
         selectors[30] = PoolFwaHandler.toggleGate.selector;
+        selectors[31] = PoolFwaHandler.setCooldown.selector;
+        selectors[32] = PoolFwaHandler.bookOnly.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -676,10 +743,13 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             handler.pull(uint8(i), uint8(i), i, i % 3 != 0);
             handler.directAcquire(uint8(i), i, i % 2 == 0);
             handler.fulfillOutstanding(i);
-            handler.settle(5);
+            handler.bookOnly(5);
             handler.harvest();
+            handler.settle(5);
             handler.settleAndHarvest();
-            handler.restock();
+            handler.pullWithShapes(uint8(i), uint8(i), i, i % 2 == 0);
+            if (i == 2) handler.setCooldown(true);
+            if (i == 12) handler.setCooldown(false);
             handler.warp(uint32(i * 1000));
             if (i % 4 == 3) handler.griefShapes(i);
             handler.deposit(uint96(i * 1e17), uint8(i));
@@ -705,6 +775,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.griefs(), 0);
         assertGt(handler.ghostWrittenOff(), 0);
         assertGt(handler.rotations(), 0);
+        assertGt(handler.keptShapes(), 0);
+        assertGt(handler.settleListed(), 0);
         assertGt(handler.liquidations(), 0);
         assertGt(handler.liquidatedItems(), 0);
         assertGt(handler.ghostLiquidationFees(), 0);
@@ -715,6 +787,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.gateToggles(), 0);
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
+        invariant_queueMatchesRowCounters();
+        invariant_settleRefundsOnlyAListingCall();
         invariant_I3_withdrawalNeverExceedsNavShare();
         invariant_I4_claimsPaidInRequestOrder();
         invariant_I6_maintenanceFallsOnlyByRotateRefunds();
@@ -730,6 +804,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         _retire();
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
+        invariant_queueMatchesRowCounters();
+        invariant_settleRefundsOnlyAListingCall();
         invariant_I3_withdrawalNeverExceedsNavShare();
         invariant_I4_claimsPaidInRequestOrder();
         invariant_I6_maintenanceFallsOnlyByRotateRefunds();
@@ -805,8 +881,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     }
 
     function _grailBuckets() internal view returns (uint256 total) {
-        (uint256 minorBucket,,,,,,,,,,,) = pool.grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = pool.grail(1);
+        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
+        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
         return minorBucket + majorBucket;
     }
 
@@ -815,7 +891,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     }
 
     function _bookedReceivables() internal view returns (uint256) {
-        return pool.receivable() + pool.maintenanceReceivable() + _grailReceivables();
+        return pool.receivable() + IPool(address(pool)).maintenanceReceivable() + _grailReceivables();
     }
 
     /// forge-config: default.invariant.runs = 16
@@ -824,14 +900,34 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGe(address(pool).balance, pool.cash() + pool.maintenance() + _grailBuckets());
     }
 
-    /// @dev `backing` equals the value of every held item and every listed item.
+    /// @dev `backing` equals the value of every held item and every listed item. Every held Shape is
+    ///      indexed once under the ladder index of its value, and the denomination index holds no
+    ///      other token. `rowCount` is the listed plus held items of each row.
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_I2_backingMatchesRegistry() public view {
         uint256 sum;
+        uint256 heldShapes_;
+        uint256 rows = IPool(address(pool)).mixLength();
+        uint256[] memory heldPerRow = new uint256[](rows);
         for (uint256 i; i < pool.heldCount(); ++i) {
-            sum += pool.heldItem(i).value;
+            IPoolTypes.Item memory held = pool.heldItem(i);
+            sum += held.value;
+            ++heldPerRow[held.row];
+            if (held.collection != SHAPES_ADDR) continue;
+            ++heldShapes_;
+            uint256[] memory ids = IPool(address(pool)).heldShapes(_denominationIndex(held.value));
+            uint256 matches;
+            for (uint256 j; j < ids.length; ++j) {
+                if (ids[j] == held.tokenId) ++matches;
+            }
+            assertEq(matches, 1, "held Shape indexed once under its denomination");
         }
+        uint256 byDenomination;
+        for (uint256 d; d < shapes.denominationCount(); ++d) {
+            byDenomination += IPool(address(pool)).heldShapes(uint8(d)).length;
+        }
+        assertEq(byDenomination, heldShapes_, "the denomination index holds only held Shapes");
         uint256 listed;
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
@@ -842,15 +938,43 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertEq(pool.backing(), sum);
         assertEq(pool.listedCount(), listed);
         uint256 inRows;
-        for (uint256 r; r < pool.mixLength(); ++r) {
+        for (uint256 r; r < rows; ++r) {
             uint256[] memory ids = pool.listedIds(r);
             inRows += ids.length;
             for (uint256 i; i < ids.length; ++i) {
                 IPoolTypes.Item memory it = pool.listedItem(ids[i]);
                 assertTrue(it.value != 0 && it.row == r);
             }
+            assertEq(IPool(address(pool)).rowCount(r), ids.length + heldPerRow[r], "rowCount");
         }
         assertEq(inRows, listed);
+    }
+
+    function _denominationIndex(uint256 value) internal view returns (uint8) {
+        for (uint256 d; d < shapes.denominationCount(); ++d) {
+            if (shapes.denominationAt(uint8(d)) == value) return uint8(d);
+        }
+        revert("held Shape off the ladder");
+    }
+
+    /// @dev The queued rows add up to the queue length, and `oldestQueuedAt` is zero exactly while the
+    ///      queue is empty.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_queueMatchesRowCounters() public view {
+        uint256 queued;
+        for (uint256 r; r < IPool(address(pool)).mixLength(); ++r) {
+            queued += pool.queuedOf(r);
+        }
+        assertEq(queued, pool.replacementLength());
+        assertEq(IPool(address(pool)).oldestQueuedAt() == 0, pool.replacementLength() == 0);
+    }
+
+    /// @dev `settle` pays a refund only for a call that listed an item.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_settleRefundsOnlyAListingCall() public view {
+        assertFalse(handler.settleBroken());
     }
 
     /// forge-config: default.invariant.runs = 16
@@ -890,7 +1014,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_I7_bucketsCreditedOnlyFromSplitsAndContributions() public view {
         assertEq(
-            pool.maintenance() + pool.maintenanceReceivable() + handler.ghostRefunds()
+            pool.maintenance() + IPool(address(pool)).maintenanceReceivable() + handler.ghostRefunds()
                 + handler.ghostMaintenanceFolded(),
             handler.ghostMaintenanceShares()
         );
@@ -903,7 +1027,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_I5_grailBucketsPayOnlyForTheirTracks() public view {
         for (uint256 t; t < 2; ++t) {
-            (uint256 bucket,,,,,,,,,, uint256 receivable_,) = pool.grail(t);
+            (uint256 bucket,,,,,,,,,, uint256 receivable_,) = IPool(address(pool)).grail(t);
             assertEq(
                 bucket + receivable_ + handler.ghostGrailSpend(t),
                 handler.ghostGrailIn(t) + handler.ghostGrailProceeds(t),
@@ -919,7 +1043,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_grailTracksMatchTheirPacks() public view {
         for (uint256 t; t < 2; ++t) {
-            (, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = pool.grail(t);
+            (, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = IPool(address(pool)).grail(t);
             if (packId == 0) {
                 assertEq(backing_, 0);
                 assertEq(notional, 0);
@@ -954,7 +1078,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_marginConserved() public view {
         assertEq(
-            pool.margin(),
+            IPool(address(pool)).margin(),
             int256(handler.ghostCapturedProceeds() + handler.ghostSurplus())
                 - int256(handler.ghostCapturedValue() + handler.ghostWrittenOff() + handler.ghostMarginSplit())
         );
@@ -1012,6 +1136,6 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertEq(pool.listedCount(), 0);
         assertEq(pool.heldCount(), 0);
         assertTrue(clone.retired());
-        assertGt(pool.exportedShares(), 0);
+        assertGt(IPool(address(pool)).exportedShares(), 0);
     }
 }

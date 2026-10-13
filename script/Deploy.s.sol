@@ -98,9 +98,12 @@ contract Deploy is Script {
         p.openingDeadline = vm.envUint("OPENING_DEADLINE_SECONDS");
         p.minItems = vm.envUint("MIN_ITEMS");
         p.grailProbCapBps = vm.envUint("GRAIL_PROB_CAP_BPS");
-        p.repriceMinBps = vm.envUint("REPRICE_MIN_BPS");
-        p.restockTriggerBps = vm.envUint("RESTOCK_TRIGGER_BPS");
-        p.quietIntervalSeconds = vm.envUint("QUIET_INTERVAL_SECONDS");
+        p.batchMin = vm.envUint("BATCH_MIN");
+        p.batchMaxAge = vm.envUint("BATCH_MAX_AGE_SECONDS");
+        p.surpriseBps = vm.envUint("SURPRISE_BPS");
+        p.restoreK = vm.envUint("RESTORE_K");
+        p.bandBps = vm.envUint("BAND_BPS");
+        p.reserveBps = vm.envUint("RESERVE_BPS");
     }
 
     /// @dev Rows are separated by `;`, each row is `rung,rung,...:shareBps`.
@@ -179,12 +182,15 @@ contract Deploy is Script {
         require(pool.nav() == 0, "nav");
         require(pool.navCap() == p.navCap, "navCap");
         require(pool.rotateInterval() == p.rotateInterval, "rotateInterval");
-        require(pool.openingDeadline() == p.openingDeadline, "openingDeadline");
+        require(IPool(address(pool)).openingDeadline() == p.openingDeadline, "openingDeadline");
         require(pool.minItems() == p.minItems, "minItems");
-        require(pool.grailProbCapBps() == p.grailProbCapBps, "grailProbCapBps");
-        require(pool.repriceMinBps() == p.repriceMinBps, "repriceMinBps");
-        require(pool.restockTriggerBps() == p.restockTriggerBps, "restockTriggerBps");
-        require(pool.quietIntervalSeconds() == p.quietIntervalSeconds, "quietIntervalSeconds");
+        require(IPool(address(pool)).grailProbCapBps() == p.grailProbCapBps, "grailProbCapBps");
+        require(IPool(address(pool)).batchMin() == p.batchMin, "batchMin");
+        require(IPool(address(pool)).batchMaxAge() == p.batchMaxAge, "batchMaxAge");
+        require(IPool(address(pool)).surpriseBps() == p.surpriseBps, "surpriseBps");
+        require(IPool(address(pool)).restoreK() == p.restoreK, "restoreK");
+        require(IPool(address(pool)).bandBps() == p.bandBps, "bandBps");
+        require(IPool(address(pool)).reserveBps() == p.reserveBps, "reserveBps");
 
         (uint16 premium, uint16 maint, uint16 feed, uint16 minorShare) = pool.feeSplit();
         require(
@@ -200,8 +206,8 @@ contract Deploy is Script {
         );
 
         for (uint256 i; i < p.mix.length; ++i) {
-            require(pool.rowCount(i) == 0, "rowCount");
-            (uint8[] memory rungs, uint16 share) = pool.mixRow(i);
+            require(IPool(address(pool)).rowCount(i) == 0, "rowCount");
+            (uint8[] memory rungs, uint16 share) = IPool(address(pool)).mixRow(i);
             require(
                 share == p.mix[i].shareBps
                     && keccak256(abi.encodePacked(rungs)) == keccak256(abi.encodePacked(p.mix[i].rungs)),
@@ -213,7 +219,7 @@ contract Deploy is Script {
     }
 
     function _checkGrail(Pool pool, uint256 track, IPoolTypes.GrailParams memory g) internal view {
-        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = pool.grail(track);
+        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = IPool(address(pool)).grail(track);
         require(
             target == g.targetWei && step == g.stepWei && listBps == g.listBps && decay == g.decayWeiPerPull
                 && floor == g.floorWei,

@@ -37,9 +37,9 @@ contract PoolSplitMarginTest is PoolFixture {
         emit IPoolTypes.MarginSplit(0.4 ether, 0.2 ether, 0.1 ether, 0.4 ether);
         pool.splitMargin();
 
-        assertEq(pool.margin(), 0);
-        assertEq(pool.mintLineOwed(), 0);
-        assertEq(pool.maintenanceReceivable(), 0.1 ether);
+        assertEq(IPool(address(pool)).margin(), 0);
+        assertEq(IPool(address(pool)).mintLineOwed(), 0);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0.1 ether);
         assertEq(pool.grailReceivable(0), 0.16 ether);
         assertEq(pool.grailReceivable(1), 0.24 ether);
         assertEq(pool.receivable(), 1.1 ether - 0.5 ether);
@@ -50,18 +50,18 @@ contract PoolSplitMarginTest is PoolFixture {
         pool.setMargin(0.3 ether);
         pool.setMintLineOwed(1 ether);
         pool.splitMargin();
-        assertEq(pool.mintLineOwed(), 0.7 ether);
-        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(IPool(address(pool)).mintLineOwed(), 0.7 ether);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
         assertEq(pool.receivable(), 0.3 ether);
-        assertEq(pool.margin(), 0);
+        assertEq(IPool(address(pool)).margin(), 0);
     }
 
     function test_splitMarginKeepsNegativeMargin() public {
         pool.setMargin(-1 ether);
         pool.setMintLineOwed(0.1 ether);
         pool.splitMargin();
-        assertEq(pool.margin(), -1 ether);
-        assertEq(pool.mintLineOwed(), 0.1 ether);
+        assertEq(IPool(address(pool)).margin(), -1 ether);
+        assertEq(IPool(address(pool)).mintLineOwed(), 0.1 ether);
     }
 }
 
@@ -108,7 +108,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs[1] = 0;
         pool = new PoolHarness(p);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
@@ -125,7 +125,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function _open(uint256 depositWei) internal {
         vm.prank(alice);
         pool.deposit{value: depositWei}();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
     }
 
@@ -139,8 +139,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function _openLarge() internal {
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
-        pool.recordPulls(60);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.sizeBoard(60);
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
         warpPastCooldown(clone);
@@ -219,16 +219,16 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function _assertBook(Book memory b) internal view {
         assertEq(pool.receivable(), b.receivable, "receivable");
-        assertEq(pool.margin(), b.margin, "margin");
-        assertEq(pool.mintLineOwed(), b.mintLineOwed, "mintLineOwed");
-        assertEq(pool.maintenanceReceivable(), b.maintenanceReceivable, "maintenanceReceivable");
+        assertEq(IPool(address(pool)).margin(), b.margin, "margin");
+        assertEq(IPool(address(pool)).mintLineOwed(), b.mintLineOwed, "mintLineOwed");
+        assertEq(IPool(address(pool)).maintenanceReceivable(), b.maintenanceReceivable, "maintenanceReceivable");
         assertEq(pool.grailReceivable(0), b.minorReceivable, "minor receivable");
         assertEq(pool.grailReceivable(1), b.majorReceivable, "major receivable");
     }
 
     function _grailBuckets() internal view returns (uint256 minorBucket, uint256 majorBucket) {
-        (minorBucket,,,,,,,,,,,) = pool.grail(0);
-        (majorBucket,,,,,,,,,,,) = pool.grail(1);
+        (minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
+        (majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
     }
 
     function _assertI1() internal view {
@@ -284,16 +284,16 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.expectEmit(true, true, false, true, address(pool));
         emit IPoolTypes.Captured(ids[0], listingId, 0, it.value, proceeds);
         vm.expectEmit(false, false, false, true, address(pool));
-        emit IPoolTypes.Settled(2);
-        pool.settle(5);
+        emit IPoolTypes.Booked(2);
+        pool.bookOnly(5);
 
         assertEq(pool.backing(), backingBefore - it.value, "backing");
         assertEq(pool.listedItem(listingId).value, 0, "unlisted");
-        assertEq(pool.rowCount(0), 6);
+        assertEq(IPool(address(pool)).rowCount(0), 6);
         assertEq(pool.listedCount(), 9);
         assertEq(pool.nextSequenceToBook(), 2);
         assertEq(pool.replacementLength(), 1);
-        assertEq(pool.replacementQueue(0), 0);
+        assertEq(IPool(address(pool)).replacementQueue(0), 0);
         assertEq(pool.cash(), cashBefore, "cash untouched by settle");
         assertLt(proceeds, it.value, "row 0 capture is a loss");
 
@@ -325,7 +325,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         vm.expectEmit(false, false, false, true, address(pool));
         emit IPoolTypes.MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
-        pool.settle(5);
+        pool.bookOnly(5);
 
         Book memory b;
         _apply(b, proceeds, it.value, 1);
@@ -364,7 +364,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(b.margin, 0, "second pack repays the loss and splits the rest");
         assertGt(b.maintenanceReceivable, 0);
         uint256 backingBefore = pool.backing();
-        pool.settle(10);
+        pool.bookOnly(10);
 
         assertEq(pool.backing(), backingBefore - valueSum);
         assertEq(pool.nextSequenceToBook(), 4);
@@ -381,11 +381,11 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _capture(ids[1], _listingOfRow(1, 1));
         _capture(ids[2], _listingOfRow(1, 2));
 
-        pool.settle(2);
+        pool.bookOnly(2);
         assertEq(pool.nextSequenceToBook(), 3);
-        pool.settle(2);
+        pool.bookOnly(2);
         assertEq(pool.nextSequenceToBook(), 4);
-        pool.settle(2);
+        pool.bookOnly(2);
         assertEq(pool.nextSequenceToBook(), 4);
     }
 
@@ -399,7 +399,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
             _apply(b, _proceeds(fee, base), pool.listedItem(listingIds[i]).value, rowOf[i]);
             _capture(ids[i], listingIds[i]);
         }
-        pool.settle(10);
+        pool.bookOnly(10);
 
         uint256 owed = clone.ownerProceeds();
         assertEq(owed, 3 * _proceeds(fee, base), "FWA owner proceeds");
@@ -420,10 +420,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(minorAfter - minorBefore, b.minorReceivable);
         assertEq(majorAfter - majorBefore, b.majorReceivable);
         assertEq(pool.receivable(), 0);
-        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
         assertEq(pool.grailReceivable(0), 0);
         assertEq(pool.grailReceivable(1), 0);
-        assertEq(pool.margin(), b.margin);
+        assertEq(IPool(address(pool)).margin(), b.margin);
         _assertI1();
         assertFalse(pool.harvest(), "nothing left to harvest");
     }
@@ -437,7 +437,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertFalse(pool.harvest(), "walk is behind FWA");
         assertGt(clone.ownerProceeds(), 0);
 
-        pool.settle(5);
+        pool.bookOnly(5);
         assertTrue(pool.harvest());
         assertEq(clone.ownerProceeds(), 0);
     }
@@ -451,10 +451,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
         owed = clone.ownerProceeds();
         pool.addReceivables(ordinary, maintenanceWei, minorWei, majorWei);
-        expected = pool.receivable() + pool.maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
+        expected = pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
         assertEq(expected - owed, ordinary + maintenanceWei + minorWei + majorWei);
     }
 
@@ -462,7 +462,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         (uint256 owed, uint256 expected) = _shortfallFixture(7, 0, 0, 0);
         uint256 cashBefore = pool.cash();
         uint256 receivableBefore = pool.receivable();
-        uint256 maintenanceBefore = pool.maintenanceReceivable();
+        uint256 maintenanceBefore = IPool(address(pool)).maintenanceReceivable();
         (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
         uint256 minorR = pool.grailReceivable(0);
         uint256 majorR = pool.grailReceivable(1);
@@ -479,7 +479,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(minorAfter - minorBefore, minorR);
         assertEq(majorAfter - majorBefore, majorR);
         assertEq(pool.receivable(), 0);
-        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
         assertEq(pool.grailReceivable(0), 0);
         assertEq(pool.grailReceivable(1), 0);
         assertEq(clone.ownerProceeds(), 0);
@@ -490,9 +490,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
         uint256 ordinary = pool.receivable();
-        uint256 maintenanceR = pool.maintenanceReceivable();
+        uint256 maintenanceR = IPool(address(pool)).maintenanceReceivable();
         pool.addReceivables(0, ordinary + 5, 0, 0);
         uint256 cashBefore = pool.cash();
         uint256 maintenanceBefore = pool.maintenance();
@@ -501,7 +501,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         assertEq(pool.cash(), cashBefore, "ordinary receivable written down to zero");
         assertEq(pool.maintenance(), maintenanceBefore + maintenanceR + ordinary, "5 wei taken from maintenance");
-        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
         _assertI1();
     }
 
@@ -509,9 +509,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
         uint256 ordinary = pool.receivable();
-        uint256 maintenanceR = pool.maintenanceReceivable();
+        uint256 maintenanceR = IPool(address(pool)).maintenanceReceivable();
         uint256 minorR = pool.grailReceivable(0);
         uint256 majorR = pool.grailReceivable(1);
         assertGt(minorR, 3);
@@ -562,9 +562,12 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(pool)) continue;
             ++poolEvents;
-            assertEq(logs[i].topics[0], IPoolTypes.Settled.selector, "only Settled");
+            assertTrue(
+                logs[i].topics[0] == IPoolTypes.Booked.selector || logs[i].topics[0] == IPoolTypes.Settled.selector,
+                "only Booked and Settled"
+            );
         }
-        assertEq(poolEvents, 1);
+        assertEq(poolEvents, 2);
         assertEq(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
         assertEq(pool.backing(), _registryValue(), "I2");
         _assertI1();
@@ -578,7 +581,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
     }
 
-    function test_upkeepSliceSettlesAndMintsOneReplacementInsideNextPull() public {
+    function test_upkeepSliceBooksHarvestsAndQueuesTheReplacement() public {
         _openReady();
         uint256 listingId = _listingOfRow(0, 0);
         IPoolTypes.Item memory it = pool.listedItem(listingId);
@@ -592,23 +595,19 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _acquire(player, 1);
 
         assertEq(pool.nextSequenceToBook(), 2, "slice booked the capture");
-        assertEq(pool.replacementLength(), 0, "slice consumed the replacement");
-        assertEq(pool.replacementHead(), 1);
-        assertEq(pool.heldCount(), 1, "replacement is held, not listed");
-        assertEq(pool.heldItem(0).row, 0);
-        assertEq(pool.heldItem(0).value, it.value);
+        assertEq(pool.replacementLength(), 1, "slice queued the replacement");
+        assertEq(pool.heldCount(), 0, "the slice mints and lists nothing");
         assertEq(pool.receivable(), 0, "slice harvested the proceeds");
-        assertEq(pool.cash(), cashBefore + _proceeds(fee, base) - it.value - mintFee, "cash paid the mint");
-        assertEq(pool.rowCount(0), 7);
+        assertEq(pool.cash(), cashBefore + _proceeds(fee, base), "cash took the proceeds and paid no mint");
         assertEq(pool.backing(), _registryValue(), "I2");
         _assertI1();
     }
 
-    function test_upkeepSliceSkipsReplacementWhenCashIsShort() public {
+    function test_upkeepSliceNeverMintsWhateverTheCash() public {
         _openLarge();
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(0, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
         assertEq(pool.replacementLength(), 1);
 
         // The slice harvests the capture's proceeds (about 0.05 ETH) before it prices the mint.
@@ -626,7 +625,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 tokenId = mintShapes(address(pool), 0.1 ether, 1);
         pool.addItem(SHAPES_ADDR, 0, tokenId, 0.1 ether, 0);
         uint256 versionBefore = clone.inventoryVersion();
-        assertEq(pool.restock(), 0);
+        assertEq(pool.restock(), 1);
 
         (,,,,,,, IFWAClone.ListingStatus status) = clone.listings(pool.listedItem(clone.nextListingId() - 1).listingId);
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Staged));
@@ -657,12 +656,12 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         emit IPoolTypes.Captured(requestId, listingId, 0, it.value, 0);
         vm.expectEmit(false, false, false, true, address(pool));
         emit IPoolTypes.SurplusBooked(owed);
-        pool.settle(5);
+        pool.bookOnly(5);
 
         assertEq(pool.backing(), _registryValue(), "I2");
         assertEq(pool.receivable(), owed, "surplus booked at settle");
-        assertEq(pool.margin(), int256(owed) - int256(it.value), "surplus repays the margin");
-        assertLt(pool.margin(), 0);
+        assertEq(IPool(address(pool)).margin(), int256(owed) - int256(it.value), "surplus repays the margin");
+        assertLt(IPool(address(pool)).margin(), 0);
         assertEq(pool.replacementLength(), 1);
         assertEq(pool.nav(), navBefore - it.value + owed, "nav carries the proceeds");
 
@@ -672,29 +671,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertTrue(pool.harvest());
         assertEq(pool.cash(), cashBefore + owed);
         assertEq(pool.receivable(), 0);
-        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
         assertEq(pool.nav(), navBefore - it.value + owed, "harvest moves receivable to cash");
-        _assertI1();
-    }
-
-    function test_directAcquireCountsAsDemandForRowTargets() public {
-        _openReady();
-        pool.recordPulls(10);
-        assertEq(pool.trailingPulls(), 10);
-        assertEq(pool.rowCount(0), 7);
-        assertEq(pool.rowCount(1), 3);
-
-        _gateOff();
-        uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
-        _capture(requestId, _listingOfRow(0, 0));
-        assertEq(pool.trailingPulls(), 10, "counted when the capture is booked");
-        vm.warp(pool.lastRotateAt() + pool.rotateInterval());
-        pool.rotate();
-
-        assertEq(pool.trailingPulls(), 11);
-        assertEq(pool.rowCount(0), 8, "row target 11 * 7,000 bps rounded up, against 7 at 10 pulls");
-        assertEq(pool.rowCount(1), 4, "row target 11 * 3,000 bps rounded up, against 3 at 10 pulls");
-        assertEq(pool.backing(), _registryValue(), "I2");
         _assertI1();
     }
 
@@ -703,28 +681,30 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         pool.growTrack(0);
         warpPastCooldown(clone);
-        (,,,,,,,,, uint256 pullsBefore,, uint256 grailListing) = pool.grail(0);
+        (,,,,,,,,, uint256 pullsBefore,, uint256 grailListing) = IPool(address(pool)).grail(0);
         assertEq(pullsBefore, 0);
         assertTrue(grailListing != 0);
 
         _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, _listingOfRow(0, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
 
-        (,,,,,,,,, uint256 pullsAfter,,) = pool.grail(0);
+        (,,,,,,,,, uint256 pullsAfter,,) = IPool(address(pool)).grail(0);
         assertEq(pullsAfter, 1);
     }
 
-    function test_poolPullIsCountedOnceWhenBooked() public {
+    function test_poolPullIsBookedOnce() public {
         _openReady();
         (uint256[] memory ids,,) = _acquire(player, 1);
-        assertEq(pool.trailingPulls(), 0, "not counted at request time");
+        assertEq(pool.nextSequenceToBook(), 1, "not booked at request time");
         _capture(ids[0], _listingOfRow(0, 0));
-        pool.settle(5);
-        assertEq(pool.trailingPulls(), 1);
-        pool.settle(5);
-        assertEq(pool.trailingPulls(), 1, "a booked sequence is not counted again");
+        pool.bookOnly(5);
+        assertEq(pool.nextSequenceToBook(), 2);
+        assertEq(pool.replacementLength(), 1);
+        pool.bookOnly(5);
+        assertEq(pool.nextSequenceToBook(), 2, "a booked sequence is not booked again");
+        assertEq(pool.replacementLength(), 1);
     }
 
     function test_directAcquireOfPackSplitsSurplusMarginAtSettle() public {
@@ -737,16 +717,16 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _capture(requestId, listingId);
         uint256 owed = clone.ownerProceeds();
         assertGt(owed, value);
-        pool.settle(5);
+        pool.bookOnly(5);
 
         uint256 amount = owed - value;
         uint256 cover = amount < 2 * mintFee ? amount : 2 * mintFee;
         uint256 rest = amount - cover;
         uint256 maintenanceShare = rest * MAINT_BPS / SPLIT_BPS;
         uint256 feedShare = rest * FEED_BPS / SPLIT_BPS;
-        assertEq(pool.margin(), 0);
-        assertEq(pool.mintLineOwed(), 2 * mintFee - cover);
-        assertEq(pool.maintenanceReceivable(), maintenanceShare);
+        assertEq(IPool(address(pool)).margin(), 0);
+        assertEq(IPool(address(pool)).mintLineOwed(), 2 * mintFee - cover);
+        assertEq(IPool(address(pool)).maintenanceReceivable(), maintenanceShare);
         assertEq(pool.grailReceivable(0) + pool.grailReceivable(1), feedShare);
         assertEq(pool.receivable(), owed - maintenanceShare - feedShare);
 
@@ -766,18 +746,18 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _capture(requestId, _listingOfRow(1, 1));
         uint256 owed = clone.ownerProceeds();
 
-        pool.settle(1);
+        pool.bookOnly(1);
         assertEq(pool.nextSequenceToBook(), 2);
         assertEq(_bookedReceivables(), _proceeds(fee, base), "recorded capture only");
         assertLt(_bookedReceivables(), owed);
 
-        pool.settle(1);
+        pool.bookOnly(1);
         assertEq(pool.nextSequenceToBook(), 3);
         assertEq(_bookedReceivables(), owed, "direct capture booked as surplus");
     }
 
     function _bookedReceivables() internal view returns (uint256) {
-        return pool.receivable() + pool.maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
+        return pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
     }
 
     // ---------------------------------------------------------------- Shapes payment paths
@@ -795,19 +775,22 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 playerBefore = player.balance;
         uint256 poolBefore = address(pool).balance;
         uint256 cashBefore = pool.cash();
+        uint256 backingBefore = pool.backing();
+        uint256 navBefore = pool.nav();
         uint64 last = clone.lastIssuedSequence();
 
         vm.prank(player);
         pool.pullWithShapes(tokenIds, 1, fee, block.timestamp + 1 hours);
 
         assertEq(player.balance, playerBefore + 0.2 ether - total, "excess refunded");
-        assertEq(address(pool).balance, poolBefore, "redeemed ETH passed through");
-        assertEq(pool.cash(), cashBefore, "no bucket moved");
+        assertEq(address(pool).balance, poolBefore - 0.2 ether, "cash paid the part of the ticket the Shapes cover");
+        assertEq(pool.cash(), cashBefore - 0.2 ether, "cash paid for the kept Shapes");
+        assertEq(pool.heldCount(), 2, "the Shapes are held");
+        assertEq(pool.backing(), backingBefore + 0.2 ether, "backing carries the Shapes");
+        assertEq(pool.nav(), navBefore, "nav is unchanged");
         assertEq(clone.lastIssuedSequence(), last + 1);
-        vm.expectRevert();
-        shapes.ownerOf(first);
-        vm.expectRevert();
-        shapes.ownerOf(first + 1);
+        assertEq(shapes.ownerOf(first), address(pool));
+        assertEq(shapes.ownerOf(first + 1), address(pool));
         _assertI1();
     }
 
@@ -865,7 +848,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         pool.redeemAndDeposit(tokenId);
 
         assertEq(pool.sharesOf(player), expectedShares);
-        assertEq(address(pool).balance, balanceBefore + 0.1 ether);
+        assertEq(address(pool).balance, balanceBefore, "the Shape is kept, so no ETH arrives");
+        assertEq(shapes.ownerOf(tokenId), address(pool));
+        assertEq(pool.heldCount(), 1);
         assertEq(pool.nav(), navBefore + 0.1 ether - contribution);
         assertEq(pool.totalShares(), supplyBefore + expectedShares);
         _assertI1();
@@ -904,7 +889,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_revert_boardTooThin() public {
         _open(0.5 ether);
         warpPastCooldown(clone);
-        uint256 concurrency = pool.concurrency();
+        uint256 concurrency = IPool(address(pool)).concurrency();
         assertGt(concurrency, 0);
         assertGt(pool.listedCount(), 0, "board is built");
         assertLt(pool.listedCount(), concurrency, "board is below concurrency");
@@ -918,7 +903,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_boardTooThinCountsUnsettledAcquisitions() public {
         _openReady();
-        assertEq(pool.listedCount(), pool.concurrency());
+        assertEq(pool.listedCount(), IPool(address(pool)).concurrency());
         _acquire(player, 1);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         (uint256 slip, uint256 version) = poolArgs(clone);
@@ -932,8 +917,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
-        pool.settle(5);
-        assertEq(pool.listedCount(), pool.concurrency() - 1);
+        pool.bookOnly(5);
+        assertEq(pool.listedCount(), IPool(address(pool)).concurrency() - 1);
 
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         (uint256 slip, uint256 version) = poolArgs(clone);
@@ -957,7 +942,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         }
         assertEq(captures, 1);
         uint256 backingBefore = pool.backing();
-        pool.settle(10);
+        pool.bookOnly(10);
         assertEq(pool.nextSequenceToBook(), 4);
         assertEq(pool.replacementLength(), captures);
         assertEq(pool.backing(), backingBefore - 0.02 ether);
@@ -1001,7 +986,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         (uint256 slip, uint256 version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.InvalidCount.selector);
         pool.acquireBatch(address(this), 0, fee, 0, slip, version, block.timestamp + 1 hours);
-        uint256 over = pool.maxBatch() + 1;
+        uint256 over = IPool(address(pool)).maxBatch() + 1;
         (slip, version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.InvalidCount.selector);
         pool.acquireBatch(address(this), over, fee, 0, slip, version, block.timestamp + 1 hours);
@@ -1071,7 +1056,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 requestId = clone.requestIdAtSequence(last + 1);
 
         _capture(requestId, listingId);
-        pool.settle(5);
+        pool.bookOnly(5);
         assertEq(IERC721(it.collection).ownerOf(it.tokenId), address(noReceiver));
         assertEq(pool.nextSequenceToBook(), 2);
     }
@@ -1089,9 +1074,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function _bookFromPool() internal view returns (Book memory b) {
         b.receivable = pool.receivable();
-        b.margin = pool.margin();
-        b.mintLineOwed = pool.mintLineOwed();
-        b.maintenanceReceivable = pool.maintenanceReceivable();
+        b.margin = IPool(address(pool)).margin();
+        b.mintLineOwed = IPool(address(pool)).mintLineOwed();
+        b.maintenanceReceivable = IPool(address(pool)).maintenanceReceivable();
         b.minorReceivable = pool.grailReceivable(0);
         b.majorReceivable = pool.grailReceivable(1);
     }
@@ -1110,16 +1095,16 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.expectEmit(true, true, false, true, address(pool));
         emit IPoolTypes.WrittenOff(r2, g2, shapeValue);
         vm.expectEmit(false, false, false, true, address(pool));
-        emit IPoolTypes.Settled(3);
-        pool.settle(5);
+        emit IPoolTypes.Booked(3);
+        pool.bookOnly(5);
 
         assertEq(pool.nextSequenceToBook(), 3, "walk passes both deliveries");
         assertEq(pool.backing(), backingStart - 2 * shapeValue, "backing falls by the written-off values");
         assertEq(pool.backing(), _registryValue(), "I2");
         assertEq(pool.listedItem(g1).value, 0);
         assertEq(pool.listedCount(), 58);
-        assertEq(pool.rowCount(0), 40);
-        assertEq(pool.margin(), -int256(2 * shapeValue), "margin carries the loss");
+        assertEq(IPool(address(pool)).rowCount(0), 40);
+        assertEq(IPool(address(pool)).margin(), -int256(2 * shapeValue), "margin carries the loss");
         assertEq(pool.replacementLength(), 0, "write-off enqueues no replacement");
         assertEq(pool.receivable(), 0);
         _assertI1();
@@ -1133,10 +1118,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
             b.receivable = 0; // the pull's slice harvested the receivable booked by the earlier settle
             _capture(ids[0], listing);
             _apply(b, _proceeds(fee, base), pool.listedItem(listing).value, 1);
-            pool.settle(5);
+            pool.bookOnly(5);
             _assertBook(b);
             if (b.margin < 0) {
-                assertEq(pool.maintenanceReceivable() + pool.maintenance(), 0, "no split while margin is negative");
+                assertEq(IPool(address(pool)).maintenanceReceivable() + pool.maintenance(), 0, "no split while margin is negative");
             } else {
                 repaid = true;
             }
@@ -1151,7 +1136,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
             }
         }
         assertTrue(repaid, "margin repaid");
-        assertEq(pool.margin(), 0, "split follows repayment");
+        assertEq(IPool(address(pool)).margin(), 0, "split follows repayment");
         assertEq(pool.backing(), _registryValue(), "I2");
     }
 
@@ -1170,7 +1155,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.warp(deadline);
         vm.prank(SHAPES_ADDR);
         clone.refundFailedDelivery(listingId);
-        pool.settle(5);
+        pool.bookOnly(5);
 
         assertEq(pool.nextSequenceToBook(), 2);
         assertEq(shapes.ownerOf(stuck.tokenId), address(pool), "token recovered");
@@ -1179,10 +1164,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.heldItem(0).value, stuck.value);
         assertEq(pool.heldItem(0).listingId, 0);
         assertEq(pool.backing(), backingBefore, "refunded item keeps its backing");
-        assertEq(pool.rowCount(0), 42);
+        assertEq(IPool(address(pool)).rowCount(0), 42);
         assertEq(pool.listedCount(), listedBefore - 1);
         assertEq(pool.replacementLength(), 0);
-        assertEq(pool.margin(), 0);
+        assertEq(IPool(address(pool)).margin(), 0);
         assertEq(pool.backing(), _registryValue(), "I2");
         _assertI1();
     }
@@ -1197,11 +1182,11 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 backingBefore = pool.backing();
         expire(clone, ids[0]);
 
-        pool.settle(5);
+        pool.bookOnly(5);
         assertEq(pool.nextSequenceToBook(), 2);
         assertEq(pool.backing(), backingBefore);
         assertEq(pool.replacementLength(), 0);
-        assertEq(pool.margin(), 0);
+        assertEq(IPool(address(pool)).margin(), 0);
         assertEq(clone.acquisitionRefundCredit(player), clone.acquisitionFee());
     }
 
@@ -1230,7 +1215,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     /// @dev NAV the books reach after `settle` and `harvest`, measured on a reverted snapshot.
     function _syncedNav() internal returns (uint256 syncedNav) {
         uint256 snapshot = vm.snapshotState();
-        pool.settle(20);
+        pool.bookOnly(20);
         pool.harvest();
         syncedNav = pool.nav();
         vm.revertToState(snapshot);
@@ -1284,7 +1269,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         assertEq(pool.sharesOf(saver), shares);
         assertEq(pool.nextSequenceToBook(), 2);
-        assertEq(pool.receivable() + pool.maintenanceReceivable(), 0);
+        assertEq(pool.receivable() + IPool(address(pool)).maintenanceReceivable(), 0);
     }
 
     function test_redeemAndDepositSyncsBeforePricing() public {
@@ -1336,7 +1321,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _gateOff();
         uint256 requestId = acquireAs(alice, saver, clone, block.timestamp + 1 hours);
         _capture(requestId, listingId);
-        pool.settle(5);
+        pool.bookOnly(5);
 
         uint256 navAfterSettle = pool.nav();
         (uint256 contribution, uint256 shares) = _depositAt(5 ether, navAfterSettle);
@@ -1367,7 +1352,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
-        pool.settle(5);
+        pool.bookOnly(5);
         uint256 harvested = pool.receivable();
         // The harvest cash covers the replacement mint. Paying claims first leaves the mint queued.
         assertGe(harvested, 0.02 ether + 2 * mintFee);

@@ -78,15 +78,14 @@ contract PricingLibTest is Test {
         h.rowBacking(row);
     }
 
-    function test_rowDepthIsTheLargerOfMinItemsAndTrailingPullsScaledByShare() public pure {
-        assertEq(PricingLib.rowDepth(40, 100, 2_500), 25);
-        assertEq(PricingLib.rowDepth(40, 10, 2_500), 10);
-        assertEq(PricingLib.rowDepth(40, 10, 0), 0);
-        assertEq(PricingLib.rowDepth(40, 10, 10_000), 40);
+    function test_rowDepthIsMinItemsScaledByShare() public pure {
+        assertEq(PricingLib.rowDepth(40, 2_500), 10);
+        assertEq(PricingLib.rowDepth(40, 0), 0);
+        assertEq(PricingLib.rowDepth(40, 10_000), 40);
     }
 
     function test_rowDepthRoundsUp() public pure {
-        assertEq(PricingLib.rowDepth(10, 0, 3_333), 4);
+        assertEq(PricingLib.rowDepth(10, 3_333), 4);
     }
 
     // ------------------------------------------------------------------ entry curve

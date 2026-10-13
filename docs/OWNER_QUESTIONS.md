@@ -73,6 +73,16 @@ g. Open for the owner: `maintenanceBps` may need 200 at launch if gas prices mak
    exceed the 100 bps inflow; the lab shows the depositor cost. Pack rows carry the largest mint
    fee drag (0.003 ETH on a 0.03 pack) and remain part of the game by decision.
 
+h. Size after decision 9: Pool 24,395 B and PoolAdmin 23,974 B. To fit, `createFwaPool`, the
+   row and queue getters and the `chooseRow` rule moved into PoolAdmin (reachable through the
+   fallback, ABI unchanged; Pool reads `chooseRow` by self-call). Entry 36 is spent. The next
+   Pool change needs a byte budget first.
+i. Keeper economics measured on the 500 a day week with cooldown 0: 505 settle calls listing
+   3,409 items (0.25 ETH refunded) and 609 rotate calls, 568 of them for GRAIL decay, 0.56 ETH of
+   refunds in all, against about 0.7 ETH of maintenance inflow. Open for the owner: move the
+   decay reprice into settle's batch (no separate rotate), lower or parametrise the 0.0005 ETH
+   tip, or raise `maintenanceBps`.
+
 ## Guesses taken during the run
 
 Every entry carries its status in the title: decided (folded into SPEC on 2026-10-13) or superseded by an owner decision.

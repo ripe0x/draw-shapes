@@ -31,14 +31,14 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs[1] = 0;
         pool = new PoolHarness(p);
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
 
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         warpPastCooldown(clone);
     }
@@ -154,7 +154,7 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         IPoolTypes.Item memory it = pool.listedItem(listingId);
         uint256 backingBefore = pool.backing();
         fulfill(clone, ids[0], wordFor(clone, listingId));
-        pool.settle(5);
+        pool.bookOnly(5);
         assertEq(IERC721(it.collection).ownerOf(it.tokenId), player);
         assertEq(pool.backing(), backingBefore - it.value);
         assertGt(pool.receivable(), 0, "proceeds booked");

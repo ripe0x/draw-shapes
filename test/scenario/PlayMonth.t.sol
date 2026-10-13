@@ -18,8 +18,10 @@ import {ForkBase} from "../fork/ForkBase.sol";
 ///      `PLAY_OPENING_ETH`, `PLAY_DEPOSIT_ETH_PER_DAY`, `PLAY_WITHDRAW_SHARE_BPS_PER_DAY`,
 ///      `PLAY_VRF_LATENCY_SECONDS`. The run is deterministic for a given seed and fork block.
 ///      Timeline: baseline row `hour` 0 after the pool is Live, then `hour` h covers the h-th hour.
-///      Keeper ticks run every 300 s. A purchase made while FWA's purchase pause is active waits for
-///      `purchasesResumeAt`. Requests are fulfilled in sequence order once the FWA outstanding cap is
+///      The factory's `inventoryChangeCooldown` is set to `PLAY_COOLDOWN` seconds (default 0) after the
+///      factory opens. Keeper ticks run every 300 s: each tick calls `settle` when `settleDue` is
+///      nonzero and `rotate` when `rotateDue` is nonzero. A purchase made while FWA's purchase pause
+///      is active waits for `purchasesResumeAt`. Requests are fulfilled in sequence order once the FWA outstanding cap is
 ///      reached or a keeper tick, deposit or withdrawal needs settled books.
 contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal constant TICK_SECONDS = 300;
@@ -61,6 +63,8 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal vrfLatency;
     uint256 internal playerCtr;
     uint256 internal carry;
+    /// @dev Factory cooldown in seconds when `PLAY_COOLDOWN` is unset.
+    uint256 internal cooldownDefault;
     address[] internal depositors;
     bool[] internal rowIsPack;
 
@@ -73,8 +77,12 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal queued;
 
     // per-hour accumulators
-    uint256[6] internal rotTrig;
+    uint256[4] internal rotTrig;
+    uint256[3] internal setTrig;
+    uint256 internal settleListedHour;
+    uint256 internal settleRefundHour;
     uint256 internal rotates;
+    uint256 internal settles;
     uint256 internal inventoryChanged;
     uint256 internal pullsHour;
     uint256 internal rejectedHour;
@@ -85,6 +93,9 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal totalPulls;
     uint256 internal totalRejected;
     uint256 internal rotateFailures;
+    uint256 internal settleFailures;
+    uint256 internal totalSettleListed;
+    uint256 internal totalSettleRefund;
     uint256 internal depositFailures;
     uint256 internal withdrawFailures;
     bytes4[] internal rejectSel;
@@ -105,9 +116,11 @@ contract PlayMonthTest is ForkBase, Deploy {
     }
 
     /// @dev A purchase pause or VRF wait carries a pull past the end of its hour. Seed 1 at 10,000 pulls
-    ///      per day does so within hour 1. Clock reads in the runner must follow `vm.warp` there. A stale
-    ///      `block.timestamp` read reverts the `acquireBatch` deadline sum with panic 0x11.
+    ///      per day with a 300 s factory cooldown does so within hour 1. Clock reads in the runner must
+    ///      follow `vm.warp` there. A stale `block.timestamp` read reverts the `acquireBatch` deadline
+    ///      sum with panic 0x11.
     function test_playPullPastHourEnd() public {
+        cooldownDefault = 300;
         _run("test_playPullPastHourEnd", 10_000, 1, 2, 1);
         assertGt(overrunPulls, 0);
     }
@@ -140,6 +153,9 @@ contract PlayMonthTest is ForkBase, Deploy {
 
         setUpFork();
         openFactory();
+        vm.prank(factory.owner());
+        factory.setInventoryChangeCooldown(uint32(vm.envOr("PLAY_COOLDOWN", cooldownDefault)));
+        runInfo = string.concat(runInfo, "\ncooldown=", vm.toString(uint256(factory.inventoryChangeCooldown())));
         _initFiles();
         _deployPool();
         _openBoard();
@@ -179,9 +195,9 @@ contract PlayMonthTest is ForkBase, Deploy {
             pool.deposit{value: openingEth / 5}();
         }
         vm.prank(poolAdmin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         fwa = pool.fwaPool();
-        vm.warp(pool.openingDeadlineAt());
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         vm.recordLogs();
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         _drain();
@@ -373,7 +389,7 @@ contract PlayMonthTest is ForkBase, Deploy {
             fulfill(fwa, pending[i].id, _rnd());
         }
         for (uint256 i; i < 40 && pool.nextSequenceToBook() <= fwa.lastIssuedSequence(); ++i) {
-            pool.settle(20);
+            _keeperSettle();
         }
         _drain();
         for (uint256 i; i < n; ++i) {
@@ -392,6 +408,11 @@ contract PlayMonthTest is ForkBase, Deploy {
             catch {}
             _drain();
         }
+        if (pool.settleDue() != IPoolTypes.SettleTrigger.None) {
+            _keeperSettle();
+            _drain();
+            _notePause();
+        }
         IPoolTypes.RotateTrigger trig = pool.rotateDue();
         if (trig == IPoolTypes.RotateTrigger.None) return;
         vm.prank(keeper);
@@ -403,6 +424,18 @@ contract PlayMonthTest is ForkBase, Deploy {
         }
         _drain();
         _notePause();
+    }
+
+    /// @dev `settle(20)` as the keeper. The trigger read before the call is tallied; a call that becomes
+    ///      due only after it books the captures is counted in `settles` without a trigger.
+    function _keeperSettle() internal {
+        IPoolTypes.SettleTrigger due = pool.settleDue();
+        vm.prank(keeper);
+        try pool.settle(20) {
+            if (due != IPoolTypes.SettleTrigger.None) ++setTrig[uint8(due) - 1];
+        } catch {
+            ++settleFailures;
+        }
     }
 
     /// @dev Books the part of the FWA purchase pause after now to the hours it covers.
@@ -442,6 +475,13 @@ contract PlayMonthTest is ForkBase, Deploy {
                 Pending memory p = info[uint256(l.topics[1])];
                 _pullRow(p, 0, "WrittenOff", "");
                 logged[p.id] = true;
+            } else if (t == IPoolTypes.Settled.selector) {
+                (uint256 listed, uint256 refund) = abi.decode(l.data, (uint256, uint256));
+                if (listed != 0) ++settles;
+                settleListedHour += listed;
+                settleRefundHour += refund;
+                totalSettleListed += listed;
+                totalSettleRefund += refund;
             } else if (t == IPoolTypes.Rotated.selector) {
                 (, bool inv,) = abi.decode(l.data, (bool, bool, uint256));
                 if (inv) ++inventoryChanged;
@@ -451,7 +491,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         }
         _closePaidClaims();
         for (uint256 tr; tr < 2; ++tr) {
-            (,, uint256 b,,,,,,,,,) = pool.grail(tr);
+            (,, uint256 b,,,,,,,,,) = IPool(address(pool)).grail(tr);
             grailBacking[tr] = b;
         }
     }
@@ -495,8 +535,9 @@ contract PlayMonthTest is ForkBase, Deploy {
         _truncate(
             "hourly.csv",
             "hour,navPerShare,cash,backing,receivable,claims,listedCount,grailBacking0,grailNotional0,grailOddsBps0,"
-            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotWeight,rotGrailCap,rotClaim,rotGrailStep,"
-            "rotRestock,rotQuiet,inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds"
+            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotDecay,rotHeld,"
+            "inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds,"
+            "settles,setBatch,setAge,setThin,settleListed,settleRefund"
         );
         _truncate("claims.csv", "hour,depositor,shares,paidNow,enqueued,waitSeconds,open");
     }
@@ -539,12 +580,18 @@ contract PlayMonthTest is ForkBase, Deploy {
             line = string.concat(_c(_c(line, b), notional), ",", _fixed4(odds));
         }
         line = _c(_c(line, rotates), rotTrig[0]);
-        line = _c(_c(_c(_c(line, rotTrig[1]), rotTrig[2]), rotTrig[3]), rotTrig[4]);
-        line = _c(_c(_c(line, rotTrig[5]), inventoryChanged), h < pauseSec.length ? pauseSec[h] : 0);
+        line = _c(_c(_c(line, rotTrig[1]), rotTrig[2]), rotTrig[3]);
+        line = _c(_c(line, inventoryChanged), h < pauseSec.length ? pauseSec[h] : 0);
         line = _c(_c(_c(line, pullsHour), rejectedHour), waitHour);
+        line = _c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]);
+        line = _c(_c(line, settleListedHour), settleRefundHour);
         vm.writeLine(string.concat(dir, "hourly.csv"), line);
 
         delete rotTrig;
+        delete setTrig;
+        settles = 0;
+        settleListedHour = 0;
+        settleRefundHour = 0;
         rotates = 0;
         inventoryChanged = 0;
         pullsHour = 0;
@@ -556,7 +603,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     ///      the total weight times 10^4 (zero while unlisted).
     function _grailStats(uint256 t) internal view returns (uint256 b, uint256 notional, uint256 oddsBps) {
         uint256 listingId;
-        (,, b, notional,,,,,,,, listingId) = pool.grail(t);
+        (,, b, notional,,,,,,,, listingId) = IPool(address(pool)).grail(t);
         if (listingId == 0) return (b, notional, 0);
         (,,,, uint256 weight,,, IFWAClone.ListingStatus status) = fwa.listings(listingId);
         uint256 totalWeight = fwa.totalWeight();
@@ -583,6 +630,9 @@ contract PlayMonthTest is ForkBase, Deploy {
         console2.log("rejected", totalRejected);
         console2.log("navPerShare", shares == 0 ? 0 : pool.nav() * 1e18 / shares);
         console2.log("rotateFailures", rotateFailures);
+        console2.log("settleFailures", settleFailures);
+        console2.log("settleListed", totalSettleListed);
+        console2.log("settleRefund", totalSettleRefund);
         console2.log("depositFailures", depositFailures);
         console2.log("withdrawFailures", withdrawFailures);
         for (uint256 i; i < rejectSel.length; ++i) {

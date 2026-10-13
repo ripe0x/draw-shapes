@@ -73,7 +73,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function _deployPool(address oldPool_) internal returns (PoolHarness p_, IFWAClone c_) {
         p_ = new PoolHarness(_forkParams(oldPool_));
         vm.prank(admin);
-        p_.createFwaPool(0);
+        IPool(address(p_)).createFwaPool(0);
         c_ = p_.fwaPool();
         vm.prank(address(p_));
         c_.setBool(41, true);
@@ -86,7 +86,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     }
 
     function _open(PoolHarness p_, IFWAClone c_) internal {
-        vm.warp(p_.openingDeadlineAt());
+        vm.warp(IPool(address(p_)).openingDeadlineAt());
         while (p_.lifecycle() == IPoolTypes.Lifecycle.Opening) p_.open();
         warpPastCooldown(c_);
     }
@@ -96,7 +96,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         view
         returns (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional, uint256 listingId)
     {
-        (bucket, packId, backing_, notional,,,,,,,, listingId) = p_.grail(t);
+        (bucket, packId, backing_, notional,,,,,,,, listingId) = IPool(address(p_)).grail(t);
     }
 
     function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
@@ -116,8 +116,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function _buildA() internal {
         _deposit(pool, holderOne, 100 ether);
         _deposit(pool, holderTwo, 50 ether);
-        vm.warp(pool.openingDeadlineAt());
-        pool.recordPulls(60);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.sizeBoard(60);
         _open(pool, clone);
         assertEq(pool.listedCount(), 60, "board");
 
@@ -130,7 +130,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _captureRow(0);
         _captureRow(1);
         assertEq(pool.listedCount(), 58, "two captures");
-        assertEq(pool.heldCount(), 1, "the first replacement is minted by the second pull and held");
+        // One Shape of row 0 held unlisted, paid from cash as a replacement mint is.
+        uint256 heldId = mintShapes(address(pool), 0.1 ether, 1);
+        pool.loseCash(0.1 ether);
+        pool.addItem(SHAPES_ADDR, 0, heldId, 0.1 ether, 0);
+        assertEq(pool.heldCount(), 1, "one held item");
         pool.harvest();
         pool.setMaintenance(pool.maintenance() + 1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
@@ -291,8 +295,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[0]));
         IPool(address(pool)).exportStep(1);
-        // 58 listed and 2 held items, minus the booked capture, minus the one item moved.
-        assertEq(pool.listedCount() + pool.heldCount(), 58, "the capture was booked and one item moved");
+        // 58 listed and 1 held item, minus the booked capture, minus the one item moved.
+        assertEq(pool.listedCount() + pool.heldCount(), 57, "the capture was booked and one item moved");
     }
 
     function test_retirementRedeemsEveryItemIntoCash() public {
@@ -316,7 +320,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertFalse(IPool(address(pool)).exportStep(20));
         assertEq(pool.listedCount() + pool.heldCount(), 19);
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
-        assertEq(pool.exportedShares(), 0, "nothing recorded before the last item");
+        assertEq(IPool(address(pool)).exportedShares(), 0, "nothing recorded before the last item");
         assertTrue(IPool(address(pool)).exportStep(20));
 
         assertEq(pool.backing(), 0, "backing");
@@ -326,8 +330,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.maintenance(), 0);
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
         assertTrue(clone.retired(), "FWA pool retired");
-        assertEq(pool.exportedShares(), shares);
-        assertEq(pool.exportedNav(), navBefore + maintenanceBefore, "exported NAV is ordinary NAV plus maintenance");
+        assertEq(IPool(address(pool)).exportedShares(), shares);
+        assertEq(IPool(address(pool)).exportedNav(), navBefore + maintenanceBefore, "exported NAV is ordinary NAV plus maintenance");
         assertEq(pool.nav(), pool.cash());
         assertEq(clone.activeListingCount(), 2, "only the GRAIL listings remain at FWA");
 
@@ -566,9 +570,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.maintenance(), 0);
         assertEq(pool.nav(), 0, "nothing left in the old pool");
         assertEq(address(pool).balance, 0, "the old pool holds no ETH");
-        assertEq(pool.exportedShares(), aShares);
-        assertEq(pool.exportedNav(), aNav + aMaintenance, "exported NAV");
-        assertEq(pool.exportedNav(), succ.importedNav(), "the successor counted the same NAV");
+        assertEq(IPool(address(pool)).exportedShares(), aShares);
+        assertEq(IPool(address(pool)).exportedNav(), aNav + aMaintenance, "exported NAV");
+        assertEq(IPool(address(pool)).exportedNav(), succ.importedNav(), "the successor counted the same NAV");
         (uint256 aMinorBucket, uint256 aMinorPack,,, uint256 aMinorListing) = _grail(pool, 0);
         assertEq(aMinorBucket + aMinorPack + aMinorListing, 0, "old track cleared");
         (uint256 aMajorBucket, uint256 aMajorPack,,, uint256 aMajorListing) = _grail(pool, 1);
@@ -596,10 +600,10 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
         uint256 importedNav = succ.importedNav();
         assertEq(importedNav, aBacking + aCash + aMaintenance);
-        assertEq(succ.importedShares(), importedNav * bShares / bNav, "priced at the successor NAV per share");
-        assertEq(succ.totalShares(), bShares + succ.importedShares());
-        assertEq(succ.importedFromShares(), aShares);
-        assertEq(succ.exportedShares(), 0, "export snapshot fields stay on the exporting pool");
+        assertEq(IPool(address(succ)).importedShares(), importedNav * bShares / bNav, "priced at the successor NAV per share");
+        assertEq(succ.totalShares(), bShares + IPool(address(succ)).importedShares());
+        assertEq(IPool(address(succ)).importedFromShares(), aShares);
+        assertEq(IPool(address(succ)).exportedShares(), 0, "export snapshot fields stay on the exporting pool");
         assertApproxEqAbs(
             succ.sharesOf(carol) * succ.nav() / succ.totalShares(), carolClaim, 1, "native claim unchanged"
         );
@@ -616,14 +620,14 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
-        uint256 imported = succ.importedShares();
-        uint256 exported = succ.importedFromShares();
+        uint256 imported = IPool(address(succ)).importedShares();
+        uint256 exported = IPool(address(succ)).importedFromShares();
         uint256 supplyBefore = succ.totalShares();
         vm.expectEmit(true, false, false, true, address(succ));
         emit IPoolTypes.Migrated(holderOne, one * imported / exported);
         IPool(address(succ)).migrateHolder(holderOne);
         assertEq(succ.sharesOf(holderOne), one * imported / exported);
-        assertTrue(succ.migrated(holderOne));
+        assertTrue(IPool(address(succ)).migrated(holderOne));
 
         vm.prank(keeper);
         IPool(address(succ)).migrateHolder(holderTwo);
@@ -650,7 +654,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
         uint256 claim = succ.sharesOf(holderOne) * succ.nav() / succ.totalShares();
         assertGt(claim, 0);
-        assertApproxEqRel(claim, one * pool.exportedNav() / pool.exportedShares(), 1e12, "value follows the shares");
+        assertApproxEqRel(claim, one * IPool(address(pool)).exportedNav() / IPool(address(pool)).exportedShares(), 1e12, "value follows the shares");
         uint256 migrated_ = succ.sharesOf(holderOne);
         vm.prank(holderOne);
         succ.withdraw(migrated_);
@@ -681,8 +685,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _exportAll(pool, 25);
         assertEq(succ.heldCount(), aItems);
 
-        vm.warp(succ.lastRotateAt() + succ.rotateInterval());
-        succ.rotate();
+        // Each rotate lists at most 20 items.
+        while (succ.heldCount() != 0) {
+            vm.warp(succ.lastRotateAt() + succ.rotateInterval());
+            succ.rotate();
+        }
 
         assertEq(succ.heldCount(), 0, "every imported item is listed");
         assertEq(succ.listedCount(), 10 + aItems);
@@ -712,8 +719,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.claims(), queued);
         assertEq(pool.nav(), 0);
         assertLt(succ.importedNav(), aBacking + aMaintenance, "part of the backing was redeemed to fund the claim");
-        assertEq(pool.exportedNav(), succ.importedNav());
-        assertEq(pool.exportedNav(), aNav + aMaintenance);
+        assertEq(IPool(address(pool)).exportedNav(), succ.importedNav());
+        assertEq(IPool(address(pool)).exportedNav(), aNav + aMaintenance);
 
         pool.payClaims();
         assertEq(pool.claims(), 0);
@@ -733,9 +740,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.listedCount() + pool.heldCount(), 58);
         assertEq(succ.heldCount(), 1);
         assertGt(succ.importedNav(), 0);
-        assertEq(pool.exportedNav(), succ.importedNav(), "exported NAV accumulates per call");
+        assertEq(IPool(address(pool)).exportedNav(), succ.importedNav(), "exported NAV accumulates per call");
         assertEq(_exportAll(pool, 100), 1, "one call finishes the rest");
-        assertEq(pool.exportedNav(), succ.importedNav());
+        assertEq(IPool(address(pool)).exportedNav(), succ.importedNav());
     }
 
     function test_revert_successorImportAfterItIsFinalized() public {
@@ -759,7 +766,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs = new uint8[](3);
         succ = new PoolHarness(p);
         vm.prank(admin);
-        succ.createFwaPool(0);
+        IPool(address(succ)).createFwaPool(0);
         succClone = succ.fwaPool();
         vm.prank(address(succ));
         succClone.setBool(41, true);
@@ -806,7 +813,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 100);
-        assertEq(succ.importedShares(), succ.importedNav() * bShares / bNav);
+        assertEq(IPool(address(succ)).importedShares(), succ.importedNav() * bShares / bNav);
         assertApproxEqAbs(succ.sharesOf(carol) * succ.nav() / succ.totalShares(), bNav, 2, "native holder keeps NAV");
     }
 
@@ -819,7 +826,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 100);
         assertGt(succ.importedNav(), 0);
-        assertEq(succ.importedShares(), succ.importedNav());
+        assertEq(IPool(address(succ)).importedShares(), succ.importedNav());
         assertEq(succ.totalShares(), succ.importedNav());
     }
 
@@ -835,7 +842,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
         PoolHarness retired = new PoolHarness(_forkParams(address(0)));
         vm.prank(admin);
-        retired.createFwaPool(0);
+        IPool(address(retired)).createFwaPool(0);
         _deposit(retired, holderTwo, 5 ether);
         vm.prank(admin);
         IPool(address(retired)).startExit(address(retired));
@@ -853,7 +860,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertTrue(IPool(address(succ)).canImport(SHAPES_ADDR, id));
         vm.prank(address(pool));
         IPool(address(succ)).importItem(SHAPES_ADDR, id);
-        assertTrue(succ.registered(SHAPES_ADDR, id));
+        assertTrue(IPool(address(succ)).registered(SHAPES_ADDR, id));
         assertFalse(IPool(address(succ)).canImport(SHAPES_ADDR, id));
         uint256 importedNav = succ.importedNav();
 
@@ -867,12 +874,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         Token[] memory tokens = _tokens(pool, clone);
         for (uint256 i; i < tokens.length; ++i) {
-            assertTrue(pool.registered(tokens[i].collection, tokens[i].id), "listed or held token is registered");
+            assertTrue(IPool(address(pool)).registered(tokens[i].collection, tokens[i].id), "listed or held token is registered");
         }
         uint256 captured = pool.listedIds(0)[0];
         IPoolTypes.Item memory it = pool.listedItem(captured);
         pool.removeListed(captured);
-        assertFalse(pool.registered(it.collection, it.tokenId), "removal clears it");
+        assertFalse(IPool(address(pool)).registered(it.collection, it.tokenId), "removal clears it");
     }
 
     function test_canImportIsFalseWithoutAMatchingRowForAnUnknownCollectionAndAfterFinalize() public {
@@ -902,8 +909,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 aBacking = pool.backing();
         uint256 aCash = pool.cash();
         uint256 aMaintenance = pool.maintenance();
-        uint256 shapeCount = pool.rowCount(0);
-        uint256 packCount = pool.rowCount(1);
+        uint256 shapeCount = IPool(address(pool)).rowCount(0);
+        uint256 packCount = IPool(address(pool)).rowCount(1);
         assertGt(packCount, 0);
         uint256 bHeld = succ.heldCount();
         uint256 bCash = succ.cash();
@@ -916,7 +923,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(succ.heldCount(), bHeld + shapeCount, "only Shapes were imported");
         assertEq(succ.cash(), bCash + aCash + aMaintenance + packCount * 0.02 ether, "packs travelled as cash");
         assertEq(succ.importedNav(), aBacking + aCash + aMaintenance, "no value lost");
-        assertEq(pool.exportedNav(), succ.importedNav());
+        assertEq(IPool(address(pool)).exportedNav(), succ.importedNav());
         _assertI1(pool);
         _assertI1(succ);
     }
@@ -1009,16 +1016,16 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
-        assertEq(succ.importedFromShares(), aShares);
+        assertEq(IPool(address(succ)).importedFromShares(), aShares);
 
         vm.prank(admin);
         IPool(address(succ)).startExit(address(succ));
         _exportAll(succ, 100);
-        assertEq(succ.exportedShares(), succ.totalShares());
-        assertTrue(succ.exportedShares() != aShares, "the export snapshot is the successor's own");
+        assertEq(IPool(address(succ)).exportedShares(), succ.totalShares());
+        assertTrue(IPool(address(succ)).exportedShares() != aShares, "the export snapshot is the successor's own");
 
         IPool(address(succ)).migrateHolder(holderOne);
-        assertEq(succ.sharesOf(holderOne), one * succ.importedShares() / aShares);
+        assertEq(succ.sharesOf(holderOne), one * IPool(address(succ)).importedShares() / aShares);
     }
 
     function test_finalExportStepSkipsRetirePoolWhenAlreadyRetired() public {
@@ -1039,12 +1046,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _exportAll(pool, 100);
 
         pool.setMargin(1 ether);
-        uint256 maintenanceReceivable = pool.maintenanceReceivable();
+        uint256 maintenanceReceivable = IPool(address(pool)).maintenanceReceivable();
         uint256 receivable = pool.receivable();
         pool.splitMargin();
-        assertEq(pool.maintenanceReceivable(), maintenanceReceivable, "nothing moves to maintenance");
+        assertEq(IPool(address(pool)).maintenanceReceivable(), maintenanceReceivable, "nothing moves to maintenance");
         assertEq(pool.receivable(), receivable, "late proceeds stay in ordinary NAV");
-        assertEq(pool.margin(), 1 ether);
+        assertEq(IPool(address(pool)).margin(), 1 ether);
     }
 
     function test_transferGrailEstateRejectsAnUnknownTrackAndThePool() public {

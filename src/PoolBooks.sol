@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
+import {PricingLib} from "./lib/PricingLib.sol";
 import {PoolStorage} from "./PoolStorage.sol";
 import {IFWAClone} from "./interfaces/IFWAClone.sol";
 
@@ -36,8 +37,8 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Books up to `maxItems` FWA acquisitions in sequence order from `nextSequenceToBook`
-    ///      to `end`. Returns the new `nextSequenceToBook`. Every sequence passed counts as one pull
-    ///      of demand, whatever its status, at the hour of booking. A Fulfilled acquisition is a capture:
+    ///      to `end`. Returns the new `nextSequenceToBook`. Every sequence passed adds one to
+    ///      `pullsSinceList` of each listed GRAIL track, whatever its status. A Fulfilled acquisition is a capture:
     ///      FWA pays the owner `paid - (paid - base) / 2`, and a request without a recorded base
     ///      books zero proceeds, which `_bookSurplus` books from FWA's owner proceeds. A refunded
     ///      delivery returns its token to held items. A DeliveryPending acquisition is written off:
@@ -68,13 +69,14 @@ abstract contract PoolBooks is PoolStorage {
         if (seq != start) {
             nextSequenceToBook = seq;
             _recordPulls(seq - start);
-            emit Settled(seq);
+            emit Booked(seq);
         }
     }
 
     /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the track's
     ///      receivable and resets the track. An ordinary item leaves backing, its proceeds join
-    ///      `receivable` and `margin`, and its row is queued for a replacement.
+    ///      `receivable` and `margin`, and the row chosen by `_chooseRow` is queued for a
+    ///      replacement.
     function _capture(uint256 requestId, uint256 listingId, uint256 paid, uint256 mintFee) internal {
         uint256 stored = _basePlusOne[requestId];
         uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
@@ -85,21 +87,64 @@ abstract contract PoolBooks is PoolStorage {
         }
         Item memory it = _removeListed(listingId);
         receivable += proceeds;
-        margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
-        mintLineOwed += mintFee * _mix[it.row].rungs.length;
-        replacementQueue.push(it.row);
+        _margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
+        _mintLineOwed += mintFee * _mix[it.row].rungs.length;
+        (uint256 row, bool surprise) = _chooseRow(requestId, it.row);
+        _enqueue(row);
+        emit ReplacementChosen(requestId, it.row, row, surprise);
         emit Captured(requestId, listingId, it.row, it.value, proceeds);
         _splitMargin();
     }
 
+    /// @dev Appends `row` to the replacement queue. `oldestQueuedAt` is set when the queue was empty.
+    function _enqueue(uint256 row) internal {
+        if (_replacementQueue.length == replacementHead) _oldestQueuedAt = block.timestamp;
+        _replacementQueue.push(uint16(row));
+        ++_queuedByRow[row];
+    }
+
+    /// @dev Row that replaces the capture of `requestId` and whether the surprise step chose it.
+    ///      `Pool` reads it from `PoolAdmin.chooseRow` and `PoolAdmin` computes it.
+    function _chooseRow(uint256 requestId, uint256 capturedRow)
+        internal
+        view
+        virtual
+        returns (uint256 row, bool surprise);
+
+    /// @dev Row that replaces a capture of `capturedRow`, drawn by `PricingLib.chooseRow` from
+    ///      `keccak256(abi.encode(randomWord, requestId))`. A row's count is its listed, held and
+    ///      queued items.
+    function _pickRow(uint256 randomWord, uint256 requestId, uint256 capturedRow)
+        internal
+        view
+        returns (uint256 row, bool surprise)
+    {
+        uint256 n = _mix.length;
+        PricingLib.RowState[] memory rows = new PricingLib.RowState[](n);
+        uint256 items = minItems;
+        for (uint256 i; i < n; ++i) {
+            uint256 share = _mix[i].shareBps;
+            rows[i] = PricingLib.RowState(
+                share,
+                _rowCount[i] + _queuedByRow[i],
+                PricingLib.rowDepth(items, share),
+                _rowBackingWei[i],
+                _mix[i].rungs.length == 1
+            );
+        }
+        return PricingLib.chooseRow(
+            keccak256(abi.encode(randomWord, requestId)), rows, _restoreK, _surpriseBps, _bandBps, capturedRow
+        );
+    }
+
     /// @dev Track whose pack is listed under `listingId`, or 2 when none is.
     function _grailTrack(uint256 listingId) internal view returns (uint256 t) {
-        while (t <= MAJOR && grail[t].listingId != listingId) ++t;
+        while (t <= MAJOR && _grail[t].listingId != listingId) ++t;
     }
 
     /// @dev Clears track `t` after its pack left the pool. `proceeds` joins the track's receivable.
     function _closeGrail(uint256 t, uint256 requestId, uint256 proceeds) internal {
-        Grail storage g = grail[t];
+        Grail storage g = _grail[t];
         g.receivable += proceeds;
         _resetGrail(g);
         emit GrailCaptured(t, requestId, proceeds);
@@ -114,7 +159,7 @@ abstract contract PoolBooks is PoolStorage {
             return;
         }
         Item memory it = _removeListed(listingId);
-        margin -= SafeCastLib.toInt256(it.value);
+        _margin -= SafeCastLib.toInt256(it.value);
         emit WrittenOff(requestId, listingId, it.value);
     }
 
@@ -124,7 +169,7 @@ abstract contract PoolBooks is PoolStorage {
     function _recoverRefunded(IFWAClone fwa, uint256 listingId) internal {
         uint256 t = _grailTrack(listingId);
         if (t <= MAJOR) {
-            grail[t].listingId = 0;
+            _grail[t].listingId = 0;
         } else {
             Item memory it = _removeListed(listingId);
             it.listingId = 0;
@@ -138,11 +183,11 @@ abstract contract PoolBooks is PoolStorage {
     ///      stays in ordinary NAV. The maintenance and feed shares move from `receivable` to
     ///      `maintenanceReceivable` and the GRAIL receivables, split by `minorShareBps`.
     function _splitMargin() internal {
-        int256 signedMargin = margin;
+        int256 signedMargin = _margin;
         if (signedMargin <= 0 || lifecycle == Lifecycle.Exported) return;
         uint256 amount = uint256(signedMargin);
-        uint256 cover = amount < mintLineOwed ? amount : mintLineOwed;
-        mintLineOwed -= cover;
+        uint256 cover = amount < _mintLineOwed ? amount : _mintLineOwed;
+        _mintLineOwed -= cover;
         uint256 rest = amount - cover;
 
         FeeSplit memory split = feeSplit;
@@ -155,17 +200,17 @@ abstract contract PoolBooks is PoolStorage {
         }
 
         receivable -= maintenanceShare + feedShare;
-        maintenanceReceivable += maintenanceShare;
+        _maintenanceReceivable += maintenanceShare;
         uint256 minorFeed = feedShare * split.minorShareBps / BPS;
-        grail[MINOR].receivable += minorFeed;
-        grail[MAJOR].receivable += feedShare - minorFeed;
-        margin = 0;
+        _grail[MINOR].receivable += minorFeed;
+        _grail[MAJOR].receivable += feedShare - minorFeed;
+        _margin = 0;
         emit MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
     }
 
     /// @dev Sum of the four receivables.
     function _bookedReceivables() internal view returns (uint256) {
-        return receivable + maintenanceReceivable + grail[MINOR].receivable + grail[MAJOR].receivable;
+        return receivable + _maintenanceReceivable + _grail[MINOR].receivable + _grail[MAJOR].receivable;
     }
 
     /// @dev Books `actual` FWA owner proceeds above the booked receivables as `receivable` and
@@ -177,7 +222,7 @@ abstract contract PoolBooks is PoolStorage {
         if (actual <= booked) return 0;
         surplus = actual - booked;
         receivable += surplus;
-        margin += SafeCastLib.toInt256(surplus);
+        _margin += SafeCastLib.toInt256(surplus);
         _splitMargin();
         emit SurplusBooked(surplus);
     }
@@ -198,13 +243,13 @@ abstract contract PoolBooks is PoolStorage {
 
         uint256 surplus = _bookSurplus(received);
         cash += receivable;
-        maintenance += maintenanceReceivable;
-        grail[MINOR].bucket += grail[MINOR].receivable;
-        grail[MAJOR].bucket += grail[MAJOR].receivable;
+        maintenance += _maintenanceReceivable;
+        _grail[MINOR].bucket += _grail[MINOR].receivable;
+        _grail[MAJOR].bucket += _grail[MAJOR].receivable;
         receivable = 0;
-        maintenanceReceivable = 0;
-        grail[MINOR].receivable = 0;
-        grail[MAJOR].receivable = 0;
+        _maintenanceReceivable = 0;
+        _grail[MINOR].receivable = 0;
+        _grail[MAJOR].receivable = 0;
         emit Harvested(received, surplus);
         return true;
     }
@@ -215,27 +260,21 @@ abstract contract PoolBooks is PoolStorage {
         uint256 cut = gap < receivable ? gap : receivable;
         receivable -= cut;
         gap -= cut;
-        cut = gap < maintenanceReceivable ? gap : maintenanceReceivable;
-        maintenanceReceivable -= cut;
+        cut = gap < _maintenanceReceivable ? gap : _maintenanceReceivable;
+        _maintenanceReceivable -= cut;
         gap -= cut;
         for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = grail[t];
+            Grail storage g = _grail[t];
             cut = gap < g.receivable ? gap : g.receivable;
             g.receivable -= cut;
             gap -= cut;
         }
     }
 
-    /// @dev Adds `count` pulls to the current clock hour. A slot last written in an earlier hour
-    ///      is reset first. Each listed GRAIL track's `pullsSinceList` rises by `count`.
+    /// @dev Each listed GRAIL track's `pullsSinceList` rises by `count`.
     function _recordPulls(uint256 count) internal {
-        uint64 hour = uint64(block.timestamp / 1 hours);
-        PullSlot storage slot = _pullSlots[hour % PULL_SLOTS];
-        uint256 current = slot.hour == hour ? slot.count : 0;
-        slot.hour = hour;
-        slot.count = SafeCastLib.toUint192(current + count);
         for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = grail[t];
+            Grail storage g = _grail[t];
             if (g.listingId != 0) g.pullsSinceList += count;
         }
     }
@@ -284,6 +323,23 @@ abstract contract PoolBooks is PoolStorage {
             paid := mload(add(m, 0x40))
             listingId := mload(add(m, 0x60))
             status := mload(add(m, 0x80))
+        }
+    }
+
+    /// @dev `randomWord` of FWA acquisition `requestId`, the sixth word of `acquisitionMeta(requestId)`.
+    function _randomWord(uint256 requestId) internal view returns (uint256 word) {
+        address fwa = address(fwaPool);
+        bytes4 selector = IFWAClone.acquisitionMeta.selector;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), requestId)
+            if iszero(staticcall(gas(), fwa, m, 0x24, m, 0xc0)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            if lt(returndatasize(), 0xc0) { revert(0, 0) }
+            word := mload(add(m, 0xa0))
         }
     }
 }

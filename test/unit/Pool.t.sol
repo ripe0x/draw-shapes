@@ -7,7 +7,7 @@ import {Pool} from "../../src/Pool.sol";
 import {PoolAdmin} from "../../src/PoolAdmin.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
-import {IPoolTypes} from "../../src/interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Pool with test-only entrypoints that move value between buckets.
 contract PoolHarness is Pool {
@@ -69,7 +69,7 @@ contract PoolHarness is Pool {
     }
 
     function replacementLength() external view returns (uint256) {
-        return replacementQueue.length - replacementHead;
+        return _replacementQueue.length - replacementHead;
     }
 
     /// @dev FWA base price recorded for pull request `requestId`; `recorded` is false for a
@@ -103,8 +103,10 @@ contract PoolHarness is Pool {
         lastRotateAt = block.timestamp;
     }
 
+    /// @dev Runs the pass `open` repeats: pays claims, queues each row's missing items and lists
+    ///      the queue and the held items. Returns the number listed.
     function restock() external returns (uint256) {
-        return _restock();
+        return _openBoard();
     }
 
     function sync() external {
@@ -134,8 +136,28 @@ contract PoolHarness is Pool {
         return _removeListed(listingId);
     }
 
+    /// @dev Replacement row for a capture of `capturedRow` under the random word `word`, read from
+    ///      the pool's rows, counts and replacement parameters.
+    function chooseRow(uint256 word, uint256 requestId, uint256 capturedRow)
+        external
+        view
+        returns (uint256 row, bool surprise)
+    {
+        return _pickRow(word, requestId, capturedRow);
+    }
+
+    /// @dev Queued replacements of `row`.
+    function queuedOf(uint256 row) external view returns (uint256) {
+        return _queuedByRow[row];
+    }
+
     function pushReplacement(uint16 row) external {
-        replacementQueue.push(row);
+        _enqueue(row);
+    }
+
+    /// @dev Sets `minItems`, which sizes every row's target depth.
+    function sizeBoard(uint256 items) external {
+        minItems = items;
     }
 
     function recordPulls(uint256 count) external {
@@ -144,11 +166,17 @@ contract PoolHarness is Pool {
 
     function setFwaPool(address clone, uint256 deadlineAt) external {
         fwaPool = IFWAClone(clone);
-        openingDeadlineAt = deadlineAt;
+        _openingDeadlineAt = deadlineAt;
     }
 
     function harvest() external returns (bool) {
         return _harvest();
+    }
+
+    /// @dev Processes and books up to `maxCount` acquisitions without the harvest and listing of
+    ///      `settle`.
+    function bookOnly(uint256 maxCount) external {
+        _processAndSettle(maxCount);
     }
 
     function settleBudget(uint256 maxItems) external {
@@ -164,15 +192,11 @@ contract PoolHarness is Pool {
     }
 
     function setMargin(int256 amount) external {
-        margin = amount;
+        _margin = amount;
     }
 
     function setLastRotateAt(uint256 timestamp) external {
         lastRotateAt = timestamp;
-    }
-
-    function setLastRotateCallAt(uint256 timestamp) external {
-        lastRotateCallAt = timestamp;
     }
 
     function setNextSequenceToBook(uint64 sequence) external {
@@ -182,17 +206,17 @@ contract PoolHarness is Pool {
     /// @dev Raises the four booked receivables without moving ETH.
     function addReceivables(uint256 ordinary, uint256 maintenanceWei, uint256 minorWei, uint256 majorWei) external {
         receivable += ordinary;
-        maintenanceReceivable += maintenanceWei;
-        grail[MINOR].receivable += minorWei;
-        grail[MAJOR].receivable += majorWei;
+        _maintenanceReceivable += maintenanceWei;
+        _grail[MINOR].receivable += minorWei;
+        _grail[MAJOR].receivable += majorWei;
     }
 
     function setMintLineOwed(uint256 amount) external {
-        mintLineOwed = amount;
+        _mintLineOwed = amount;
     }
 
     function setGrailListing(uint256 track, uint256 packId, uint256 listingId, uint256 notional) external {
-        Grail storage g = grail[track];
+        Grail storage g = _grail[track];
         g.packId = packId;
         g.listingId = listingId;
         g.notional = notional;
@@ -200,19 +224,19 @@ contract PoolHarness is Pool {
 
     /// @dev Credits `msg.value` to track `track`'s bucket.
     function addGrailBucket(uint256 track) external payable {
-        grail[track].bucket += msg.value;
+        _grail[track].bucket += msg.value;
     }
 
     /// @dev Sends `amount` of track `track`'s bucket out of the pool, as a loss of GRAIL ETH.
     function loseGrailBucket(uint256 track, uint256 amount) external {
-        grail[track].bucket -= amount;
+        _grail[track].bucket -= amount;
         SafeTransferLib.safeTransferETH(SINK, amount);
     }
 
     /// @dev Withdraws the track's pack from FWA and leaves it unlisted, as a refunded delivery does.
     function unlistGrail(uint256 track) external {
-        fwaPool.withdrawListing(grail[track].listingId);
-        grail[track].listingId = 0;
+        fwaPool.withdrawListing(_grail[track].listingId);
+        _grail[track].listingId = 0;
     }
 
     function writeOff(uint256 requestId, uint256 listingId) external {
@@ -224,7 +248,7 @@ contract PoolHarness is Pool {
     }
 
     function grailReceivable(uint256 track) external view returns (uint256) {
-        return grail[track].receivable;
+        return _grail[track].receivable;
     }
 }
 
@@ -259,9 +283,12 @@ abstract contract PoolFixture is Test {
         p.openingDeadline = 24 hours;
         p.minItems = 10;
         p.grailProbCapBps = 2_000;
-        p.repriceMinBps = 0;
-        p.restockTriggerBps = 1_000;
-        p.quietIntervalSeconds = 12 hours;
+        p.batchMin = 5;
+        p.batchMaxAge = 1 hours;
+        p.surpriseBps = 200;
+        p.restoreK = 8;
+        p.bandBps = 3_000;
+        p.reserveBps = 1_000;
     }
 
     /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `rotate`
@@ -281,11 +308,11 @@ contract PoolConstructorTest is PoolFixture {
         PoolHarness pool = _deploy(_params());
         assertEq(pool.admin(), admin);
         assertEq(uint256(pool.lifecycle()), uint256(IPoolTypes.Lifecycle.Opening));
-        assertEq(pool.mixLength(), 2);
+        assertEq(IPool(address(pool)).mixLength(), 2);
         assertEq(pool.navCap(), 1_000 ether);
         assertEq(pool.rotateInterval(), 3_600);
-        assertEq(pool.openingDeadline(), 24 hours);
-        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = pool.grail(1);
+        assertEq(IPool(address(pool)).openingDeadline(), 24 hours);
+        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = IPool(address(pool)).grail(1);
         assertEq(target, 100 ether);
         assertEq(step, 1 ether);
         assertEq(listBps, 9_000);
@@ -376,49 +403,66 @@ contract PoolConstructorTest is PoolFixture {
         new PoolHarness(p);
     }
 
-    function test_revert_repriceMinBpsTooHigh() public {
+    function test_revert_batchMinZero() public {
         IPoolTypes.Params memory p = _params();
-        p.repriceMinBps = 10_001;
-        vm.expectRevert(IPoolTypes.RepriceBpsOutOfRange.selector);
-        new PoolHarness(p);
-    }
-
-    function test_revert_restockTriggerBpsTooHigh() public {
-        IPoolTypes.Params memory p = _params();
-        p.restockTriggerBps = 10_001;
-        vm.expectRevert(IPoolTypes.RestockTriggerBpsOutOfRange.selector);
-        new PoolHarness(p);
-    }
-
-    function test_revert_quietIntervalBelowRotateInterval() public {
-        IPoolTypes.Params memory p = _params();
-        p.quietIntervalSeconds = p.rotateInterval - 1;
+        p.batchMin = 0;
         vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
         new PoolHarness(p);
     }
 
-    function test_constructorStoresRotationTriggerParams() public {
+    function test_revert_batchMaxAgeZero() public {
         IPoolTypes.Params memory p = _params();
-        p.restockTriggerBps = 10_000;
-        p.quietIntervalSeconds = p.rotateInterval;
-        PoolHarness pool = _deploy(p);
-        assertEq(pool.restockTriggerBps(), 10_000);
-        assertEq(pool.quietIntervalSeconds(), pool.rotateInterval());
-        assertEq(pool.ordinaryWeightSnapshot(), 0);
+        p.batchMaxAge = 0;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
     }
 
-    function test_constructorStoresRepriceMinBps() public {
+    function test_revert_surpriseBpsTooHigh() public {
         IPoolTypes.Params memory p = _params();
-        p.repriceMinBps = 10_000;
-        assertEq(_deploy(p).repriceMinBps(), 10_000);
+        p.surpriseBps = 10_001;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_restoreKTooHigh() public {
+        IPoolTypes.Params memory p = _params();
+        p.restoreK = 101;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_bandBpsTooHigh() public {
+        IPoolTypes.Params memory p = _params();
+        p.bandBps = 100_001;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_reserveBpsTooHigh() public {
+        IPoolTypes.Params memory p = _params();
+        p.reserveBps = 10_001;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_constructorStoresReplacementParams() public {
+        PoolHarness pool = _deploy(_params());
+        assertEq(IPool(address(pool)).batchMin(), 5);
+        assertEq(IPool(address(pool)).batchMaxAge(), 1 hours);
+        assertEq(IPool(address(pool)).surpriseBps(), 200);
+        assertEq(IPool(address(pool)).restoreK(), 8);
+        assertEq(IPool(address(pool)).bandBps(), 3_000);
+        assertEq(IPool(address(pool)).reserveBps(), 1_000);
+        assertFalse(IPool(address(pool)).listWhilePaused());
+        assertEq(IPool(address(pool)).oldestQueuedAt(), 0);
     }
 
     function test_constructorStoresBoardParams() public {
         PoolHarness pool = _deploy(_params());
         assertEq(pool.minItems(), 10);
-        assertEq(pool.grailProbCapBps(), 2_000);
-        assertEq(pool.rowCount(0), 0);
-        assertEq(pool.rowCount(1), 0);
+        assertEq(IPool(address(pool)).grailProbCapBps(), 2_000);
+        assertEq(IPool(address(pool)).rowCount(0), 0);
+        assertEq(IPool(address(pool)).rowCount(1), 0);
     }
 
     function test_revert_emptyMixRow() public {
@@ -445,25 +489,25 @@ contract PoolTest is PoolFixture {
     }
 
     function _bucket(uint256 track) internal view returns (uint256 bucket) {
-        (bucket,,,,,,,,,,,) = pool.grail(track);
+        (bucket,,,,,,,,,,,) = IPool(address(pool)).grail(track);
     }
 
     function _claim(uint256 index) internal view returns (address to, uint256 requestedAt, uint256 amount) {
-        return pool.claimQueue(index);
+        return IPool(address(pool)).claimQueue(index);
     }
 
     // ---------------------------------------------------------------- opening guards
 
     function test_revert_createFwaPoolNotAdmin() public {
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
     }
 
     function test_revert_createFwaPoolNotOpening() public {
         pool.setLifecycle(IPoolTypes.Lifecycle.Live);
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.NotOpening.selector);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
     }
 
     function test_revert_openWithoutFwaPool() public {
@@ -496,14 +540,14 @@ contract PoolTest is PoolFixture {
         pool.addItem(alice, 1, 12, 0.15 ether, 0);
         pool.addItem(alice, 0, 13, 0.1 ether, 0);
         assertEq(pool.backing(), 0.35 ether);
-        assertEq(pool.rowCount(0), 2);
-        assertEq(pool.rowCount(1), 1);
+        assertEq(IPool(address(pool)).rowCount(0), 2);
+        assertEq(IPool(address(pool)).rowCount(1), 1);
         assertEq(pool.heldCount(), 3);
 
         IPoolTypes.Item memory removed = pool.removeHeld(0);
         assertEq(removed.tokenId, 11);
         assertEq(pool.backing(), 0.25 ether);
-        assertEq(pool.rowCount(0), 1);
+        assertEq(IPool(address(pool)).rowCount(0), 1);
         assertEq(pool.heldCount(), 2);
         assertEq(pool.heldItem(0).tokenId, 13);
         assertEq(pool.heldItem(1).tokenId, 12);
@@ -512,7 +556,7 @@ contract PoolTest is PoolFixture {
     function test_addAndRemoveListedKeepBackingAndRowCount() public {
         pool.addItem(alice, 1, 21, 0.15 ether, 7);
         assertEq(pool.backing(), 0.15 ether);
-        assertEq(pool.rowCount(1), 1);
+        assertEq(IPool(address(pool)).rowCount(1), 1);
         assertEq(pool.heldCount(), 0);
         IPoolTypes.Item memory it = pool.listedItem(7);
         assertEq(it.tokenId, 21);
@@ -522,37 +566,8 @@ contract PoolTest is PoolFixture {
 
         pool.removeListed(7);
         assertEq(pool.backing(), 0);
-        assertEq(pool.rowCount(1), 0);
+        assertEq(IPool(address(pool)).rowCount(1), 0);
         assertEq(pool.listedItem(7).value, 0);
-    }
-
-    // ---------------------------------------------------------------- trailing pulls
-
-    function test_trailingPullsSumsCurrentAndFourPriorHours() public {
-        vm.warp(10 hours);
-        pool.recordPulls(3);
-        pool.recordPulls(2);
-        assertEq(pool.trailingPulls(), 5);
-        for (uint256 i = 1; i <= 4; ++i) {
-            vm.warp(10 hours + i * 1 hours);
-            pool.recordPulls(1);
-            assertEq(pool.trailingPulls(), 5 + i);
-        }
-        vm.warp(15 hours);
-        assertEq(pool.trailingPulls(), 4);
-        vm.warp(16 hours);
-        pool.recordPulls(7);
-        assertEq(pool.trailingPulls(), 1 + 1 + 1 + 7);
-        vm.warp(30 hours);
-        assertEq(pool.trailingPulls(), 0);
-    }
-
-    function test_trailingPullsSlotResetsOnReuse() public {
-        vm.warp(10 hours);
-        pool.recordPulls(9);
-        vm.warp(15 hours);
-        pool.recordPulls(1);
-        assertEq(pool.trailingPulls(), 1);
     }
 
     // ---------------------------------------------------------------- deposit

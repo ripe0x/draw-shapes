@@ -67,21 +67,23 @@ interface IPoolTypes {
         uint256 listingId;
     }
 
-    /// @dev Pulls recorded in one clock hour. `hour` is `block.timestamp / 1 hours`.
-    struct PullSlot {
-        uint64 hour;
-        uint192 count;
-    }
-
-    /// @dev Reason `rotate` is due, in evaluation order. `None` when no reason holds.
+    /// @dev Reason `rotate` is due, in evaluation order. `None` when no reason holds. `Decay` covers
+    ///      a GRAIL price decrease, a probability cap lift and the listing of an unlisted pack.
+    ///      `Held` lists queued replacements and held items while `settle` may not list.
     enum RotateTrigger {
         None,
-        Weight,
-        GrailCap,
         Claim,
         GrailStep,
-        Restock,
-        Quiet
+        Decay,
+        Held
+    }
+
+    /// @dev Reason `settle` lists replacements, in evaluation order. `None` when no reason holds.
+    enum SettleTrigger {
+        None,
+        Batch,
+        Age,
+        Thin
     }
 
     struct Params {
@@ -100,9 +102,12 @@ interface IPoolTypes {
         uint256 openingDeadline;
         uint256 minItems;
         uint256 grailProbCapBps;
-        uint256 repriceMinBps;
-        uint256 restockTriggerBps;
-        uint256 quietIntervalSeconds;
+        uint256 batchMin;
+        uint256 batchMaxAge;
+        uint256 surpriseBps;
+        uint256 restoreK;
+        uint256 bandBps;
+        uint256 reserveBps;
     }
 
     error ZeroAddress();
@@ -120,8 +125,6 @@ interface IPoolTypes {
     error ZeroShares();
     error InsufficientShares();
     error GrailProbCapOutOfRange();
-    error RepriceBpsOutOfRange();
-    error RestockTriggerBpsOutOfRange();
     error NotOpening();
     error FwaPoolExists();
     error FwaPoolMissing();
@@ -177,7 +180,14 @@ interface IPoolTypes {
     ///      receivables. The gap is written off the receivables before the harvest is credited.
     event HarvestShortfall(uint256 received, uint256 expected);
     event SurplusBooked(uint256 surplus);
-    event Settled(uint64 nextSequenceToBook);
+    /// @dev Emitted when the booking walk advances. `nextSequenceToBook` is the new walk position.
+    event Booked(uint64 nextSequenceToBook);
+    /// @dev Emitted by `settle`. `listed` is the number of items listed and `refund` the wei paid to
+    ///      the caller from `maintenance`.
+    event Settled(uint256 listed, uint256 refund);
+    /// @dev `chosenRow` is the row queued to replace the capture of `capturedRow`. `surprise` is true
+    ///      when the surprise draw selected it.
+    event ReplacementChosen(uint256 indexed requestId, uint256 capturedRow, uint256 chosenRow, bool surprise);
     event WrittenOff(uint256 indexed requestId, uint256 indexed listingId, uint256 value);
     /// @dev `fee` is the re-mint cost of the redeemed item's row: the mint fees of its Shapes. It is
     ///      deducted from the head claim and stays in `cash`, which funds the re-mint of the row for
@@ -252,10 +262,14 @@ interface IPool is IPoolTypes {
     function openingDeadlineAt() external view returns (uint256);
     function minItems() external view returns (uint256);
     function grailProbCapBps() external view returns (uint256);
-    function repriceMinBps() external view returns (uint256);
-    function restockTriggerBps() external view returns (uint256);
-    function quietIntervalSeconds() external view returns (uint256);
-    function ordinaryWeightSnapshot() external view returns (uint256);
+    function batchMin() external view returns (uint256);
+    function batchMaxAge() external view returns (uint256);
+    function surpriseBps() external view returns (uint256);
+    function restoreK() external view returns (uint256);
+    function bandBps() external view returns (uint256);
+    function reserveBps() external view returns (uint256);
+    function listWhilePaused() external view returns (bool);
+    function oldestQueuedAt() external view returns (uint256);
     function fwaPool() external view returns (IFWAClone);
     function maxBatch() external view returns (uint256);
     function concurrency() external view returns (uint256);
@@ -266,7 +280,6 @@ interface IPool is IPoolTypes {
     function mintLineOwed() external view returns (uint256);
     function listedCount() external view returns (uint256);
     function lastRotateAt() external view returns (uint256);
-    function lastRotateCallAt() external view returns (uint256);
     function lastRefundAt() external view returns (uint256);
     function exitDest() external view returns (address);
     function exportedShares() external view returns (uint256);
@@ -283,7 +296,8 @@ interface IPool is IPoolTypes {
     function rowCount(uint256 row) external view returns (uint256);
     function mixLength() external view returns (uint256);
     function listedRowCount(uint256 row) external view returns (uint256);
-    function trailingPulls() external view returns (uint256 total);
+    function heldCount() external view returns (uint256);
+    function heldShapes(uint8 denom) external view returns (uint256[] memory tokenIds);
     function mixRow(uint256 i) external view returns (uint8[] memory rungs, uint16 shareBps);
     function canImport(address collection, uint256 tokenId) external view returns (bool);
 
@@ -295,6 +309,8 @@ interface IPool is IPoolTypes {
     function withdraw(uint256 shares) external;
     function rotate() external;
     function rotateDue() external view returns (RotateTrigger);
+    function settleDue() external view returns (SettleTrigger);
+    function chooseRow(uint256 requestId, uint256 capturedRow) external view returns (uint256 row, bool surprise);
     function acquire(
         address purchaser,
         uint256 maxAcquisitionFee,
@@ -341,9 +357,10 @@ interface IPool is IPoolTypes {
     function setRotateInterval(uint256 seconds_) external;
     function setMinItems(uint256 n) external;
     function setGrailProbCap(uint256 bps) external;
-    function setRepriceMinBps(uint256 bps) external;
-    function setRestockTriggerBps(uint256 bps) external;
-    function setQuietInterval(uint256 seconds_) external;
+    function setBatch(uint256 batchMin_, uint256 batchMaxAge_) external;
+    function setReplacement(uint256 surpriseBps_, uint256 restoreK_, uint256 bandBps_) external;
+    function setReserve(uint256 reserveBps_) external;
+    function setListWhilePaused(bool on) external;
     function setPaused(bool pulls, bool deposits) external;
     function setPurchaseGate(bool on) external;
     function setAdmin(address newAdmin) external;

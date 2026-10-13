@@ -12,7 +12,8 @@ import {IFWACloneFactory} from "./interfaces/IFWACloneFactory.sol";
 import {IPool} from "./interfaces/IPool.sol";
 
 /// @title PoolAdmin
-/// @notice Admin setters, `sweep`, `adminCall`, exit and successor import of `Pool`.
+/// @notice Admin setters, `createFwaPool`, `sweep`, `adminCall`, exit, successor import and the getters
+///         of `Pool` that `Pool` does not serve itself.
 /// @dev Runs by delegatecall from the `fallback` of `Pool` and acts on the storage of the calling
 ///      pool. A direct call to this contract reverts `NotDelegated`.
 contract PoolAdmin is PoolBooks {
@@ -25,6 +26,32 @@ contract PoolAdmin is PoolBooks {
     }
 
     // ------------------------------------------------------------------ admin
+
+    /// @notice Creates the FWA pool through the factory, approves it for both collections and sets
+    ///         this contract as its purchase operator. Starts the opening deadline. The factory pulls `expectedFee` of its FWA token from
+    ///         this contract, so the pool must hold that balance first.
+    function createFwaPool(uint256 expectedFee) external onlyDelegated onlyAdmin nonReentrant {
+        if (lifecycle != Lifecycle.Opening) revert NotOpening();
+        if (address(fwaPool) != address(0)) revert FwaPoolExists();
+
+        IFWACloneFactory factory = IFWACloneFactory(fwaFactory);
+        if (expectedFee != 0) {
+            SafeTransferLib.safeApprove(
+                address(uint160(_read(fwaFactory, IFWACloneFactory.fwaToken.selector, 0))), fwaFactory, expectedFee
+            );
+        }
+        IFWAClone clone = IFWAClone(factory.createPool(bytes32(0), expectedFee));
+
+        fwaPool = clone;
+        _maxBatch = _read(fwaFactory, IFWACloneFactory.maxAcquisitionsPerTx.selector, 0);
+        _concurrency = _read(fwaFactory, IFWACloneFactory.maxOutstandingRequestsPerPool.selector, 0);
+        nextSequenceToBook = 1;
+        _openingDeadlineAt = block.timestamp + _openingDeadline;
+        _call(shapes, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
+        _call(drawPacks, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
+        _call(address(clone), IFWAClone.setPurchaseOperator.selector, uint160(address(this)), 0);
+        emit FwaPoolCreated(address(clone));
+    }
 
     function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps)
         external
@@ -73,7 +100,7 @@ contract PoolAdmin is PoolBooks {
         if (n == 0 || n > _read(fwaFactory, IFWACloneFactory.maxAcquisitionsPerTx.selector, 0)) {
             revert LimitOutOfRange();
         }
-        maxBatch = n;
+        _maxBatch = n;
     }
 
     /// @dev `n` is at most the FWA factory's `maxOutstandingRequestsPerPool`.
@@ -82,23 +109,16 @@ contract PoolAdmin is PoolBooks {
         if (n > _read(fwaFactory, IFWACloneFactory.maxOutstandingRequestsPerPool.selector, 0)) {
             revert LimitOutOfRange();
         }
-        concurrency = n;
+        _concurrency = n;
     }
 
-    /// @dev `seconds_` is at least the FWA factory's `inventoryChangeCooldown` and at most
-    ///      `quietIntervalSeconds`.
+    /// @dev `seconds_` is at least the FWA factory's `inventoryChangeCooldown`.
     function setRotateInterval(uint256 seconds_) external onlyDelegated {
         _admin();
-        if (
-            seconds_ < _read(fwaFactory, IFWACloneFactory.inventoryChangeCooldown.selector, 0)
-                || seconds_ > quietIntervalSeconds
-        ) revert LimitOutOfRange();
+        if (seconds_ < _read(fwaFactory, IFWACloneFactory.inventoryChangeCooldown.selector, 0)) {
+            revert LimitOutOfRange();
+        }
         rotateInterval = seconds_;
-    }
-
-    function setQuietInterval(uint256 seconds_) external onlyDelegated {
-        _admin();
-        _setQuietInterval(seconds_);
     }
 
     function setMinItems(uint256 n) external onlyDelegated {
@@ -111,14 +131,28 @@ contract PoolAdmin is PoolBooks {
         _setProbCap(bps);
     }
 
-    function setRepriceMinBps(uint256 bps) external onlyDelegated {
+    /// @dev `batchMin_` and `batchMaxAge_` are nonzero.
+    function setBatch(uint256 batchMin_, uint256 batchMaxAge_) external onlyDelegated {
         _admin();
-        _setRepriceMinBps(bps);
+        _setBatch(batchMin_, batchMaxAge_);
     }
 
-    function setRestockTriggerBps(uint256 bps) external onlyDelegated {
+    /// @dev `surpriseBps_` is at most 10,000, `restoreK_` at most 100 and `bandBps_` at most 100,000.
+    function setReplacement(uint256 surpriseBps_, uint256 restoreK_, uint256 bandBps_) external onlyDelegated {
         _admin();
-        _setRestockTriggerBps(bps);
+        _setReplacement(surpriseBps_, restoreK_, bandBps_);
+    }
+
+    /// @dev `reserveBps_` is at most 10,000.
+    function setReserve(uint256 reserveBps_) external onlyDelegated {
+        _admin();
+        _setReserve(reserveBps_);
+    }
+
+    /// @notice Allows `settle` to list while FWA's inventory change cooldown is nonzero.
+    function setListWhilePaused(bool on) external onlyDelegated {
+        _admin();
+        _listWhilePaused = on;
     }
 
     function setPaused(bool pulls, bool deposits) external onlyDelegated {
@@ -144,7 +178,7 @@ contract PoolAdmin is PoolBooks {
     /// @notice Sends an ERC-721 token the pool does not account for to `to`. Reverts `Accounted`
     ///         for a held or listed ordinary item and for a track's pack.
     function sweep(address token, uint256 id, address to) external onlyDelegated onlyAdmin {
-        if (registered[token][id] || (token == drawPacks && (id == grail[MINOR].packId || id == grail[MAJOR].packId))) {
+        if (_registered[token][id] || (token == drawPacks && (id == _grail[MINOR].packId || id == _grail[MAJOR].packId))) {
             revert Accounted();
         }
         _transfer(token, address(this), to, id);
@@ -250,7 +284,7 @@ contract PoolAdmin is PoolBooks {
         }
         bool pending = listedCount != 0 || _held.length != 0;
         for (uint256 t; migrate && t <= MAJOR; ++t) {
-            Grail storage g = grail[t];
+            Grail storage g = _grail[t];
             if (g.packId == 0 && g.bucket == 0) continue;
             if (maxItems == 0) {
                 pending = true;
@@ -260,15 +294,15 @@ contract PoolAdmin is PoolBooks {
                 _callFull(dest, bucket, this.importGrail.selector, t, packId, 0);
             }
         }
-        exportedNav += movedNav;
+        _exportedNav += movedNav;
         if (pending) return false;
 
         cash += maintenance;
         maintenance = 0;
-        uint256 exported = exportedNav + nav();
+        uint256 exported = _exportedNav + nav();
         uint256 shares = totalShares;
-        exportedNav = exported;
-        exportedShares = shares;
+        _exportedNav = exported;
+        _exportedShares = shares;
         lifecycle = Lifecycle.Exported;
         if (_read(address(fwaPool), IFWAClone.retired.selector, 0) == 0) {
             _call(address(fwaPool), IFWAClone.retirePool.selector, 0, 0);
@@ -292,9 +326,200 @@ contract PoolAdmin is PoolBooks {
         if (to == address(0)) revert ZeroAddress();
         if (to == address(this)) revert InvalidDest();
         _sync();
-        (uint256 packId, uint256 bucket) = _takeGrail(grail[t], to);
+        (uint256 packId, uint256 bucket) = _takeGrail(_grail[t], to);
         emit GrailEstateTransferred(t, to, packId, bucket);
         SafeTransferLib.safeTransferETH(to, bucket);
+    }
+
+    // ------------------------------------------------------------------ views
+
+    /// @notice Listed plus held ordinary items of `row`.
+    function rowCount(uint256 row) external view onlyDelegated returns (uint256) {
+        return _rowCount[row];
+    }
+
+    /// @notice Number of mix rows.
+    function mixLength() external view onlyDelegated returns (uint256) {
+        return _mix.length;
+    }
+
+    /// @notice Listed items of `row`.
+    function listedRowCount(uint256 row) external view onlyDelegated returns (uint256) {
+        return _listedByRow[row].length;
+    }
+
+    /// @notice Rungs and weight share of mix row `i`.
+    function mixRow(uint256 i) external view onlyDelegated returns (uint8[] memory rungs, uint16 shareBps) {
+        uint8[] storage stored = _mix[i].rungs;
+        rungs = new uint8[](stored.length);
+        for (uint256 j; j < rungs.length; ++j) {
+            rungs[j] = stored[j];
+        }
+        shareBps = _mix[i].shareBps;
+    }
+
+
+    /// @notice Queued replacements at which `settleDue` returns `Batch`.
+    function batchMin() external view onlyDelegated returns (uint256) {
+        return _batchMin;
+    }
+
+    /// @notice Seconds since the queue became nonempty after which `settleDue` returns `Age`.
+    function batchMaxAge() external view onlyDelegated returns (uint256) {
+        return _batchMaxAge;
+    }
+
+    /// @notice Probability, in bps, that a replacement draw takes the surprise step.
+    function surpriseBps() external view onlyDelegated returns (uint256) {
+        return _surpriseBps;
+    }
+
+    /// @notice Multiplier of a row's relative deficit in its replacement draw weight.
+    function restoreK() external view onlyDelegated returns (uint256) {
+        return _restoreK;
+    }
+
+    /// @notice Headroom above its target, in bps, up to which a row may be chosen as a replacement.
+    function bandBps() external view onlyDelegated returns (uint256) {
+        return _bandBps;
+    }
+
+    /// @notice Share of ordinary NAV, in bps, that cash keeps after a mint or a kept Shape.
+    function reserveBps() external view onlyDelegated returns (uint256) {
+        return _reserveBps;
+    }
+
+    /// @notice True when `settle` lists while FWA's inventory change cooldown is nonzero.
+    function listWhilePaused() external view onlyDelegated returns (bool) {
+        return _listWhilePaused;
+    }
+
+    /// @notice Time the replacement queue last went from empty to nonempty, zero while it is empty.
+    function oldestQueuedAt() external view onlyDelegated returns (uint256) {
+        return _oldestQueuedAt;
+    }
+
+    /// @notice State of GRAIL track `track`.
+    function grail(uint256 track) external view onlyDelegated returns (Grail memory) {
+        return _grail[track];
+    }
+
+    /// @notice Queued withdrawal claim at `index`.
+    function claimQueue(uint256 index) external view onlyDelegated returns (Claim memory) {
+        return _claimQueue[index];
+    }
+
+    /// @notice Row index of the replacement queue entry at `index`.
+    function replacementQueue(uint256 index) external view onlyDelegated returns (uint16) {
+        return _replacementQueue[index];
+    }
+
+    /// @notice Seconds from FWA pool creation to the earliest `open()`.
+    function openingDeadline() external view onlyDelegated returns (uint256) {
+        return _openingDeadline;
+    }
+
+    /// @notice Earliest `open()` time, set by `createFwaPool`.
+    function openingDeadlineAt() external view onlyDelegated returns (uint256) {
+        return _openingDeadlineAt;
+    }
+
+    /// @notice Largest acquisition count of one `acquireBatch`.
+    function maxBatch() external view onlyDelegated returns (uint256) {
+        return _maxBatch;
+    }
+
+    /// @notice Listed ordinary items required above the unsettled acquisitions for a purchase.
+    function concurrency() external view onlyDelegated returns (uint256) {
+        return _concurrency;
+    }
+
+    /// @notice Time of the last `rotate` refund.
+    function lastRefundAt() external view onlyDelegated returns (uint256) {
+        return _lastRefundAt;
+    }
+
+    /// @notice Largest share of the FWA selection weight, in bps, that the listed GRAIL tracks hold.
+    function grailProbCapBps() external view onlyDelegated returns (uint256) {
+        return _grailProbCapBps;
+    }
+
+    /// @notice Booked share of `ownerProceeds` awaiting harvest for `maintenance`.
+    function maintenanceReceivable() external view onlyDelegated returns (uint256) {
+        return _maintenanceReceivable;
+    }
+
+    /// @notice Net proceeds of settled captures not yet split. Negative while captures sold below value.
+    function margin() external view onlyDelegated returns (int256) {
+        return _margin;
+    }
+
+    /// @notice Replacement mint fees of booked captures not yet covered by margin.
+    function mintLineOwed() external view onlyDelegated returns (uint256) {
+        return _mintLineOwed;
+    }
+
+    /// @notice Share supply recorded when the export completed.
+    function exportedShares() external view onlyDelegated returns (uint256) {
+        return _exportedShares;
+    }
+
+    /// @notice Ordinary NAV recorded when the export completed.
+    function exportedNav() external view onlyDelegated returns (uint256) {
+        return _exportedNav;
+    }
+
+    /// @notice Shares minted to the importing holders at `finalizeImport`.
+    function importedShares() external view onlyDelegated returns (uint256) {
+        return _importedShares;
+    }
+
+    /// @notice Old pool share supply that `importedShares` represents.
+    function importedFromShares() external view onlyDelegated returns (uint256) {
+        return _importedFromShares;
+    }
+
+    /// @notice True once `holder` called `migrateHolder`.
+    function migrated(address holder) external view onlyDelegated returns (bool) {
+        return _migrated[holder];
+    }
+
+    /// @notice True while the token is a held or listed ordinary item of this pool.
+    function registered(address collection, uint256 tokenId) external view onlyDelegated returns (bool) {
+        return _registered[collection][tokenId];
+    }
+
+    /// @notice Row that replaces the capture of FWA request `requestId`, and whether the surprise
+    ///         step chose it. Drawn by `PricingLib.chooseRow` from `keccak256(randomWord,
+    ///         requestId)`. A row's count is its listed, held and queued items.
+    function chooseRow(uint256 requestId, uint256 capturedRow)
+        external
+        view
+        onlyDelegated
+        returns (uint256, bool)
+    {
+        return _chooseRow(requestId, capturedRow);
+    }
+
+    function _chooseRow(uint256 requestId, uint256 capturedRow)
+        internal
+        view
+        override
+        returns (uint256 row, bool surprise)
+    {
+        return _pickRow(_randomWord(requestId), requestId, capturedRow);
+    }
+
+    // ------------------------------------------------------------------ held items
+
+    /// @notice Number of held ordinary items.
+    function heldCount() external view onlyDelegated returns (uint256) {
+        return _held.length;
+    }
+
+    /// @notice Token ids of the held Shapes of ladder index `denom`.
+    function heldShapes(uint8 denom) external view onlyDelegated returns (uint256[] memory) {
+        return _heldByDenom[denom];
     }
 
     // ------------------------------------------------------------------ successor import
@@ -304,7 +529,7 @@ contract PoolAdmin is PoolBooks {
     ///         `rotate` or `open` lists it.
     function importItem(address collection, uint256 tokenId) external onlyDelegated onlyOldPool {
         _requireOwned(collection, tokenId);
-        if (registered[collection][tokenId]) revert AlreadyRegistered();
+        if (_registered[collection][tokenId]) revert AlreadyRegistered();
         (uint256 row, uint256 value) = _importRow(collection, tokenId);
         if (row == type(uint256).max) revert NoMatchingRow();
         _addItem(Item(collection, uint16(row), tokenId, value, 0));
@@ -314,7 +539,7 @@ contract PoolAdmin is PoolBooks {
     /// @notice Whether `oldPool` could import the token now: the import is open, the token is not
     ///         registered and a mix row matches its collection and value.
     function canImport(address collection, uint256 tokenId) external view onlyDelegated returns (bool) {
-        if (importFinalized || lifecycle >= Lifecycle.Exiting || registered[collection][tokenId]) return false;
+        if (importFinalized || lifecycle >= Lifecycle.Exiting || _registered[collection][tokenId]) return false;
         (uint256 row,) = _importRow(collection, tokenId);
         return row != type(uint256).max;
     }
@@ -324,7 +549,7 @@ contract PoolAdmin is PoolBooks {
     ///         that arrives while the track holds one is redeemed and its proceeds join the
     ///         bucket.
     function importGrail(uint8 t, uint256 packId) external payable onlyDelegated onlyOldPool {
-        Grail storage g = grail[t];
+        Grail storage g = _grail[t];
         g.bucket += msg.value;
         if (packId != 0) {
             _requireOwned(drawPacks, packId);
@@ -358,9 +583,9 @@ contract PoolAdmin is PoolBooks {
         uint256 preNav = total > imported ? total - imported : 0;
         uint256 minted =
             totalShares == 0 || preNav == 0 ? imported : PricingLib.sharesFor(imported, preNav, totalShares);
-        importedShares = minted;
+        _importedShares = minted;
         totalShares += minted;
-        importedFromShares = fromShares;
+        _importedFromShares = fromShares;
         importFinalized = true;
         emit Imported(imported, minted);
     }
@@ -369,9 +594,9 @@ contract PoolAdmin is PoolBooks {
     ///         `oldPool`. Once per holder. The rounding remainder stays in `totalShares`.
     function migrateHolder(address holder) external onlyDelegated {
         if (!importFinalized) revert ImportNotFinal();
-        if (migrated[holder]) revert AlreadyMigrated();
-        migrated[holder] = true;
-        uint256 shares = _read(oldPool, this.sharesOf.selector, uint160(holder)) * importedShares / importedFromShares;
+        if (_migrated[holder]) revert AlreadyMigrated();
+        _migrated[holder] = true;
+        uint256 shares = _read(oldPool, this.sharesOf.selector, uint160(holder)) * _importedShares / _importedFromShares;
         sharesOf[holder] += shares;
         emit Migrated(holder, shares);
     }

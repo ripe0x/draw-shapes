@@ -6,7 +6,7 @@ import {Denominations} from "shapes/lib/Denominations.sol";
 import {Pool} from "./Pool.sol";
 import {PricingLib} from "./lib/PricingLib.sol";
 import {IFWAClone} from "./interfaces/IFWAClone.sol";
-import {IPoolTypes} from "./interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "./interfaces/IPool.sol";
 
 /// @title Lens
 /// @notice Read-only views over one `Pool`. Every value comes from the pool's public getters and
@@ -118,12 +118,16 @@ contract Lens {
         uint256 openingDeadlineAt;
         uint256 minItems;
         uint256 grailProbCapBps;
-        uint256 restockTriggerBps;
-        uint256 quietIntervalSeconds;
+        uint256 batchMin;
+        uint256 batchMaxAge;
+        uint256 surpriseBps;
+        uint256 restoreK;
+        uint256 bandBps;
+        uint256 reserveBps;
+        bool listWhilePaused;
         uint256 maxBatch;
         uint256 concurrency;
         uint256 lastRotateAt;
-        uint256 lastRotateCallAt;
         uint256 lastRefundAt;
     }
 
@@ -131,6 +135,12 @@ contract Lens {
 
     constructor(Pool pool_) {
         pool = pool_;
+    }
+
+    /// @dev The pool through its full ABI, which includes the functions `PoolAdmin` serves through
+    ///      the `fallback` of `Pool`.
+    function _ip() internal view returns (IPool) {
+        return IPool(address(pool));
     }
 
     // ------------------------------------------------------------------ quote
@@ -153,7 +163,7 @@ contract Lens {
         if (state >= IPoolTypes.Lifecycle.Exiting) return Reason.Exiting;
         if (state != IPoolTypes.Lifecycle.Live) return Reason.NotLive;
         if (pool.pullsPaused()) return Reason.PullsPaused;
-        if (count == 0 || count > pool.maxBatch()) return Reason.InvalidCount;
+        if (count == 0 || count > _ip().maxBatch()) return Reason.InvalidCount;
         Reopen memory r = _reopen();
         if (!r.cooldownPassed) return Reason.CoolingDown;
         if (!r.solvent) return Reason.Insolvent;
@@ -180,32 +190,31 @@ contract Lens {
         p.shares = pool.sharesOf(account);
         uint256 supply = pool.totalShares();
         p.valueWei = supply == 0 ? 0 : p.shares * pool.nav() / supply;
-        p.migrated = pool.migrated(account);
+        p.migrated = _ip().migrated(account);
     }
 
     // ------------------------------------------------------------------ board
 
     /// @notice One entry per mix row: rungs, share, backing, live list price, item counts and the
-    ///         target depth `Pool.rotate` mints toward.
+    ///         target depth of `Pool.settle` and `Pool.open`.
     function board() external view returns (Row[] memory rows) {
-        uint256 n = pool.mixLength();
+        uint256 n = _ip().mixLength();
         rows = new Row[](n);
         (uint16 premium, uint16 maintenance, uint16 feed,) = pool.feeSplit();
         uint256 fee = IShapes(pool.shapes()).mintFee();
-        uint256 pulls = pool.trailingPulls();
-        uint256 floorItems = pool.minItems();
+        uint256 items = pool.minItems();
         for (uint256 i; i < n; ++i) {
             Row memory r = rows[i];
-            (r.rungs, r.shareBps) = pool.mixRow(i);
+            (r.rungs, r.shareBps) = _ip().mixRow(i);
             for (uint256 j; j < r.rungs.length; ++j) {
                 r.backingWei += Denominations.amountAt(r.rungs[j]);
             }
             r.listingPrice = PricingLib.listingPrice(
                 r.backingWei, premium, maintenance, feed, PricingLib.mintLineBps(fee * r.rungs.length, r.backingWei)
             );
-            r.count = pool.rowCount(i);
-            r.listed = pool.listedRowCount(i);
-            r.target = PricingLib.rowDepth(floorItems, pulls, r.shareBps);
+            r.count = _ip().rowCount(i);
+            r.listed = _ip().listedRowCount(i);
+            r.target = PricingLib.rowDepth(items, r.shareBps);
         }
     }
 
@@ -227,7 +236,7 @@ contract Lens {
             g.pullsSinceList,
             g.receivable,
             g.listingId
-        ) = pool.grail(t);
+        ) = _ip().grail(t);
         if (g.listingId != 0) {
             uint256 total = pool.fwaPool().totalWeight();
             if (total != 0) g.weightBps = PricingLib.weightOf(g.notional) * BPS / total;
@@ -243,7 +252,7 @@ contract Lens {
         c.cash = pool.cash();
         QueuedClaim[] memory buffer = new QueuedClaim[](_queueLength() - c.head);
         for (uint256 i; i < buffer.length; ++i) {
-            (address to, uint64 requestedAt, uint256 amount) = pool.claimQueue(c.head + i);
+            (address to, uint64 requestedAt, uint256 amount) = _ip().claimQueue(c.head + i);
             buffer[i] = QueuedClaim(to, amount, requestedAt);
             c.unpaidTotal += amount;
         }
@@ -271,7 +280,7 @@ contract Lens {
     }
 
     function _has(uint256 index) internal view returns (bool) {
-        try pool.claimQueue(index) returns (address, uint64, uint256) {
+        try _ip().claimQueue(index) returns (address, uint64, uint256) {
             return true;
         } catch {
             return false;
@@ -289,12 +298,12 @@ contract Lens {
         r.live = pool.lifecycle() == IPoolTypes.Lifecycle.Live;
         r.pullsOpen = !pool.pullsPaused();
         r.listedCount = pool.listedCount();
-        r.concurrency = pool.concurrency();
+        r.concurrency = _ip().concurrency();
         r.balance = address(pool).balance;
         r.required = pool.cash() + pool.maintenance();
         IFWAClone fwa = pool.fwaPool();
         for (uint256 t; t <= MAJOR; ++t) {
-            (uint256 bucket,,,,,,,,,,,) = pool.grail(t);
+            (uint256 bucket,,,,,,,,,,,) = _ip().grail(t);
             r.required += bucket;
         }
         r.solvent = r.balance >= r.required;
@@ -311,6 +320,11 @@ contract Lens {
     ///         `rotateInterval` has not passed since `lastRotateAt`.
     function rotateDue() external view returns (IPoolTypes.RotateTrigger) {
         return pool.rotateDue();
+    }
+
+    /// @notice First reason `Pool.settle` lists replacements, or `None`.
+    function settleDue() external view returns (IPoolTypes.SettleTrigger) {
+        return pool.settleDue();
     }
 
     // ------------------------------------------------------------------ parameters
@@ -332,16 +346,20 @@ contract Lens {
         (p.curve.baseBps, p.curve.slopeBps, p.curve.capBps, p.curve.referenceWei) = pool.curve();
         p.navCap = pool.navCap();
         p.rotateInterval = pool.rotateInterval();
-        p.openingDeadline = pool.openingDeadline();
-        p.openingDeadlineAt = pool.openingDeadlineAt();
+        p.openingDeadline = _ip().openingDeadline();
+        p.openingDeadlineAt = _ip().openingDeadlineAt();
         p.minItems = pool.minItems();
-        p.grailProbCapBps = pool.grailProbCapBps();
-        p.restockTriggerBps = pool.restockTriggerBps();
-        p.quietIntervalSeconds = pool.quietIntervalSeconds();
-        p.maxBatch = pool.maxBatch();
-        p.concurrency = pool.concurrency();
+        p.grailProbCapBps = _ip().grailProbCapBps();
+        p.batchMin = _ip().batchMin();
+        p.batchMaxAge = _ip().batchMaxAge();
+        p.surpriseBps = _ip().surpriseBps();
+        p.restoreK = _ip().restoreK();
+        p.bandBps = _ip().bandBps();
+        p.reserveBps = _ip().reserveBps();
+        p.listWhilePaused = _ip().listWhilePaused();
+        p.maxBatch = _ip().maxBatch();
+        p.concurrency = _ip().concurrency();
         p.lastRotateAt = pool.lastRotateAt();
-        p.lastRotateCallAt = pool.lastRotateCallAt();
-        p.lastRefundAt = pool.lastRefundAt();
+        p.lastRefundAt = _ip().lastRefundAt();
     }
 }

@@ -32,7 +32,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         vm.deal(alice, 10_000 ether);
         pool = new PoolHarness(_fixtureParams());
         vm.prank(admin);
-        pool.createFwaPool(0);
+        IPool(address(pool)).createFwaPool(0);
         clone = pool.fwaPool();
         vm.prank(address(pool));
         clone.setBool(41, true);
@@ -66,8 +66,8 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     function _openLarge() internal {
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
-        vm.warp(pool.openingDeadlineAt());
-        pool.recordPulls(60);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.sizeBoard(60);
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
         warpPastCooldown(clone);
@@ -107,19 +107,19 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     }
 
     function _notional(uint256 t) internal view returns (uint256 v) {
-        (,,, v,,,,,,,,) = pool.grail(t);
+        (,,, v,,,,,,,,) = IPool(address(pool)).grail(t);
     }
 
     function _pulls(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,, v,,) = pool.grail(t);
+        (,,,,,,,,, v,,) = IPool(address(pool)).grail(t);
     }
 
     function _packId(uint256 t) internal view returns (uint256 v) {
-        (, v,,,,,,,,,,) = pool.grail(t);
+        (, v,,,,,,,,,,) = IPool(address(pool)).grail(t);
     }
 
     function _listing(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,,,, v) = pool.grail(t);
+        (,,,,,,,,,,, v) = IPool(address(pool)).grail(t);
     }
 
     function _price(uint256 listingId) internal view returns (uint256 price, IFWAClone.ListingStatus status) {
@@ -161,6 +161,13 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         }
     }
 
+    /// @dev Books the captures and harvests as `keeper`. The factory cooldown is nonzero, so
+    ///      `settle` lists nothing.
+    function _settle() internal {
+        vm.prank(keeper);
+        pool.settle(20);
+    }
+
     function _rotate() internal returns (Summary memory s) {
         vm.recordLogs();
         vm.prank(keeper);
@@ -195,7 +202,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         new PoolHarness(p);
     }
 
-    function test_rotateActivatesAStagedGrailListingBeforeRepricingIt() public {
+    function test_settleActivatesAStagedGrailListingAndRotateRepricesIt() public {
         _openLarge();
         _enableMinor();
         _grow(0);
@@ -216,12 +223,16 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
+        _settle();
+        (, status) = _price(stagedId);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by settle");
         _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Decay));
         _rotate();
 
         uint256 price;
         (price, status) = _price(stagedId);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by rotate");
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
         assertEq(price, 0.029 ether, "11 pulls at 0.001 ETH: 10 recorded and the booked pull");
         assertEq(_notional(0), 0.029 ether);
     }
@@ -230,21 +241,20 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
     function test_refundIsPaidOncePerRotateIntervalWhenEveryRotateBooks() public {
         _openLarge();
-        // A 0.01 percent trigger makes every capture's lost weight due.
-        vm.prank(admin);
-        IPool(address(pool)).setRestockTriggerBps(1);
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
         _warpToRotation();
 
         _captureShape();
+        _settle();
         Summary memory first = _rotate();
         assertGt(first.refund, 0, "relisting the replacement pays the first refund");
-        assertEq(pool.lastRefundAt(), block.timestamp);
+        assertEq(IPool(address(pool)).lastRefundAt(), block.timestamp);
         assertEq(pool.replacementLength(), 0, "replacement minted and listed");
 
         _pastCooldown();
         _captureShape();
+        _settle();
         uint256 maintenanceBefore = pool.maintenance();
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
         pool.rotate();
@@ -252,9 +262,10 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
         vm.warp(block.timestamp + pool.rotateInterval());
         _pastCooldown();
+        _settle();
         Summary memory third = _rotate();
         assertGt(third.refund, 0, "a refund is due again after the interval");
-        assertEq(pool.lastRefundAt(), block.timestamp);
+        assertEq(IPool(address(pool)).lastRefundAt(), block.timestamp);
     }
 
     // ---------------------------------------------------------------- A3: probability cap
@@ -273,22 +284,17 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         pool.recordPulls(100);
         assertEq(_pulls(0), 100);
         _warpToRotation();
-        vm.recordLogs();
-        _rotate();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the decay would cross the cap");
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
         (uint256 price,) = _price(listingId);
         assertEq(price, 0.04 ether, "the reprice to the 0.02 ETH floor would exceed the cap");
         assertEq(_notional(0), 0.04 ether);
         assertEq(_pulls(0), 100, "pulls keep counting");
 
-        _pastCooldown();
-        _acquire(player, 1);
-
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);
-        vm.warp(block.timestamp + pool.rotateInterval());
-        _pastCooldown();
-        uint256[] memory listed = pool.listedIds(0);
-        fulfill(clone, clone.requestIdAtSequence(clone.lastIssuedSequence()), wordFor(clone, listed[0]));
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Decay), "the cap allows the reprice");
         _rotate();
         (price,) = _price(listingId);
         assertEq(price, 0.02 ether, "reprices once the cap allows it");
@@ -305,10 +311,9 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         vm.prank(saver);
         pool.deposit{value: 0.05 ether}();
         uint256 listedBefore = pool.listedCount();
-        // The quiet floor makes the rotation due while the claim is fresh.
-        pool.setLastRotateAt(block.timestamp - pool.quietIntervalSeconds());
-        pool.setLastRotateCallAt(block.timestamp - pool.quietIntervalSeconds());
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Quiet));
+        // A funded GRAIL step makes the rotation due while the claim is fresh.
+        _enableMinor();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
 
         Summary memory fresh = _rotate();
 
@@ -328,11 +333,11 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
     function test_liquidationRedeemsHeldItemsBeforeListedOnesAndNeedsNoFwaCall() public {
         _openLarge();
-        _captureShape();
-        pool.settle(20);
-        _pastCooldown();
+        uint256 heldId = mintShapes(address(pool), 0.1 ether, 1);
+        pool.loseCash(0.1 ether);
+        pool.addItem(SHAPES_ADDR, 0, heldId, 0.1 ether, 0);
         _acquire(player, 1);
-        assertEq(pool.heldCount(), 1, "the second pull mints the replacement and holds it");
+        assertEq(pool.heldCount(), 1, "one Shape is held unlisted");
         assertEq(clone.unsettledAcquisitionCount(), 1, "FWA is busy");
         uint256 listedBefore = pool.listedCount();
 
