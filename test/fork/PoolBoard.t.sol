@@ -9,6 +9,7 @@ import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+import {IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Board build against deployed Shapes, deployed Shape Packs and a FWA clone created by
 ///         the pool through the deployed factory.
@@ -34,7 +35,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         _create(_forkParams());
     }
 
-    function _forkParams() internal returns (Pool.Params memory p) {
+    function _forkParams() internal returns (IPoolTypes.Params memory p) {
         p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
@@ -43,7 +44,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs[1] = 0;
     }
 
-    function _create(Pool.Params memory p) internal {
+    function _create(IPoolTypes.Params memory p) internal {
         pool = new PoolHarness(p);
         vm.prank(admin);
         pool.createFwaPool(0);
@@ -76,7 +77,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     function _checkListings() internal view returns (uint256 sum, uint256 listedCount) {
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
-            Pool.Item memory it = pool.listedItem(id);
+            IPoolTypes.Item memory it = pool.listedItem(id);
             assertEq(it.listingId, id, "registry id");
             (address collection, address depositor,, uint256 tokenId,, uint256 price,, IFWAClone.ListingStatus status) =
                 clone.listings(id);
@@ -110,11 +111,11 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     }
 
     function test_createFwaPoolEmitsEvent() public {
-        Pool.Params memory p = _forkParams();
+        IPoolTypes.Params memory p = _forkParams();
         PoolHarness fresh = new PoolHarness(p);
         address predicted = factory.predictPoolAddress(address(fresh), bytes32(0));
         vm.expectEmit(true, false, false, false, address(fresh));
-        emit Pool.FwaPoolCreated(predicted);
+        emit IPoolTypes.FwaPoolCreated(predicted);
         vm.prank(admin);
         fresh.createFwaPool(0);
         assertEq(address(fresh.fwaPool()), predicted);
@@ -122,7 +123,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_revert_createFwaPoolTwice() public {
         vm.prank(admin);
-        vm.expectRevert(Pool.FwaPoolExists.selector);
+        vm.expectRevert(IPoolTypes.FwaPoolExists.selector);
         pool.createFwaPool(0);
     }
 
@@ -130,15 +131,15 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_revert_openBeforeDeadline() public {
         vm.warp(pool.openingDeadlineAt() - 1);
-        vm.expectRevert(Pool.OpeningDeadlineNotReached.selector);
+        vm.expectRevert(IPoolTypes.OpeningDeadlineNotReached.selector);
         pool.open();
     }
 
     function test_openWithNoCashListsNothing() public {
         vm.expectEmit(false, false, false, false, address(pool));
-        emit Pool.Opened();
+        emit IPoolTypes.Opened();
         _open();
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Live));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
         assertEq(clone.nextListingId(), 1);
         assertEq(clone.activeListingCount(), 0);
         assertEq(pool.heldCount(), 0);
@@ -147,12 +148,12 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_revert_openTwice() public {
         _open();
-        vm.expectRevert(Pool.NotOpening.selector);
+        vm.expectRevert(IPoolTypes.NotOpening.selector);
         pool.open();
     }
 
     function test_openRepeatsUntilTheBoardIsBuiltThenGoesLive() public {
-        Pool.Params memory p = _forkParams();
+        IPoolTypes.Params memory p = _forkParams();
         p.minItems = 60;
         _create(p);
         vm.prank(alice);
@@ -164,35 +165,35 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
         assertTrue(clone.localPurchasesEnabled(), "first call enables acquisitions");
         assertEq(pool.listedCount(), 20);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening));
 
         pool.open();
         assertEq(pool.listedCount(), 40);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening));
 
         pool.open();
         assertEq(pool.listedCount(), 60, "board at target after 20 mints");
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening), "a full batch keeps the pool Opening");
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening), "a full batch keeps the pool Opening");
 
         pool.open();
         assertEq(pool.listedCount(), 60);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Live));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
         assertEq(pool.rowCount(0), 42);
         assertEq(pool.rowCount(1), 18);
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 opened;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == address(pool) && logs[i].topics[0] == Pool.Opened.selector) ++opened;
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.Opened.selector) ++opened;
         }
         assertEq(opened, 1, "Opened is emitted on the transition only");
 
-        vm.expectRevert(Pool.NotOpening.selector);
+        vm.expectRevert(IPoolTypes.NotOpening.selector);
         pool.open();
     }
 
     function test_openGoesLiveWhenCashRunsOutBeforeTheBatchFills() public {
-        Pool.Params memory p = _forkParams();
+        IPoolTypes.Params memory p = _forkParams();
         p.minItems = 60;
         _create(p);
         pool.bookProceeds{value: 3 * row0Cost + row1Cost}();
@@ -200,7 +201,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
         assertGt(pool.listedCount(), 0);
         assertLt(pool.listedCount(), 20);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Live));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
     }
 
     function test_restockPaysQueuedClaimsBeforeMinting() public {
@@ -254,7 +255,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         uint256 packs;
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
-            Pool.Item memory it = pool.listedItem(id);
+            IPoolTypes.Item memory it = pool.listedItem(id);
             if (it.row != 1) continue;
             ++packs;
             assertEq(it.collection, address(drawPacks));
@@ -396,7 +397,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Fulfilled));
         (,, address purchaser,,,,,) = clone.listings(listingId);
         assertEq(purchaser, bob);
-        Pool.Item memory it = pool.listedItem(listingId);
+        IPoolTypes.Item memory it = pool.listedItem(listingId);
         assertEq(IERC721(it.collection).ownerOf(it.tokenId), bob);
     }
 }

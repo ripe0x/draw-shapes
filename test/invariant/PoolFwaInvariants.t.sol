@@ -9,6 +9,7 @@ import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "../fork/ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {PoolHandler} from "./PoolInvariants.t.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Drives the pool against a real FWA clone, deployed Shapes and a Draw Packs deployment.
 ///         Deposit, withdraw and warp are delegated to `PoolHandler`, which holds the I3 ghost
@@ -63,6 +64,8 @@ contract PoolFwaHandler is ForkBase {
     uint256 public rotations;
     uint256 public liquidations;
     uint256 public liquidatedItems;
+    uint256 public liquidatedListed;
+    uint256 public paramChanges;
     uint256 public exportSteps;
 
     receive() external payable {}
@@ -93,48 +96,49 @@ contract PoolFwaHandler is ForkBase {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(pool)) continue;
             bytes32 topic = logs[i].topics[0];
-            if (topic == Pool.Deposited.selector) {
+            if (topic == IPoolTypes.Deposited.selector) {
                 (, uint256 contribution,) = abi.decode(logs[i].data, (uint256, uint256, uint256));
                 _creditGrail(contribution);
-            } else if (topic == Pool.MarginSplit.selector) {
+            } else if (topic == IPoolTypes.MarginSplit.selector) {
                 (uint256 cover, uint256 premiumShare, uint256 maintenanceShare, uint256 feedShare) =
                     abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
                 ghostMarginSplit += cover + premiumShare + maintenanceShare + feedShare;
                 ghostMaintenanceShares += maintenanceShare;
                 _creditGrail(feedShare);
-            } else if (topic == Pool.GrailGrown.selector) {
+            } else if (topic == IPoolTypes.GrailGrown.selector) {
                 ghostGrailSpend[uint256(logs[i].topics[1])] += _growthCost(uint256(logs[i].topics[1]));
                 ++grailGrowths;
-            } else if (topic == Pool.GrailCaptured.selector) {
+            } else if (topic == IPoolTypes.GrailCaptured.selector) {
                 ghostGrailProceeds[uint256(logs[i].topics[1])] += abi.decode(logs[i].data, (uint256));
                 ++grailCaptures;
-            } else if (topic == Pool.Captured.selector) {
+            } else if (topic == IPoolTypes.Captured.selector) {
                 (, uint256 value, uint256 proceeds) = abi.decode(logs[i].data, (uint256, uint256, uint256));
                 ghostCapturedProceeds += proceeds;
                 ghostCapturedValue += value;
                 ++captures;
-            } else if (topic == Pool.WrittenOff.selector) {
+            } else if (topic == IPoolTypes.WrittenOff.selector) {
                 ghostWrittenOff += abi.decode(logs[i].data, (uint256));
-            } else if (topic == Pool.Harvested.selector) {
+            } else if (topic == IPoolTypes.Harvested.selector) {
                 (uint256 received,) = abi.decode(logs[i].data, (uint256, uint256));
                 ghostHarvestReceived += received;
-            } else if (topic == Pool.SurplusBooked.selector) {
+            } else if (topic == IPoolTypes.SurplusBooked.selector) {
                 ghostSurplus += abi.decode(logs[i].data, (uint256));
-            } else if (topic == Pool.Withdrawn.selector) {
+            } else if (topic == IPoolTypes.Withdrawn.selector) {
                 (,, uint256 enqueued) = abi.decode(logs[i].data, (uint256, uint256, uint256));
                 ghostClaimsQueued += enqueued;
-            } else if (topic == Pool.ClaimPaid.selector) {
+            } else if (topic == IPoolTypes.ClaimPaid.selector) {
                 _ingestClaimPaid(address(uint160(uint256(logs[i].topics[1]))), abi.decode(logs[i].data, (uint256)));
-            } else if (topic == Pool.Liquidated.selector) {
+            } else if (topic == IPoolTypes.Liquidated.selector) {
                 (, uint256 fee) = abi.decode(logs[i].data, (uint256, uint256));
                 ghostLiquidationFees += fee;
                 ++liquidatedItems;
+                if (uint256(logs[i].topics[1]) != 0) ++liquidatedListed;
                 if (_paidIndex >= _queuedAmount.length || fee > _queuedAmount[_paidIndex] - _paidInHead) {
                     i4Broken = true;
                 } else {
                     _queuedAmount[_paidIndex] -= fee;
                 }
-            } else if (topic == Pool.Rotated.selector) {
+            } else if (topic == IPoolTypes.Rotated.selector) {
                 (,, uint256 refund) = abi.decode(logs[i].data, (bool, bool, uint256));
                 ghostRefunds += refund;
                 _batchRefund += refund;
@@ -224,14 +228,14 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev True from `startExit` on.
     function _exiting() internal view returns (bool) {
-        return pool.lifecycle() >= Pool.Lifecycle.Exiting;
+        return pool.lifecycle() >= IPoolTypes.Lifecycle.Exiting;
     }
 
     /// @dev Starts a retirement. Once per campaign: only a Live pool can start an exit.
     function startExitRetire() external recorded {
-        if (pool.lifecycle() != Pool.Lifecycle.Live) return;
+        if (pool.lifecycle() != IPoolTypes.Lifecycle.Live) return;
         vm.prank(pool.admin());
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
     }
 
     /// @dev Settles what FWA holds, then moves up to `1 + itemsSeed % 30` items. A step that
@@ -239,7 +243,7 @@ contract PoolFwaHandler is ForkBase {
     ///      records as folded: the maintenance and maintenance receivable held before the call plus
     ///      the maintenance shares booked during it.
     function exportStep(uint8 itemsSeed, uint256 pick) external {
-        if (pool.lifecycle() != Pool.Lifecycle.Exiting) return;
+        if (pool.lifecycle() != IPoolTypes.Lifecycle.Exiting) return;
         _warpToResume();
         vm.recordLogs();
         _fulfillOutstanding(pick, false);
@@ -251,7 +255,7 @@ contract PoolFwaHandler is ForkBase {
         uint256 held = pool.maintenance() + pool.maintenanceReceivable();
         uint256 sharesBefore = ghostMaintenanceShares;
         vm.recordLogs();
-        bool done = pool.exportStep(1 + itemsSeed % 30);
+        bool done = IPool(address(pool)).exportStep(1 + itemsSeed % 30);
         ++exportSteps;
         if (done) lastMaintenance = 0;
         _collect();
@@ -261,7 +265,7 @@ contract PoolFwaHandler is ForkBase {
     // ------------------------------------------------------------------ depositor actions
 
     function deposit(uint96 value, uint8 actorSeed) external recorded {
-        if (_exiting() || pool.nav() == 0) return;
+        if (_exiting() || pool.depositsPaused() || pool.nav() == 0) return;
         if (base.deposit(value, actorSeed)) _checkPriced();
     }
 
@@ -280,7 +284,10 @@ contract PoolFwaHandler is ForkBase {
     /// @dev An actor deposits, all cash is removed and the actor withdraws every share, which
     ///      queues a claim that only listed items can cover.
     function exitIntoQueue(uint96 value, uint8 actorSeed) external recorded {
-        if (_exiting() || pool.claims() != 0 || pool.nav() == 0 || pool.nav() >= pool.navCap()) return;
+        if (_exiting() || pool.depositsPaused() || pool.claims() != 0 || pool.nav() == 0 || pool.nav() >= pool.navCap())
+        {
+            return;
+        }
         base.deposit(value, actorSeed);
         // `PoolHandler.withdraw` clears the recorded logs when it previews, so read these first.
         _collect();
@@ -300,17 +307,20 @@ contract PoolFwaHandler is ForkBase {
         (, uint256 requestedAt,) = pool.claimQueue(head);
         if (block.timestamp < requestedAt + pool.rotateInterval()) return;
         uint256 itemsBefore = liquidatedItems;
+        uint256 listedBefore = liquidatedListed;
         vm.recordLogs();
         pool.liquidate();
         _ingest(vm.getRecordedLogs());
         _checkPriced();
-        _checkLiquidationStop(liquidatedItems - itemsBefore);
+        _checkLiquidationStop(liquidatedItems - itemsBefore, liquidatedListed - listedBefore);
         ++liquidations;
     }
 
-    function _checkLiquidationStop(uint256 items) internal {
+    /// @dev A call redeems at most `MAX_LIQUIDATE_ITEMS` items and withdraws a listing only while FWA
+    ///      holds no unsettled acquisition. Held items need no FWA call.
+    function _checkLiquidationStop(uint256 items, uint256 listedItems) internal {
         if (items > 10) i4Broken = true;
-        if (items != 0 && clone.unsettledAcquisitionCount() != 0) i4Broken = true;
+        if (listedItems != 0 && clone.unsettledAcquisitionCount() != 0) i4Broken = true;
     }
 
     /// @dev Warps to the end of the rotation interval and calls `rotate` as this contract, which
@@ -324,10 +334,11 @@ contract PoolFwaHandler is ForkBase {
         pool.rotate();
         uint256 received = address(this).balance - balanceBefore;
         uint256 itemsBefore = liquidatedItems;
+        uint256 listedBefore = liquidatedListed;
         _ingest(vm.getRecordedLogs());
         if (received != _batchRefund) i6Broken = true;
         _checkPriced();
-        _checkLiquidationStop(liquidatedItems - itemsBefore);
+        _checkLiquidationStop(liquidatedItems - itemsBefore, liquidatedListed - listedBefore);
         ++rotations;
     }
 
@@ -339,6 +350,28 @@ contract PoolFwaHandler is ForkBase {
         (uint256 bucket,, uint256 backing,, uint256 target,,,,,,,) = pool.grail(t);
         if (backing >= target || bucket < _growthCost(t) || clone.unsettledAcquisitionCount() != 0) return;
         pool.growGrail(uint8(t));
+    }
+
+    // ------------------------------------------------------------------ admin actions
+
+    /// @dev Sets the pause flags as the admin. Pulls and deposits return early while a flag is set.
+    function setPaused(bool pulls_, bool deposits_) external recorded {
+        vm.prank(pool.admin());
+        IPool(address(pool)).setPaused(pulls_, deposits_);
+        ++paramChanges;
+    }
+
+    /// @dev Sets a fee split inside the bounds: the first three at most 1,000 bps together.
+    function setFeeSplit(uint16 premium, uint16 maintenance_, uint16 feed, uint16 minorShare) external recorded {
+        vm.prank(pool.admin());
+        IPool(address(pool))
+            .setFeeSplit(
+                uint16(bound(premium, 0, 400)),
+                uint16(bound(maintenance_, 0, 300)),
+                uint16(bound(feed, 0, 300)),
+                uint16(bound(minorShare, 0, 10_000))
+            );
+        ++paramChanges;
     }
 
     /// @dev FWA processes acquisitions without the pool booking them, then a holder withdraws.
@@ -353,7 +386,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev A direct FWA purchase is fulfilled and processed, then a depositor prices against the
     ///      books.
     function directThenDeposit(uint8 playerSeed, uint256 pick, uint96 value, uint8 actorSeed) external recorded {
-        if (_exiting() || pool.nav() == 0) return;
+        if (_exiting() || pool.depositsPaused() || pool.nav() == 0) return;
         _direct(playerSeed, pick, true);
         if (base.deposit(value, actorSeed)) _checkPriced();
     }
@@ -372,7 +405,7 @@ contract PoolFwaHandler is ForkBase {
     }
 
     function redeemAndDeposit(uint8 actorSeed) external recorded {
-        if (_exiting() || pool.nav() == 0) return;
+        if (_exiting() || pool.depositsPaused() || pool.nav() == 0) return;
         address actor = _actors[actorSeed % _actors.length];
         uint256 tokenId = mintShapes(actor, 0.1 ether, 1);
         vm.startPrank(actor);
@@ -386,7 +419,7 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev Pulls `count` as a player. `fulfillNow` delivers a word for every outstanding request.
     function pull(uint8 countSeed, uint8 playerSeed, uint256 pick, bool fulfillNow) external recorded {
-        if (_exiting()) return;
+        if (_exiting() || pool.pullsPaused()) return;
         _warpToResume();
         uint256 count = bound(countSeed, 1, 3);
         if (count > pool.maxBatch()) return;
@@ -406,7 +439,7 @@ contract PoolFwaHandler is ForkBase {
     }
 
     function _direct(uint8 playerSeed, uint256 pick, bool fulfillNow) internal {
-        if (clone.retired()) return;
+        if (clone.retired() || !clone.localPurchasesEnabled()) return;
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         address player = _players[playerSeed % _players.length];
@@ -422,7 +455,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev Direct acquisition with the Shapes contract as purchaser, fulfilled on a Shape listing.
     ///      Delivery reverts in the Shapes contract, which leaves the acquisition DeliveryPending.
     function griefShapes(uint256 pick) external recorded {
-        if (clone.retired()) return;
+        if (clone.retired() || !clone.localPurchasesEnabled()) return;
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         acquireAs(SHAPES_ADDR, SHAPES_ADDR, clone, block.timestamp + 1 hours);
@@ -543,7 +576,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         deployDrawPacks(admin);
         vm.deal(alice, 10_000 ether);
 
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
         p.fwaFactory = FACTORY_ADDR;
@@ -561,7 +594,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         pool.deposit{value: 200 ether}();
         vm.warp(pool.openingDeadlineAt());
         pool.recordPulls(60);
-        while (pool.lifecycle() == Pool.Lifecycle.Opening) pool.open();
+        while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         warpPastCooldown(clone);
 
         address[] memory actors = new address[](4);
@@ -574,7 +607,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         }
         handler = new PoolFwaHandler(pool, clone, actors, players);
 
-        bytes4[] memory selectors = new bytes4[](28);
+        bytes4[] memory selectors = new bytes4[](30);
         selectors[0] = PoolFwaHandler.deposit.selector;
         selectors[1] = PoolFwaHandler.withdraw.selector;
         selectors[2] = PoolFwaHandler.liquidate.selector;
@@ -604,6 +637,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[25] = PoolFwaHandler.exportStep.selector;
         selectors[26] = PoolFwaHandler.exportStep.selector;
         selectors[27] = PoolFwaHandler.exportStep.selector;
+        selectors[28] = PoolFwaHandler.setPaused.selector;
+        selectors[29] = PoolFwaHandler.setFeeSplit.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -613,6 +648,15 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     function test_handlerReachesEveryPath() public {
         for (uint256 i; i < 16; ++i) {
             handler.warpToResume();
+            if (i == 5) {
+                handler.setPaused(true, true);
+                uint256 pullsBefore = handler.pulls();
+                handler.pull(1, 1, 1, true);
+                handler.deposit(1 ether, 0);
+                assertEq(handler.pulls(), pullsBefore, "pulls are closed while paused");
+            }
+            if (i == 6) handler.setPaused(false, false);
+            if (i == 8) handler.setFeeSplit(300, 200, 100, 7_500);
             handler.pull(uint8(i), uint8(i), i, i % 3 != 0);
             handler.directAcquire(uint8(i), i, i % 2 == 0);
             handler.fulfillOutstanding(i);
@@ -652,6 +696,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.ghostRefunds(), 0);
         assertGt(handler.grailGrowths(), 0);
         assertGt(handler.grailCaptures(), 0);
+        assertEq(handler.paramChanges(), 3);
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
         invariant_I3_withdrawalNeverExceedsNavShare();
@@ -699,11 +744,11 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     ///      and runs `liquidate` past the claim age.
     function _retire() internal {
         handler.startExitRetire();
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exiting));
-        for (uint256 i; i < 12 && pool.lifecycle() == Pool.Lifecycle.Exiting; ++i) {
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
+        for (uint256 i; i < 12 && pool.lifecycle() == IPoolTypes.Lifecycle.Exiting; ++i) {
             handler.exportStep(uint8(i * 7), i);
         }
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported), "export finished");
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported), "export finished");
         assertGt(handler.exportSteps(), 1, "more than one step");
         assertEq(pool.backing(), 0);
         assertEq(pool.maintenance(), 0);
@@ -739,6 +784,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         emit log_named_uint("last run: grail captures", handler.grailCaptures());
         emit log_named_uint("last run: harvests", handler.harvests());
         emit log_named_uint("last run: export steps", handler.exportSteps());
+        emit log_named_uint("last run: param changes", handler.paramChanges());
         emit log_named_uint("last run: lifecycle", uint256(pool.lifecycle()));
     }
 
@@ -784,7 +830,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             uint256[] memory ids = pool.listedIds(r);
             inRows += ids.length;
             for (uint256 i; i < ids.length; ++i) {
-                Pool.Item memory it = pool.listedItem(ids[i]);
+                IPoolTypes.Item memory it = pool.listedItem(ids[i]);
                 assertTrue(it.value != 0 && it.row == r);
             }
         }
@@ -810,7 +856,9 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_claimsConserved() public view {
-        assertEq(pool.claims() + handler.ghostClaimsPaid() + handler.ghostLiquidationFees(), handler.ghostClaimsQueued());
+        assertEq(
+            pool.claims() + handler.ghostClaimsPaid() + handler.ghostLiquidationFees(), handler.ghostClaimsQueued()
+        );
     }
 
     /// forge-config: default.invariant.runs = 16
@@ -826,7 +874,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_I7_bucketsCreditedOnlyFromSplitsAndContributions() public view {
         assertEq(
-            pool.maintenance() + pool.maintenanceReceivable() + handler.ghostRefunds() + handler.ghostMaintenanceFolded(),
+            pool.maintenance() + pool.maintenanceReceivable() + handler.ghostRefunds()
+                + handler.ghostMaintenanceFolded(),
             handler.ghostMaintenanceShares()
         );
     }
@@ -928,7 +977,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_exportedPoolHoldsNoOrdinaryItems() public view {
-        if (pool.lifecycle() != Pool.Lifecycle.Exported) return;
+        if (pool.lifecycle() != IPoolTypes.Lifecycle.Exported) return;
         assertEq(pool.backing(), 0);
         assertEq(pool.listedCount(), 0);
         assertEq(pool.heldCount(), 0);

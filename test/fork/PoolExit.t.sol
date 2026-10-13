@@ -2,10 +2,13 @@
 pragma solidity 0.8.28;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {ShapePacks} from "draw-packs/ShapePacks.sol";
+import {ShapePackRenderer} from "draw-packs/ShapePackRenderer.sol";
 import {Pool} from "../../src/Pool.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Retirement and migration (`startExit`, `exportStep`, `transferGrailEstate`, the import
 ///         functions and `migrateHolder`) against deployed Shapes, a Draw Packs deployment and FWA
@@ -45,7 +48,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- helpers
 
-    function _forkParams(address oldPool_) internal returns (Pool.Params memory p) {
+    function _forkParams(address oldPool_) internal returns (IPoolTypes.Params memory p) {
         p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
@@ -53,10 +56,10 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         p.oldPool = oldPool_;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = Pool.GrailParams({
+        p.minor = IPoolTypes.GrailParams({
             targetWei: 0.5 ether, stepWei: 0.05 ether, listBps: 8_000, decayWeiPerPull: 0.001 ether, floorWei: 0.1 ether
         });
-        p.major = Pool.GrailParams({
+        p.major = IPoolTypes.GrailParams({
             targetWei: 1 ether, stepWei: 0.15 ether, listBps: 9_000, decayWeiPerPull: 0.002 ether, floorWei: 0.3 ether
         });
     }
@@ -78,7 +81,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     function _open(PoolHarness p_, IFWAClone c_) internal {
         vm.warp(p_.openingDeadlineAt());
-        while (p_.lifecycle() == Pool.Lifecycle.Opening) p_.open();
+        while (p_.lifecycle() == IPoolTypes.Lifecycle.Opening) p_.open();
         warpPastCooldown(c_);
     }
 
@@ -148,11 +151,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 k;
         uint256 next = c_.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
-            Pool.Item memory it = p_.listedItem(id);
+            IPoolTypes.Item memory it = p_.listedItem(id);
             if (it.value != 0) out[k++] = Token(it.collection, it.tokenId, it.value);
         }
         for (uint256 i; i < p_.heldCount(); ++i) {
-            Pool.Item memory it = p_.heldItem(i);
+            IPoolTypes.Item memory it = p_.heldItem(i);
             out[k++] = Token(it.collection, it.tokenId, it.value);
         }
         assertEq(k, n, "enumerated every item");
@@ -167,7 +170,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function _exportAll(PoolHarness p_, uint256 perCall) internal returns (uint256 calls) {
         bool done;
         while (!done) {
-            done = p_.exportStep(perCall);
+            done = IPool(address(p_)).exportStep(perCall);
             ++calls;
             assertLt(calls, 50, "export terminates");
         }
@@ -189,61 +192,61 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     function test_revert_startExitNotAdmin() public {
         _buildA();
-        vm.expectRevert(Pool.NotAdmin.selector);
-        pool.startExit(address(pool));
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).startExit(address(pool));
     }
 
     function test_revert_startExitWithoutFwaPool() public {
         PoolHarness fresh = new PoolHarness(_forkParams(address(0)));
         vm.prank(admin);
-        vm.expectRevert(Pool.FwaPoolMissing.selector);
-        fresh.startExit(address(fresh));
+        vm.expectRevert(IPoolTypes.FwaPoolMissing.selector);
+        IPool(address(fresh)).startExit(address(fresh));
     }
 
     function test_revert_startExitToAPoolWithAnotherOldPool() public {
         _buildA();
         PoolHarness other = new PoolHarness(_forkParams(address(0)));
         vm.prank(admin);
-        vm.expectRevert(Pool.InvalidDest.selector);
-        pool.startExit(address(other));
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(address(other));
     }
 
     function test_revert_startExitToAnAddressWithoutCode() public {
         _buildA();
         vm.prank(admin);
-        vm.expectRevert();
-        pool.startExit(stranger);
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(stranger);
     }
 
     function test_revert_startExitTwice() public {
         _buildA();
         vm.startPrank(admin);
-        pool.startExit(address(pool));
-        vm.expectRevert(Pool.PoolExiting.selector);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
+        IPool(address(pool)).startExit(address(pool));
         vm.stopPrank();
     }
 
     function test_startExitInOpeningClosesDeposits() public {
         vm.prank(admin);
         vm.expectEmit(true, false, false, false, address(pool));
-        emit Pool.ExitStarted(address(pool));
-        pool.startExit(address(pool));
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exiting));
+        emit IPoolTypes.ExitStarted(address(pool));
+        IPool(address(pool)).startExit(address(pool));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
         assertEq(pool.exitDest(), address(pool));
 
         vm.deal(holderOne, 1 ether);
         vm.prank(holderOne);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.deposit{value: 1 ether}();
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.open();
     }
 
     function test_revert_exportStepBeforeStartExit() public {
         _buildA();
-        vm.expectRevert(Pool.NotExiting.selector);
-        pool.exportStep(10);
+        vm.expectRevert(IPoolTypes.NotExiting.selector);
+        IPool(address(pool)).exportStep(10);
     }
 
     // ---------------------------------------------------------------- retirement
@@ -251,28 +254,28 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function test_retirementClosesPlayerAndRotationPaths() public {
         _buildA();
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
 
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         vm.deal(player, total + 1 ether);
         vm.startPrank(player);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
         uint256[] memory none = new uint256[](0);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.pullWithShapes(none, 1, fee, block.timestamp + 1 hours);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.deposit{value: 1 ether}();
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.redeemAndDeposit(1);
         vm.stopPrank();
 
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.rotate();
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.growGrail(0);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.open();
     }
 
@@ -281,14 +284,14 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256[] memory ids = _pullAs(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
 
-        vm.expectRevert(Pool.FwaBusy.selector);
-        pool.exportStep(10);
+        vm.expectRevert(IPoolTypes.FwaBusy.selector);
+        IPool(address(pool)).exportStep(10);
 
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[0]));
-        pool.exportStep(1);
+        IPool(address(pool)).exportStep(1);
         // 58 listed and 2 held items, minus the booked capture, minus the one item moved.
         assertEq(pool.listedCount() + pool.heldCount(), 58, "the capture was booked and one item moved");
     }
@@ -306,23 +309,23 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(tokens.length, 59);
 
         vm.prank(admin);
-        pool.startExit(address(pool));
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exiting));
+        IPool(address(pool)).startExit(address(pool));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
 
-        assertFalse(pool.exportStep(20), "first call stops at the budget");
+        assertFalse(IPool(address(pool)).exportStep(20), "first call stops at the budget");
         assertEq(pool.listedCount() + pool.heldCount(), 39);
-        assertFalse(pool.exportStep(20));
+        assertFalse(IPool(address(pool)).exportStep(20));
         assertEq(pool.listedCount() + pool.heldCount(), 19);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exiting));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
         assertEq(pool.exportedShares(), 0, "nothing recorded before the last item");
-        assertTrue(pool.exportStep(20));
+        assertTrue(IPool(address(pool)).exportStep(20));
 
         assertEq(pool.backing(), 0, "backing");
         assertEq(pool.listedCount(), 0);
         assertEq(pool.heldCount(), 0);
         assertEq(pool.cash(), cashBefore + value + maintenanceBefore, "redeemed values and maintenance joined cash");
         assertEq(pool.maintenance(), 0);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
         assertTrue(clone.retired(), "FWA pool retired");
         assertEq(pool.exportedShares(), shares);
         assertEq(pool.exportedNav(), navBefore + maintenanceBefore, "exported NAV is ordinary NAV plus maintenance");
@@ -356,10 +359,10 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[0]));
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
         _exportAll(pool, 100);
 
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
         assertEq(pool.backing(), 0);
         assertEq(pool.listedCount(), 0);
     }
@@ -367,7 +370,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     function test_retirementHoldersWithdrawTheirShareOfCash() public {
         _buildA();
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
         _exportAll(pool, 25);
 
         uint256 cashAll = pool.cash();
@@ -391,23 +394,23 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         (uint256 bucket, uint256 packId,,,) = _grail(pool, 0);
         (uint256 majorBucket, uint256 majorPack,,,) = _grail(pool, 1);
         vm.prank(admin);
-        vm.expectRevert(Pool.NotExiting.selector);
-        pool.transferGrailEstate(0, estate);
+        vm.expectRevert(IPoolTypes.NotExiting.selector);
+        IPool(address(pool)).transferGrailEstate(0, estate);
 
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
         _exportAll(pool, 25);
 
-        vm.expectRevert(Pool.NotAdmin.selector);
-        pool.transferGrailEstate(0, estate);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).transferGrailEstate(0, estate);
         vm.prank(admin);
-        vm.expectRevert(Pool.ZeroAddress.selector);
-        pool.transferGrailEstate(0, address(0));
+        vm.expectRevert(IPoolTypes.ZeroAddress.selector);
+        IPool(address(pool)).transferGrailEstate(0, address(0));
 
         vm.prank(admin);
         vm.expectEmit(true, true, false, true, address(pool));
-        emit Pool.GrailEstateTransferred(0, estate, packId, bucket);
-        pool.transferGrailEstate(0, estate);
+        emit IPoolTypes.GrailEstateTransferred(0, estate, packId, bucket);
+        IPool(address(pool)).transferGrailEstate(0, estate);
 
         assertEq(drawPacks.ownerOf(packId), estate, "pack sent");
         assertEq(estate.balance, bucket, "bucket sent");
@@ -425,7 +428,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(majorPackAfter, majorPack);
 
         vm.prank(admin);
-        pool.transferGrailEstate(1, estate);
+        IPool(address(pool)).transferGrailEstate(1, estate);
         assertEq(drawPacks.ownerOf(majorPack), estate);
         assertEq(estate.balance, bucket + majorBucket);
         assertEq(clone.activeListingCount(), 0);
@@ -435,12 +438,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         (, uint256 packId,,,) = _grail(pool, 1);
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
         vm.prank(admin);
-        pool.transferGrailEstate(1, estate);
+        IPool(address(pool)).transferGrailEstate(1, estate);
         assertEq(drawPacks.ownerOf(packId), estate);
         _exportAll(pool, 25);
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
     }
 
     function test_retirementLiquidateStillPaysAQueuedClaim() public {
@@ -449,12 +452,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 balanceBefore = holderOne.balance;
 
         vm.prank(admin);
-        pool.startExit(address(pool));
+        IPool(address(pool)).startExit(address(pool));
         _exportAll(pool, 25);
         assertGe(pool.cash(), queued, "redeemed items cover the claim");
         assertEq(pool.claims(), queued);
 
-        vm.expectRevert(Pool.ClaimNotDue.selector);
+        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
         pool.liquidate();
         vm.warp(block.timestamp + pool.rotateInterval());
         pool.liquidate();
@@ -471,14 +474,14 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildB();
         vm.deal(stranger, 1 ether);
         vm.startPrank(stranger);
-        vm.expectRevert(Pool.NotOldPool.selector);
-        succ.importCash{value: 1 wei}();
-        vm.expectRevert(Pool.NotOldPool.selector);
-        succ.importItem(SHAPES_ADDR, 1);
-        vm.expectRevert(Pool.NotOldPool.selector);
-        succ.importGrail{value: 1 wei}(0, 0);
-        vm.expectRevert(Pool.NotOldPool.selector);
-        succ.finalizeImport(1);
+        vm.expectRevert(IPoolTypes.NotOldPool.selector);
+        IPool(address(succ)).importCash{value: 1 wei}();
+        vm.expectRevert(IPoolTypes.NotOldPool.selector);
+        IPool(address(succ)).importItem(SHAPES_ADDR, 1);
+        vm.expectRevert(IPoolTypes.NotOldPool.selector);
+        IPool(address(succ)).importGrail{value: 1 wei}(0, 0);
+        vm.expectRevert(IPoolTypes.NotOldPool.selector);
+        IPool(address(succ)).finalizeImport(1);
         vm.stopPrank();
     }
 
@@ -489,8 +492,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(shapes.ownerOf(id), address(succ));
 
         vm.prank(address(pool));
-        vm.expectRevert(Pool.NoMatchingRow.selector);
-        succ.importItem(SHAPES_ADDR, id);
+        vm.expectRevert(IPoolTypes.NoMatchingRow.selector);
+        IPool(address(succ)).importItem(SHAPES_ADDR, id);
     }
 
     function test_revert_importItemOfAPackWithAShapeRowValue() public {
@@ -504,8 +507,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(drawPacks.valueOf(packId), 0.1 ether);
 
         vm.prank(address(pool));
-        vm.expectRevert(Pool.NoMatchingRow.selector);
-        succ.importItem(address(drawPacks), packId);
+        vm.expectRevert(IPoolTypes.NoMatchingRow.selector);
+        IPool(address(succ)).importItem(address(drawPacks), packId);
     }
 
     function test_revert_importItemTheSuccessorDoesNotOwn() public {
@@ -513,34 +516,23 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildB();
         uint256 id = mintShapes(stranger, 0.1 ether, 1);
         vm.prank(address(pool));
-        vm.expectRevert(Pool.TokenNotReceived.selector);
-        succ.importItem(SHAPES_ADDR, id);
+        vm.expectRevert(IPoolTypes.TokenNotReceived.selector);
+        IPool(address(succ)).importItem(SHAPES_ADDR, id);
     }
 
     function test_revert_importItemOfAnUnknownCollection() public {
         _buildA();
         _buildB();
         vm.prank(address(pool));
-        vm.expectRevert(Pool.NoMatchingRow.selector);
-        succ.importItem(address(succClone), 1);
-    }
-
-    function test_revert_importGrailIntoAnOccupiedTrack() public {
-        _buildA();
-        _buildB();
-        succ.growGrail(0);
-        (, uint256 packId,,,) = _grail(succ, 0);
-        assertTrue(packId != 0);
-        vm.prank(address(pool));
-        vm.expectRevert(Pool.GrailOccupied.selector);
-        succ.importGrail(0, 1);
+        vm.expectRevert();
+        IPool(address(succ)).importItem(address(succClone), 1);
     }
 
     function test_revert_migrateHolderBeforeTheImportIsFinal() public {
         _buildA();
         _buildB();
-        vm.expectRevert(Pool.ImportNotFinal.selector);
-        succ.migrateHolder(holderOne);
+        vm.expectRevert(IPoolTypes.ImportNotFinal.selector);
+        IPool(address(succ)).migrateHolder(holderOne);
     }
 
     function test_migrationMovesEveryItemGrailAndCashToTheSuccessor() public {
@@ -564,13 +556,13 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 held = succ.heldCount();
 
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         assertEq(pool.exitDest(), address(succ));
 
         uint256 calls = _exportAll(pool, 12);
         assertEq(calls, 6, "59 items and 2 tracks at 12 per call");
 
-        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
         assertTrue(clone.retired());
         assertEq(pool.backing(), 0);
         assertEq(pool.listedCount() + pool.heldCount(), 0);
@@ -610,8 +602,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(importedNav, aBacking + aCash + aMaintenance);
         assertEq(succ.importedShares(), importedNav * bShares / bNav, "priced at the successor NAV per share");
         assertEq(succ.totalShares(), bShares + succ.importedShares());
-        assertEq(succ.exportedShares(), aShares);
-        assertApproxEqAbs(succ.sharesOf(carol) * succ.nav() / succ.totalShares(), carolClaim, 1, "native claim unchanged");
+        assertEq(succ.importedFromShares(), aShares);
+        assertEq(succ.exportedShares(), 0, "export snapshot fields stay on the exporting pool");
+        assertApproxEqAbs(
+            succ.sharesOf(carol) * succ.nav() / succ.totalShares(), carolClaim, 1, "native claim unchanged"
+        );
         _assertI1(pool);
         _assertI1(succ);
     }
@@ -622,26 +617,26 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 one = pool.sharesOf(holderOne);
         uint256 two = pool.sharesOf(holderTwo);
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
         uint256 imported = succ.importedShares();
-        uint256 exported = succ.exportedShares();
+        uint256 exported = succ.importedFromShares();
         uint256 supplyBefore = succ.totalShares();
         vm.expectEmit(true, false, false, true, address(succ));
-        emit Pool.Migrated(holderOne, one * imported / exported);
-        succ.migrateHolder(holderOne);
+        emit IPoolTypes.Migrated(holderOne, one * imported / exported);
+        IPool(address(succ)).migrateHolder(holderOne);
         assertEq(succ.sharesOf(holderOne), one * imported / exported);
         assertTrue(succ.migrated(holderOne));
 
         vm.prank(keeper);
-        succ.migrateHolder(holderTwo);
+        IPool(address(succ)).migrateHolder(holderTwo);
         assertEq(succ.sharesOf(holderTwo), two * imported / exported);
 
-        vm.expectRevert(Pool.AlreadyMigrated.selector);
-        succ.migrateHolder(holderOne);
+        vm.expectRevert(IPoolTypes.AlreadyMigrated.selector);
+        IPool(address(succ)).migrateHolder(holderOne);
 
-        succ.migrateHolder(stranger);
+        IPool(address(succ)).migrateHolder(stranger);
         assertEq(succ.sharesOf(stranger), 0, "a stranger holds no shares at the old pool");
         assertEq(succ.totalShares(), supplyBefore, "migration mints into the imported supply");
         assertLe(succ.sharesOf(holderOne) + succ.sharesOf(holderTwo), imported);
@@ -653,9 +648,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildB();
         uint256 one = pool.sharesOf(holderOne);
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
-        succ.migrateHolder(holderOne);
+        IPool(address(succ)).migrateHolder(holderOne);
 
         uint256 claim = succ.sharesOf(holderOne) * succ.nav() / succ.totalShares();
         assertGt(claim, 0);
@@ -667,19 +662,18 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _assertI1(succ);
     }
 
-    function test_oldPoolWithdrawPaysNothingAfterMigration() public {
+    function test_oldPoolWithdrawRevertsAfterMigration() public {
         _buildA();
         _buildB();
         uint256 one = pool.sharesOf(holderOne);
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
         vm.prank(holderOne);
+        vm.expectRevert(IPoolTypes.UseMigrateHolder.selector);
         pool.withdraw(one);
-        assertEq(holderOne.balance, 0, "the old pool pays zero");
-        assertEq(pool.sharesOf(holderOne), 0, "shares burned");
-        assertEq(pool.claims(), 0, "no claim queued");
+        assertEq(pool.sharesOf(holderOne), one, "shares kept for migrateHolder");
     }
 
     function test_successorRotateListsTheImportedItemsAndGrailPacks() public {
@@ -687,7 +681,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildB();
         uint256 aItems = pool.listedCount() + pool.heldCount();
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
         assertEq(succ.heldCount(), aItems);
 
@@ -715,7 +709,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 aNav = pool.nav();
 
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
         assertEq(pool.cash(), queued, "cash left behind is the queued claims");
@@ -736,11 +730,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         _buildB();
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
 
-        assertFalse(pool.exportStep(0), "a zero budget moves nothing");
+        assertFalse(IPool(address(pool)).exportStep(0), "a zero budget moves nothing");
         assertEq(pool.listedCount(), 58);
-        assertFalse(pool.exportStep(1));
+        assertFalse(IPool(address(pool)).exportStep(1));
         assertEq(pool.listedCount() + pool.heldCount(), 58);
         assertEq(succ.heldCount(), 1);
         assertGt(succ.importedNav(), 0);
@@ -753,11 +747,317 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         _buildB();
         vm.prank(admin);
-        pool.startExit(address(succ));
+        IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
         vm.prank(address(pool));
-        vm.expectRevert(Pool.ImportClosed.selector);
-        succ.importCash();
+        vm.expectRevert(IPoolTypes.ImportClosed.selector);
+        IPool(address(succ)).importCash();
+    }
+
+    // ---------------------------------------------------------------- exit review fixes
+
+    /// @dev A successor whose second mix row is a three rung pack of 0.03 ETH, so no row matches
+    ///      the 0.02 ETH packs of pool A.
+    function _buildBWithoutPackRow() internal {
+        IPoolTypes.Params memory p = _forkParams(address(pool));
+        p.mix[1].rungs = new uint8[](3);
+        succ = new PoolHarness(p);
+        vm.prank(admin);
+        succ.createFwaPool(0);
+        succClone = succ.fwaPool();
+        vm.prank(address(succ));
+        succClone.setBool(41, true);
+        _deposit(succ, carol, 20 ether);
+        _open(succ, succClone);
+    }
+
+    function test_revert_depositWithdrawAndRedeemAndDepositOnTheSuccessorDuringTheImport() public {
+        _buildA();
+        _buildB();
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        assertFalse(IPool(address(pool)).exportStep(1));
+        assertGt(succ.importedNav(), 0, "the import is in progress");
+
+        vm.deal(stranger, 1 ether);
+        vm.prank(stranger);
+        vm.expectRevert(IPoolTypes.ImportInProgress.selector);
+        succ.deposit{value: 1}();
+
+        uint256 carolShares = succ.sharesOf(carol);
+        vm.prank(carol);
+        vm.expectRevert(IPoolTypes.ImportInProgress.selector);
+        succ.withdraw(carolShares);
+
+        uint256 id = mintShapes(stranger, 0.1 ether, 1);
+        vm.startPrank(stranger);
+        IERC721(SHAPES_ADDR).approve(address(succ), id);
+        vm.expectRevert(IPoolTypes.ImportInProgress.selector);
+        succ.redeemAndDeposit(id);
+        vm.stopPrank();
+
+        _exportAll(pool, 100);
+        vm.prank(stranger);
+        succ.deposit{value: 1 ether}();
+        assertGt(succ.sharesOf(stranger), 0, "deposits reopen once the import is final");
+    }
+
+    function test_finalizeImportPricesAgainstTheNavBeforeTheImport() public {
+        _buildA();
+        _buildB();
+        uint256 bShares = succ.totalShares();
+        uint256 bNav = succ.nav();
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 100);
+        assertEq(succ.importedShares(), succ.importedNav() * bShares / bNav);
+        assertApproxEqAbs(succ.sharesOf(carol) * succ.nav() / succ.totalShares(), bNav, 2, "native holder keeps NAV");
+    }
+
+    function test_finalizeImportMintsOneToOneWhenTheSuccessorHasNoShares() public {
+        _buildA();
+        (succ, succClone) = _deployPool(address(pool));
+        _open(succ, succClone);
+        assertEq(succ.totalShares(), 0);
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 100);
+        assertGt(succ.importedNav(), 0);
+        assertEq(succ.importedShares(), succ.importedNav());
+        assertEq(succ.totalShares(), succ.importedNav());
+    }
+
+    function test_withdrawRevertsDuringAMigrationAndWorksDuringARetirement() public {
+        _buildA();
+        _buildB();
+        uint256 two = pool.sharesOf(holderTwo);
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        vm.prank(holderTwo);
+        vm.expectRevert(IPoolTypes.UseMigrateHolder.selector);
+        pool.withdraw(two);
+
+        PoolHarness retired = new PoolHarness(_forkParams(address(0)));
+        vm.prank(admin);
+        retired.createFwaPool(0);
+        _deposit(retired, holderTwo, 5 ether);
+        vm.prank(admin);
+        IPool(address(retired)).startExit(address(retired));
+        uint256 shares = retired.sharesOf(holderTwo);
+        vm.prank(holderTwo);
+        retired.withdraw(shares);
+        assertEq(retired.sharesOf(holderTwo), 0, "withdraw works while a retirement exports");
+        assertGt(holderTwo.balance, 0);
+    }
+
+    function test_revert_importItemTwice() public {
+        _buildA();
+        _buildB();
+        uint256 id = mintShapes(address(succ), 0.1 ether, 1);
+        assertTrue(IPool(address(succ)).canImport(SHAPES_ADDR, id));
+        vm.prank(address(pool));
+        IPool(address(succ)).importItem(SHAPES_ADDR, id);
+        assertTrue(succ.registered(SHAPES_ADDR, id));
+        assertFalse(IPool(address(succ)).canImport(SHAPES_ADDR, id));
+        uint256 importedNav = succ.importedNav();
+
+        vm.prank(address(pool));
+        vm.expectRevert(IPoolTypes.AlreadyRegistered.selector);
+        IPool(address(succ)).importItem(SHAPES_ADDR, id);
+        assertEq(succ.importedNav(), importedNav, "counted once");
+    }
+
+    function test_registeredFollowsTheRegistry() public {
+        _buildA();
+        Token[] memory tokens = _tokens(pool, clone);
+        for (uint256 i; i < tokens.length; ++i) {
+            assertTrue(pool.registered(tokens[i].collection, tokens[i].id), "listed or held token is registered");
+        }
+        uint256 captured = pool.listedIds(0)[0];
+        IPoolTypes.Item memory it = pool.listedItem(captured);
+        pool.removeListed(captured);
+        assertFalse(pool.registered(it.collection, it.tokenId), "removal clears it");
+    }
+
+    function test_canImportIsFalseWithoutAMatchingRowForAnUnknownCollectionAndAfterFinalize() public {
+        _buildA();
+        _buildBWithoutPackRow();
+        Token[] memory tokens = _tokens(pool, clone);
+        bool sawPack;
+        for (uint256 i; i < tokens.length; ++i) {
+            bool isPack = tokens[i].collection == address(drawPacks);
+            assertEq(
+                IPool(address(succ)).canImport(tokens[i].collection, tokens[i].id), !isPack, "only Shapes have a row"
+            );
+            sawPack = sawPack || isPack;
+        }
+        assertTrue(sawPack);
+        assertFalse(IPool(address(succ)).canImport(address(succClone), 1));
+
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 100);
+        assertFalse(IPool(address(succ)).canImport(tokens[0].collection, tokens[0].id), "closed after finalize");
+    }
+
+    function test_exportRedeemsItemsTheSuccessorCannotImportAndCompletes() public {
+        _buildA();
+        _buildBWithoutPackRow();
+        uint256 aBacking = pool.backing();
+        uint256 aCash = pool.cash();
+        uint256 aMaintenance = pool.maintenance();
+        uint256 shapeCount = pool.rowCount(0);
+        uint256 packCount = pool.rowCount(1);
+        assertGt(packCount, 0);
+        uint256 bHeld = succ.heldCount();
+        uint256 bCash = succ.cash();
+
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 25);
+
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
+        assertEq(succ.heldCount(), bHeld + shapeCount, "only Shapes were imported");
+        assertEq(succ.cash(), bCash + aCash + aMaintenance + packCount * 0.02 ether, "packs travelled as cash");
+        assertEq(succ.importedNav(), aBacking + aCash + aMaintenance, "no value lost");
+        assertEq(pool.exportedNav(), succ.importedNav());
+        _assertI1(pool);
+        _assertI1(succ);
+    }
+
+    function test_revert_startExitToInvalidSuccessors() public {
+        _buildA();
+        vm.startPrank(admin);
+
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(stranger);
+
+        IPoolTypes.Params memory p = _forkParams(address(pool));
+        p.drawPacks =
+            address(new ShapePacks(SHAPES_ADDR, address(new ShapePackRenderer(SHAPES_ADDR)), admin, "Other", "OTH", 2));
+        PoolHarness otherPacks = new PoolHarness(p);
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(address(otherPacks));
+
+        p = _forkParams(address(pool));
+        p.shapes = makeAddr("otherShapes");
+        PoolHarness otherShapes = new PoolHarness(p);
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(address(otherShapes));
+        vm.stopPrank();
+
+        _buildB();
+        vm.startPrank(admin);
+        IPool(address(succ)).startExit(address(succ));
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).startExit(address(succ));
+        vm.stopPrank();
+    }
+
+    function test_startExitDisablesFwaPurchases() public {
+        _buildA();
+        assertTrue(clone.localPurchasesEnabled());
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(pool));
+        assertFalse(clone.localPurchasesEnabled());
+
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice();
+        uint256 version = clone.inventoryVersion();
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert();
+        clone.acquire{value: total}(player, fee, 0, 10_000, version, block.timestamp + 1 hours);
+    }
+
+    function test_importGrailRedeemsAPackArrivingAtAnOccupiedTrack() public {
+        _buildA();
+        _buildB();
+        succ.growGrail(0);
+        (uint256 bucketBefore, uint256 packBefore, uint256 backingBefore,,) = _grail(succ, 0);
+        assertTrue(packBefore != 0);
+        (uint256 aBucket, uint256 aPack, uint256 aBacking,,) = _grail(pool, 0);
+        assertTrue(aPack != 0);
+
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 25);
+
+        (uint256 bucket, uint256 pack, uint256 backing_,,) = _grail(succ, 0);
+        assertEq(pack, packBefore, "the successor keeps its own pack");
+        assertEq(backing_, backingBefore);
+        assertEq(bucket, bucketBefore + aBucket + aBacking, "the incoming pack's value joined the bucket");
+        assertFalse(drawPacks.exists(aPack), "incoming pack redeemed");
+        _assertI1(succ);
+    }
+
+    function test_importGrailAcceptsABucketOnlyImport() public {
+        _buildA();
+        _buildB();
+        succ.growGrail(0);
+        vm.deal(address(pool), 1 ether);
+        (uint256 bucketBefore,,,,) = _grail(succ, 0);
+        vm.prank(address(pool));
+        IPool(address(succ)).importGrail{value: 1 ether}(0, 0);
+        (uint256 bucket,,,,) = _grail(succ, 0);
+        assertEq(bucket, bucketBefore + 1 ether);
+    }
+
+    function test_migrateHolderUsesTheOldPoolShareCountAfterTheSuccessorExits() public {
+        _buildA();
+        _buildB();
+        uint256 aShares = pool.totalShares();
+        uint256 one = pool.sharesOf(holderOne);
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(succ));
+        _exportAll(pool, 25);
+        assertEq(succ.importedFromShares(), aShares);
+
+        vm.prank(admin);
+        IPool(address(succ)).startExit(address(succ));
+        _exportAll(succ, 100);
+        assertEq(succ.exportedShares(), succ.totalShares());
+        assertTrue(succ.exportedShares() != aShares, "the export snapshot is the successor's own");
+
+        IPool(address(succ)).migrateHolder(holderOne);
+        assertEq(succ.sharesOf(holderOne), one * succ.importedShares() / aShares);
+    }
+
+    function test_finalExportStepSkipsRetirePoolWhenAlreadyRetired() public {
+        _buildA();
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(pool));
+        vm.prank(address(pool));
+        clone.retirePool();
+        assertTrue(clone.retired());
+        _exportAll(pool, 100);
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
+    }
+
+    function test_splitMarginDoesNothingOnceExported() public {
+        _buildA();
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(pool));
+        _exportAll(pool, 100);
+
+        pool.setMargin(1 ether);
+        uint256 maintenanceReceivable = pool.maintenanceReceivable();
+        uint256 receivable = pool.receivable();
+        pool.splitMargin();
+        assertEq(pool.maintenanceReceivable(), maintenanceReceivable, "nothing moves to maintenance");
+        assertEq(pool.receivable(), receivable, "late proceeds stay in ordinary NAV");
+        assertEq(pool.margin(), 1 ether);
+    }
+
+    function test_transferGrailEstateRejectsAnUnknownTrackAndThePool() public {
+        _buildA();
+        vm.prank(admin);
+        IPool(address(pool)).startExit(address(pool));
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.InvalidTrack.selector);
+        IPool(address(pool)).transferGrailEstate(2, estate);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.InvalidDest.selector);
+        IPool(address(pool)).transferGrailEstate(0, address(pool));
     }
 }

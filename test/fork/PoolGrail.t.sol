@@ -7,6 +7,7 @@ import {Pool} from "../../src/Pool.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
 ///         the pool: `growGrail`, compose at native denominations, decay in `rotate`, capture and
@@ -29,16 +30,16 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         mintFee = shapes.mintFee();
         vm.deal(alice, 10_000 ether);
 
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = Pool.GrailParams({
+        p.minor = IPoolTypes.GrailParams({
             targetWei: 0.5 ether, stepWei: 0.05 ether, listBps: 8_000, decayWeiPerPull: 0.001 ether, floorWei: 0.1 ether
         });
-        p.major = Pool.GrailParams({
+        p.major = IPoolTypes.GrailParams({
             targetWei: 1 ether, stepWei: 0.15 ether, listBps: 9_000, decayWeiPerPull: 0.002 ether, floorWei: 0.3 ether
         });
         pool = new PoolHarness(p);
@@ -149,13 +150,13 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- guards
 
     function test_revert_growGrailWhileOpening() public {
-        vm.expectRevert(Pool.NotLive.selector);
+        vm.expectRevert(IPoolTypes.NotLive.selector);
         pool.growGrail(0);
     }
 
     function test_revert_growGrailForAnUnknownTrack() public {
         _openReady();
-        vm.expectRevert(Pool.GrailNotReady.selector);
+        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(2);
     }
 
@@ -163,7 +164,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _openReady();
         uint256 cost = _cost(0.05 ether);
         pool.loseGrailBucket(0, _bucket(0) - cost + 1);
-        vm.expectRevert(Pool.GrailNotReady.selector);
+        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(0);
 
         pool.addGrailBucket{value: 1}(0);
@@ -179,7 +180,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256[] memory ids = _pullAs(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
-        vm.expectRevert(Pool.FwaBusy.selector);
+        vm.expectRevert(IPoolTypes.FwaBusy.selector);
         pool.growGrail(0);
 
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
@@ -199,7 +200,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256 expectedPack = drawPacks.totalMinted() + 1;
 
         vm.expectEmit(true, false, false, true, address(pool));
-        emit Pool.GrailGrown(0, expectedPack, 0.05 ether, 0.04 ether);
+        emit IPoolTypes.GrailGrown(0, expectedPack, 0.05 ether, 0.04 ether);
         _grow(0);
 
         assertEq(cost, 0.05 ether + mintFee, "defaultMakeup(0.05) is one Shape");
@@ -291,7 +292,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(bucketBefore - _bucket(0), 10 * _cost(0.05 ether), "I5: ten steps, ten costs");
         assertEq(_notional(0), 0.4 ether);
 
-        vm.expectRevert(Pool.GrailNotReady.selector);
+        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
         pool.growGrail(0);
         _assertI1();
     }
@@ -316,7 +317,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.rotate();
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
-        (uint256 grown,) = _count(logs, Pool.GrailGrown.selector);
+        (uint256 grown,) = _count(logs, IPoolTypes.GrailGrown.selector);
         assertEq(grown, 2, "both tracks grew");
         assertEq(_backing(0), 0.05 ether);
         assertEq(_backing(1), 0.15 ether);
@@ -334,7 +335,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.rotate();
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
-        (uint256 grown,) = _count(logs, Pool.GrailGrown.selector);
+        (uint256 grown,) = _count(logs, IPoolTypes.GrailGrown.selector);
         assertEq(grown, 1, "only the funded track grew");
         assertEq(_backing(0), 0);
         assertEq(_backing(1), 0.15 ether);
@@ -360,7 +361,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         (uint256 price,) = _price(listingId);
         assertEq(price, 0.3 ether);
         assertEq(_pulls(0), 0, "the reprice restarts the count");
-        (uint256 listed,) = _count(logs, Pool.GrailListed.selector);
+        (uint256 listed,) = _count(logs, IPoolTypes.GrailListed.selector);
         assertGe(listed, 1);
 
         pool.recordPulls(5_000);
@@ -378,7 +379,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         (price,) = _price(listingId);
         assertEq(price, 0.1 ether, "at the floor there is nothing to reprice");
         assertEq(_pulls(0), 10, "pulls keep counting");
-        (listed,) = _countTrack(logs, Pool.GrailListed.selector, 0);
+        (listed,) = _countTrack(logs, IPoolTypes.GrailListed.selector, 0);
         assertEq(listed, 0, "no reprice event for the minor track at its floor");
         _assertI1();
     }
@@ -462,7 +463,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256 proceeds = paid - (paid - base) / 2;
 
         vm.expectEmit(true, true, false, true, address(pool));
-        emit Pool.GrailCaptured(0, ids[0], proceeds);
+        emit IPoolTypes.GrailCaptured(0, ids[0], proceeds);
         pool.settle(5);
 
         assertEq(drawPacks.ownerOf(packId), player, "the player received the pack");
@@ -525,7 +526,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         fulfill(clone, ids[0], wordFor(clone, _listing(0)));
         vm.recordLogs();
         pool.settle(5);
-        (, bytes memory data) = _count(vm.getRecordedLogs(), Pool.GrailCaptured.selector);
+        (, bytes memory data) = _count(vm.getRecordedLogs(), IPoolTypes.GrailCaptured.selector);
         uint256 proceeds = abi.decode(data, (uint256));
         assertGt(proceeds, 0);
         pool.harvest();
@@ -547,7 +548,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256 backingBefore = pool.backing();
 
         vm.expectEmit(true, true, false, true, address(pool));
-        emit Pool.GrailCaptured(0, 77, 0);
+        emit IPoolTypes.GrailCaptured(0, 77, 0);
         pool.writeOff(77, listingId);
 
         assertEq(_packId(0), 0);
@@ -564,22 +565,26 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
-        pool.setGrailProbCap(1);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(1);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         vm.deal(player, total);
 
         vm.prank(player);
-        vm.expectRevert(Pool.GrailProbTooHigh.selector);
+        vm.expectRevert(IPoolTypes.GrailProbTooHigh.selector);
         pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
 
-        pool.setGrailProbCap(10_000);
+        vm.prank(admin);
+
+        IPool(address(pool)).setGrailProbCap(10_000);
         vm.prank(player);
         pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
     }
 
     function test_unlistedGrailAddsNoSelectionWeight() public {
         _openReady();
-        pool.setGrailProbCap(1);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(1);
         _pullAs(player, 1);
     }
 }

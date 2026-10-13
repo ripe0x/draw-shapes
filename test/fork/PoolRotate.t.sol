@@ -6,6 +6,7 @@ import {Pool} from "../../src/Pool.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+import {IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice `rotate` and `liquidate` against deployed Shapes, a Draw Packs deployment and a FWA
 ///         clone created by the pool.
@@ -29,15 +30,18 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         mintFee = shapes.mintFee();
         vm.deal(alice, 10_000 ether);
 
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        // Targets of zero keep `rotate` from growing the GRAIL tracks; PoolGrail.t.sol covers growth.
-        p.minor.targetWei = 0;
-        p.major.targetWei = 0;
+        // A step above every bucket keeps `rotate` from growing the GRAIL tracks; PoolGrail.t.sol
+        // covers growth.
+        p.minor.stepWei = 500 ether;
+        p.minor.targetWei = 1_000 ether;
+        p.major.stepWei = 500 ether;
+        p.major.targetWei = 1_000 ether;
         pool = new PoolHarness(p);
         vm.prank(admin);
         pool.createFwaPool(0);
@@ -61,7 +65,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         pool.deposit{value: 100 ether}();
         vm.warp(pool.openingDeadlineAt());
         pool.recordPulls(60);
-        while (pool.lifecycle() == Pool.Lifecycle.Opening) pool.open();
+        while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
         warpPastCooldown(clone);
     }
@@ -91,7 +95,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         uint256 next = clone.nextListingId();
         uint256 seen;
         for (uint256 id = 1; id < next; ++id) {
-            Pool.Item memory it = pool.listedItem(id);
+            IPoolTypes.Item memory it = pool.listedItem(id);
             if (it.value != 0 && it.row == row) {
                 if (seen == nth) return id;
                 ++seen;
@@ -138,12 +142,12 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         uint256[2] memory perRow;
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
-            Pool.Item memory it = pool.listedItem(id);
+            IPoolTypes.Item memory it = pool.listedItem(id);
             if (it.value == 0) continue;
             sum += it.value;
             ++listed;
             ++perRow[it.row];
-            (,,,,,, , IFWAClone.ListingStatus status) = clone.listings(id);
+            (,,,,,,, IFWAClone.ListingStatus status) = clone.listings(id);
             assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "listed item is an active listing");
         }
         for (uint256 i; i < pool.heldCount(); ++i) {
@@ -185,7 +189,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(pool)) continue;
             bytes32 topic = logs[i].topics[0];
-            if (topic == Pool.Liquidated.selector) {
+            if (topic == IPoolTypes.Liquidated.selector) {
                 (uint256 value, uint256 fee) = abi.decode(logs[i].data, (uint256, uint256));
                 ++s.count;
                 s.value += value;
@@ -193,13 +197,13 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
                 if (value == 0.1 ether) ++s.shapeCount;
                 else ++s.packCount;
                 if (s.firstLiqAt == type(uint256).max) s.firstLiqAt = i;
-            } else if (topic == Pool.ClaimPaid.selector) {
+            } else if (topic == IPoolTypes.ClaimPaid.selector) {
                 s.paid += abi.decode(logs[i].data, (uint256));
                 if (s.firstPaidAt == type(uint256).max) s.firstPaidAt = i;
-            } else if (topic == Pool.MarginSplit.selector) {
-                (, , uint256 maintenanceShare,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
+            } else if (topic == IPoolTypes.MarginSplit.selector) {
+                (,, uint256 maintenanceShare,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
                 s.maintenanceShare += maintenanceShare;
-            } else if (topic == Pool.Rotated.selector) {
+            } else if (topic == IPoolTypes.Rotated.selector) {
                 (,, uint256 refund) = abi.decode(logs[i].data, (bool, bool, uint256));
                 s.refund = refund;
                 s.rotated = true;
@@ -224,7 +228,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- guards
 
     function test_revert_rotateWhileOpening() public {
-        vm.expectRevert(Pool.NotLive.selector);
+        vm.expectRevert(IPoolTypes.NotLive.selector);
         pool.rotate();
     }
 
@@ -232,7 +236,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _openReady();
         assertEq(pool.lastRotateAt(), pool.openingDeadlineAt(), "open sets lastRotateAt");
         vm.warp(pool.lastRotateAt() + pool.rotateInterval() - 1);
-        vm.expectRevert(Pool.RotateTooSoon.selector);
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
         pool.rotate();
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         pool.rotate();
@@ -282,7 +286,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _assertRegistry();
         _assertI1();
 
-        vm.expectRevert(Pool.RotateTooSoon.selector);
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
         pool.rotate();
     }
 
@@ -385,7 +389,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         uint256[] memory values = new uint256[](10);
         uint256 n;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == address(pool) && logs[i].topics[0] == Pool.Liquidated.selector) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.Liquidated.selector) {
                 (values[n],) = abi.decode(logs[i].data, (uint256, uint256));
                 ++n;
             }
@@ -425,7 +429,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _drainCash(400 ether, 0.3 ether);
         _exiterLeaves();
         vm.warp(block.timestamp + pool.rotateInterval() - 1);
-        vm.expectRevert(Pool.ClaimNotDue.selector);
+        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
         pool.liquidate();
         vm.warp(block.timestamp + 1);
         pool.liquidate();

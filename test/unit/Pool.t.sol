@@ -4,8 +4,10 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {Pool} from "../../src/Pool.sol";
+import {PoolAdmin} from "../../src/PoolAdmin.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
+import {IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Pool with test-only entrypoints that move value between buckets.
 contract PoolHarness is Pool {
@@ -13,7 +15,7 @@ contract PoolHarness is Pool {
 
     error Preview(uint256 nav, uint256 cash, uint256 claims);
 
-    constructor(Params memory p) Pool(p) {}
+    constructor(Params memory p) Pool(p, address(new PoolAdmin())) {}
 
     /// @dev Moves `amount` from `cash` to `backing` and sends the ETH out, as a mint does.
     function spendOnBacking(uint256 amount) external {
@@ -39,12 +41,18 @@ contract PoolHarness is Pool {
         SafeTransferLib.safeTransferETH(SINK, amount);
     }
 
-    function setMaintenance(uint256 amount) external {
-        maintenance = amount;
+    /// @dev Sends `amount` of ETH out of the pool without changing any bucket.
+    function leak(uint256 amount) external {
+        SafeTransferLib.safeTransferETH(SINK, amount);
     }
 
-    function mixLength() external view returns (uint256) {
-        return _mix.length;
+    /// @dev Raises `backing` without registering an item.
+    function bumpBacking(uint256 amount) external {
+        backing += amount;
+    }
+
+    function setMaintenance(uint256 amount) external {
+        maintenance = amount;
     }
 
     /// @dev Listed item for FWA `listingId`; zero fields for an unknown id.
@@ -122,10 +130,6 @@ contract PoolHarness is Pool {
         _recordPulls(count);
     }
 
-    function trailingPulls() external view returns (uint256) {
-        return _trailingPulls();
-    }
-
     function setFwaPool(address clone, uint256 deadlineAt) external {
         fwaPool = IFWAClone(clone);
         openingDeadlineAt = deadlineAt;
@@ -160,10 +164,6 @@ contract PoolHarness is Pool {
         g.packId = packId;
         g.listingId = listingId;
         g.notional = notional;
-    }
-
-    function setGrailProbCap(uint256 bps) external {
-        grailProbCapBps = bps;
     }
 
     /// @dev Credits `msg.value` to track `track`'s bucket.
@@ -201,7 +201,7 @@ abstract contract PoolFixture is Test {
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
 
-    function _params() internal returns (Pool.Params memory p) {
+    function _params() internal returns (IPoolTypes.Params memory p) {
         p.shapes = makeAddr("shapes");
         p.drawPacks = makeAddr("drawPacks");
         p.fwaFactory = makeAddr("fwaFactory");
@@ -214,22 +214,22 @@ abstract contract PoolFixture is Test {
         p.mix[1].rungs[0] = 1;
         p.mix[1].rungs[1] = 2;
         p.mix[1].shareBps = 3_000;
-        p.feeSplit = Pool.FeeSplit({premiumBps: 200, maintenanceBps: 100, feedBps: 400, minorShareBps: 4_000});
-        p.minor = Pool.GrailParams({
+        p.feeSplit = IPoolTypes.FeeSplit({premiumBps: 200, maintenanceBps: 100, feedBps: 400, minorShareBps: 4_000});
+        p.minor = IPoolTypes.GrailParams({
             targetWei: 10 ether, stepWei: 0.1 ether, listBps: 10_000, decayWeiPerPull: 0.001 ether, floorWei: 0.5 ether
         });
-        p.major = Pool.GrailParams({
+        p.major = IPoolTypes.GrailParams({
             targetWei: 100 ether, stepWei: 1 ether, listBps: 9_000, decayWeiPerPull: 0.01 ether, floorWei: 5 ether
         });
         p.navCap = 1_000 ether;
-        p.curve = Pool.EntryCurve({baseBps: 1_100, slopeBps: 2_000, capBps: 2_500, referenceWei: 55 ether});
+        p.curve = IPoolTypes.EntryCurve({baseBps: 1_100, slopeBps: 2_000, capBps: 2_500, referenceWei: 55 ether});
         p.rotateInterval = 3_600;
         p.openingDeadline = 24 hours;
         p.minItems = 10;
         p.grailProbCapBps = 2_000;
     }
 
-    function _deploy(Pool.Params memory p) internal returns (PoolHarness) {
+    function _deploy(IPoolTypes.Params memory p) internal returns (PoolHarness) {
         return new PoolHarness(p);
     }
 }
@@ -238,7 +238,7 @@ contract PoolConstructorTest is PoolFixture {
     function test_constructorStoresParams() public {
         PoolHarness pool = _deploy(_params());
         assertEq(pool.admin(), admin);
-        assertEq(uint256(pool.lifecycle()), uint256(Pool.Lifecycle.Opening));
+        assertEq(uint256(pool.lifecycle()), uint256(IPoolTypes.Lifecycle.Opening));
         assertEq(pool.mixLength(), 2);
         assertEq(pool.navCap(), 1_000 ether);
         assertEq(pool.rotateInterval(), 3_600);
@@ -252,85 +252,85 @@ contract PoolConstructorTest is PoolFixture {
     }
 
     function test_revert_adminZero() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.admin = address(0);
-        vm.expectRevert(Pool.ZeroAddress.selector);
+        vm.expectRevert(IPoolTypes.ZeroAddress.selector);
         new PoolHarness(p);
     }
 
     function test_revert_feeSplitTooHigh() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.feeSplit.feedBps = 701;
-        vm.expectRevert(Pool.FeeSplitTooHigh.selector);
+        vm.expectRevert(IPoolTypes.FeeSplitTooHigh.selector);
         new PoolHarness(p);
     }
 
     function test_feeSplitAtBoundAccepted() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.feeSplit.feedBps = 700;
         _deploy(p);
     }
 
     function test_revert_minorShareTooHigh() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.feeSplit.minorShareBps = 10_001;
-        vm.expectRevert(Pool.MinorShareTooHigh.selector);
+        vm.expectRevert(IPoolTypes.MinorShareTooHigh.selector);
         new PoolHarness(p);
     }
 
     function test_revert_capBpsTooHigh() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.curve.capBps = 2_501;
-        vm.expectRevert(Pool.CurveCapTooHigh.selector);
+        vm.expectRevert(IPoolTypes.CurveCapTooHigh.selector);
         new PoolHarness(p);
     }
 
     function test_revert_referenceZero() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.curve.referenceWei = 0;
-        vm.expectRevert(Pool.CurveReferenceZero.selector);
+        vm.expectRevert(IPoolTypes.CurveReferenceZero.selector);
         new PoolHarness(p);
     }
 
     function test_revert_listBpsZeroMinor() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.minor.listBps = 0;
-        vm.expectRevert(Pool.ListBpsOutOfRange.selector);
+        vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
         new PoolHarness(p);
     }
 
     function test_revert_listBpsTooHighMajor() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.major.listBps = 10_001;
-        vm.expectRevert(Pool.ListBpsOutOfRange.selector);
+        vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
         new PoolHarness(p);
     }
 
     function test_revert_grailStepZero() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.minor.stepWei = 0;
-        vm.expectRevert(Pool.GrailStepInvalid.selector);
+        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
         new PoolHarness(p);
     }
 
     function test_revert_grailStepNotAUnitMultiple() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.major.stepWei = 1 ether + 1;
-        vm.expectRevert(Pool.GrailStepInvalid.selector);
+        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
         new PoolHarness(p);
     }
 
     function test_revert_grailProbCapZero() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.grailProbCapBps = 0;
-        vm.expectRevert(Pool.GrailProbCapOutOfRange.selector);
+        vm.expectRevert(IPoolTypes.GrailProbCapOutOfRange.selector);
         new PoolHarness(p);
     }
 
     function test_revert_grailProbCapTooHigh() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.grailProbCapBps = 10_001;
-        vm.expectRevert(Pool.GrailProbCapOutOfRange.selector);
+        vm.expectRevert(IPoolTypes.GrailProbCapOutOfRange.selector);
         new PoolHarness(p);
     }
 
@@ -343,7 +343,7 @@ contract PoolConstructorTest is PoolFixture {
     }
 
     function test_revert_emptyMixRow() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.mix[0].rungs = new uint8[](0);
         vm.expectRevert(PricingLib.EmptyRow.selector);
         new PoolHarness(p);
@@ -376,31 +376,31 @@ contract PoolTest is PoolFixture {
     // ---------------------------------------------------------------- opening guards
 
     function test_revert_createFwaPoolNotAdmin() public {
-        vm.expectRevert(Pool.NotAdmin.selector);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
         pool.createFwaPool(0);
     }
 
     function test_revert_createFwaPoolNotOpening() public {
-        pool.setLifecycle(Pool.Lifecycle.Live);
+        pool.setLifecycle(IPoolTypes.Lifecycle.Live);
         vm.prank(admin);
-        vm.expectRevert(Pool.NotOpening.selector);
+        vm.expectRevert(IPoolTypes.NotOpening.selector);
         pool.createFwaPool(0);
     }
 
     function test_revert_openWithoutFwaPool() public {
-        vm.expectRevert(Pool.FwaPoolMissing.selector);
+        vm.expectRevert(IPoolTypes.FwaPoolMissing.selector);
         pool.open();
     }
 
     function test_revert_openWhenLive() public {
-        pool.setLifecycle(Pool.Lifecycle.Live);
-        vm.expectRevert(Pool.NotOpening.selector);
+        pool.setLifecycle(IPoolTypes.Lifecycle.Live);
+        vm.expectRevert(IPoolTypes.NotOpening.selector);
         pool.open();
     }
 
     function test_revert_openBeforeDeadline() public {
         pool.setFwaPool(address(0xF00D), block.timestamp + 1);
-        vm.expectRevert(Pool.OpeningDeadlineNotReached.selector);
+        vm.expectRevert(IPoolTypes.OpeningDeadlineNotReached.selector);
         pool.open();
     }
 
@@ -421,7 +421,7 @@ contract PoolTest is PoolFixture {
         assertEq(pool.rowCount(1), 1);
         assertEq(pool.heldCount(), 3);
 
-        Pool.Item memory removed = pool.removeHeld(0);
+        IPoolTypes.Item memory removed = pool.removeHeld(0);
         assertEq(removed.tokenId, 11);
         assertEq(pool.backing(), 0.25 ether);
         assertEq(pool.rowCount(0), 1);
@@ -435,7 +435,7 @@ contract PoolTest is PoolFixture {
         assertEq(pool.backing(), 0.15 ether);
         assertEq(pool.rowCount(1), 1);
         assertEq(pool.heldCount(), 0);
-        Pool.Item memory it = pool.listedItem(7);
+        IPoolTypes.Item memory it = pool.listedItem(7);
         assertEq(it.tokenId, 21);
         assertEq(it.value, 0.15 ether);
         assertEq(it.row, 1);
@@ -511,36 +511,36 @@ contract PoolTest is PoolFixture {
 
     function test_emitsDeposited() public {
         vm.expectEmit(true, false, false, true, address(pool));
-        emit Pool.Deposited(alice, 10 ether, 1.1 ether, 8.9 ether);
+        emit IPoolTypes.Deposited(alice, 10 ether, 1.1 ether, 8.9 ether);
         _deposit(alice, 10 ether);
     }
 
     function test_revert_navCap() public {
-        Pool.Params memory p = _params();
+        IPoolTypes.Params memory p = _params();
         p.navCap = 5 ether;
         pool = _deploy(p);
         _deposit(alice, 10 ether);
-        vm.expectRevert(Pool.NavCapReached.selector);
+        vm.expectRevert(IPoolTypes.NavCapReached.selector);
         _deposit(bob, 1 ether);
     }
 
     function test_revert_depositsPaused() public {
         pool.pauseDeposits();
-        vm.expectRevert(Pool.DepositsPaused.selector);
+        vm.expectRevert(IPoolTypes.DepositsPaused.selector);
         _deposit(alice, 1 ether);
     }
 
     function test_revert_exiting() public {
-        pool.setLifecycle(Pool.Lifecycle.Exiting);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        pool.setLifecycle(IPoolTypes.Lifecycle.Exiting);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         _deposit(alice, 1 ether);
-        pool.setLifecycle(Pool.Lifecycle.Exported);
-        vm.expectRevert(Pool.PoolExiting.selector);
+        pool.setLifecycle(IPoolTypes.Lifecycle.Exported);
+        vm.expectRevert(IPoolTypes.PoolExiting.selector);
         _deposit(alice, 1 ether);
     }
 
     function test_revert_zeroValue() public {
-        vm.expectRevert(Pool.ZeroAmount.selector);
+        vm.expectRevert(IPoolTypes.ZeroAmount.selector);
         _deposit(alice, 0);
     }
 
@@ -561,14 +561,14 @@ contract PoolTest is PoolFixture {
     function test_revert_withdrawZero() public {
         _deposit(alice, 10 ether);
         vm.prank(alice);
-        vm.expectRevert(Pool.ZeroAmount.selector);
+        vm.expectRevert(IPoolTypes.ZeroAmount.selector);
         pool.withdraw(0);
     }
 
     function test_revert_withdrawMoreThanBalance() public {
         _deposit(alice, 10 ether);
         vm.prank(alice);
-        vm.expectRevert(Pool.InsufficientShares.selector);
+        vm.expectRevert(IPoolTypes.InsufficientShares.selector);
         pool.withdraw(8.9 ether + 1);
     }
 
@@ -580,7 +580,7 @@ contract PoolTest is PoolFixture {
 
         uint256 before = alice.balance;
         vm.expectEmit(true, false, false, true, address(pool));
-        emit Pool.Withdrawn(alice, 4.45 ether, 3.9 ether, 0.55 ether);
+        emit IPoolTypes.Withdrawn(alice, 4.45 ether, 3.9 ether, 0.55 ether);
         vm.prank(alice);
         pool.withdraw(4.45 ether);
 
@@ -609,7 +609,7 @@ contract PoolTest is PoolFixture {
         pool.bookProceeds{value: 1 ether}();
 
         vm.warp(block.timestamp + 3_599);
-        vm.expectRevert(Pool.ClaimNotDue.selector);
+        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
         pool.liquidate();
         vm.warp(block.timestamp + 1);
         pool.liquidate();
@@ -628,7 +628,7 @@ contract PoolTest is PoolFixture {
         vm.warp(block.timestamp + 3_600);
         uint256 before = alice.balance;
         vm.expectEmit(true, false, false, true, address(pool));
-        emit Pool.ClaimPaid(alice, 3 ether);
+        emit IPoolTypes.ClaimPaid(alice, 3 ether);
         pool.liquidate();
 
         assertEq(alice.balance - before, 3 ether);
@@ -728,7 +728,7 @@ contract PoolTest is PoolFixture {
         _deposit(alice, 10 ether);
         pool.setClaims(9 ether);
         vm.prank(bob);
-        vm.expectRevert(Pool.NavZero.selector);
+        vm.expectRevert(IPoolTypes.NavZero.selector);
         pool.deposit{value: 1 ether}();
     }
 
@@ -740,7 +740,7 @@ contract PoolTest is PoolFixture {
         uint256 cashBefore = pool.cash();
 
         vm.expectEmit(true, false, false, true, address(pool));
-        emit Pool.Withdrawn(alice, shares, 0, 0);
+        emit IPoolTypes.Withdrawn(alice, shares, 0, 0);
         vm.prank(alice);
         pool.withdraw(shares);
 

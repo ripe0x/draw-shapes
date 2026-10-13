@@ -5,6 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {Pool} from "../../src/Pool.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+import {IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Drives deposits, withdrawals, liquidations and bucket moves, and records the ghost
 ///         state the invariants compare against. Assertion failures inside the handler are
@@ -121,7 +122,7 @@ contract PoolHandler is Test {
         uint256 total;
         uint256 events;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter != address(pool) || logs[i].topics[0] != Pool.ClaimPaid.selector) continue;
+            if (logs[i].emitter != address(pool) || logs[i].topics[0] != IPoolTypes.ClaimPaid.selector) continue;
             ++events;
             address to = address(uint160(uint256(logs[i].topics[1])));
             uint256 amount = abi.decode(logs[i].data, (uint256));
