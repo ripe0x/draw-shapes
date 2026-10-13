@@ -5,6 +5,7 @@ remappings = [
     "shapes/=lib/shapes/src/",
     "ladder/=lib/shapes/ladders/mainnet/",
     "@openzeppelin/contracts/=lib/shapes/lib/openzeppelin-contracts/contracts/",
+    "draw-packs/=lib/draw-packs/src/",
 ]
 src = "src"
 out = "out"
