@@ -3,6 +3,10 @@
 
 usage: fwa_snapshot.py [--pool ADDRESS] [--block N] [--rpc URL] [--out snapshot.json] [--list-pools]
 
+Output: `--out` holds {"block", "default", "pools": {address: snapshot}}. A run adds or replaces its pool in
+the `pools` map of an existing file and keeps that file's `default`; a new file takes the run's pool as
+`default`. `report.py --fwa` reads the `default` pool, or the pool named by `--pool`.
+
 Pool: docs/external/fwa-v2.md names the FWA factory (0xF5A3...300c) and no pool. The default pool is
 the largest pool the factory had created at block 26170000, found from the factory's PoolCreated logs
 and the pool's `activeListingCount()`: 0x39fde68bfa68a1dda887d34838ef0fc36972fcf8, owned by
@@ -190,8 +194,14 @@ def main():
         "oddsByPriceBucket": buckets,
     }
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    doc = {"block": a.block, "default": pool.lower(), "pools": {}}
+    if os.path.exists(a.out):
+        with open(a.out) as f:
+            default, pools = report.snapshot_pools(json.load(f))
+        doc = {"block": a.block, "default": default.lower(), "pools": {k.lower(): v for k, v in pools.items()}}
+    doc["pools"][pool.lower()] = snap
     with open(a.out, "w") as f:
-        json.dump(snap, f, indent=1)
+        json.dump(doc, f, indent=1)
 
     print(f"FWA pool {pool} at block {a.block}: {len(active)} active listings, ticket {ticket / ETH:.6f} ETH "
           f"(fee {fee / ETH:.6f} + VRF {vrf / ETH:.6f}), harmonic mean {harmonic / ETH:.6f} ETH, edge {edge} bps")

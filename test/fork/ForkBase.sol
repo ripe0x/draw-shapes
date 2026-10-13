@@ -117,7 +117,7 @@ abstract contract ForkBase is Test {
         vm.deal(who, who.balance + total);
         uint64 last = fwa.lastIssuedSequence();
         vm.prank(who);
-        IPool(pool_).acquireBatch{value: total}(who, count, fee, 0, slip, version, block.timestamp + 1 hours);
+        IPool(pool_).acquireBatch{value: total}(who, count, fee, 0, slip, version, vm.getBlockTimestamp() + 1 hours);
         ids = new uint256[](count);
         for (uint256 i; i < count; ++i) {
             ids[i] = fwa.requestIdAtSequence(last + 1 + uint64(i));

@@ -11,6 +11,8 @@ writes CSVs. `script/report.py` turns them into tables and an HTML page. The con
 4. `open evidence/play/test_play500PerDay/report.html`
 5. Compare with FWA: `python3 script/fwa_snapshot.py --out evidence/play/fwa_snapshot.json`, then
    `python3 script/report.py evidence/play/test_play500PerDay --fwa evidence/play/fwa_snapshot.json`.
+   The snapshot holds two pools; `--fwa` compares against its default, the mixed-price pool
+   `0xfac9af47...`, and `--pool <address>` selects the other (`0x39fde68b...`, all listings at 0.001 ETH).
 
 Tests: `test_play100PerDay`, `test_play500PerDay`, `test_play2000PerDay`, and `test_playCustom`, which runs
 when `PLAY_PULLS_PER_DAY` is set. The first run at a fresh fork block fills the RPC cache and is slow.

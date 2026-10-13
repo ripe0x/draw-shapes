@@ -79,6 +79,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal pullsHour;
     uint256 internal rejectedHour;
     uint256 internal waitHour;
+    uint256 internal overrunPulls;
 
     // run totals
     uint256 internal totalPulls;
@@ -103,6 +104,14 @@ contract PlayMonthTest is ForkBase, Deploy {
         _play("test_play2000PerDay", 2000);
     }
 
+    /// @dev A purchase pause or VRF wait carries a pull past the end of its hour. Seed 1 at 10,000 pulls
+    ///      per day does so within hour 1. Clock reads in the runner must follow `vm.warp` there. A stale
+    ///      `block.timestamp` read reverts the `acquireBatch` deadline sum with panic 0x11.
+    function test_playPullPastHourEnd() public {
+        _run("test_playPullPastHourEnd", 10_000, 1, 2, 1);
+        assertGt(overrunPulls, 0);
+    }
+
     /// @dev Runs only when `PLAY_PULLS_PER_DAY` is set.
     function test_playCustom() public {
         if (!vm.envExists("PLAY_PULLS_PER_DAY")) {
@@ -115,9 +124,13 @@ contract PlayMonthTest is ForkBase, Deploy {
     // ------------------------------------------------------------------ run
 
     function _play(string memory name, uint256 perDay) internal {
-        vm.pauseGasMetering();
         uint256 days_ = vm.envOr("PLAY_DAYS", uint256(7));
-        seed = vm.envOr("PLAY_SEED", uint256(1));
+        _run(name, perDay, days_, days_ * 24, vm.envOr("PLAY_SEED", uint256(1)));
+    }
+
+    function _run(string memory name, uint256 perDay, uint256 days_, uint256 total, uint256 seed_) internal {
+        vm.pauseGasMetering();
+        seed = seed_;
         vrfLatency = vm.envOr("PLAY_VRF_LATENCY_SECONDS", uint256(24));
         dir = string.concat(ROOT, name, "/");
         vm.createDir(dir, true);
@@ -132,8 +145,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         _openBoard();
         _baseline();
 
-        pauseSec = new uint256[](days_ * 24 + 2);
-        uint256 total = days_ * 24;
+        pauseSec = new uint256[](total + 2);
         for (uint256 h = 1; h <= total; ++h) {
             this.playHour(h, perDay);
         }
@@ -174,7 +186,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         _drain();
         warpPastCooldown(fwa);
-        t0 = block.timestamp;
+        t0 = _now();
     }
 
     function _depositor() internal returns (address d) {
@@ -249,8 +261,15 @@ contract PlayMonthTest is ForkBase, Deploy {
         }
     }
 
+    /// @dev Current timestamp read through the cheatcode. The optimizer reuses an earlier
+    ///      `block.timestamp` read within a function after `vm.warp`, so every clock read in the runner
+    ///      goes through this helper.
+    function _now() internal view returns (uint256) {
+        return vm.getBlockTimestamp();
+    }
+
     function _warpTo(uint256 ts) internal {
-        if (ts > block.timestamp) vm.warp(ts);
+        if (ts > _now()) vm.warp(ts);
     }
 
     /// @dev One deposit and one withdrawal per schedule, at a seeded hour of the day.
@@ -301,14 +320,15 @@ contract PlayMonthTest is ForkBase, Deploy {
 
     function _pull(uint256 count) internal {
         if (pending.length + count > outstandingCap) {
-            vm.warp(block.timestamp + vrfLatency);
+            vm.warp(_now() + vrfLatency);
             _flush();
         }
         uint256 resume = fwa.purchasesResumeAt();
-        if (block.timestamp < resume) {
-            waitHour += (resume - block.timestamp) * count;
+        if (_now() < resume) {
+            waitHour += (resume - _now()) * count;
             vm.warp(resume);
         }
+        if (_now() >= t0 + curHour * HOUR) ++overrunPulls;
         uint256 idx = playerCtr++ % PLAYERS;
         address who = _player(idx);
         (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
@@ -316,7 +336,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         uint256 version = fwa.inventoryVersion();
         vm.deal(who, who.balance + total);
         vm.prank(who);
-        try pool.acquireBatch{value: total}(who, count, fee, 0, slip, version, block.timestamp + 1 hours) returns (
+        try pool.acquireBatch{value: total}(who, count, fee, 0, slip, version, _now() + 1 hours) returns (
             uint256[] memory ids
         ) {
             for (uint256 i; i < ids.length; ++i) {
@@ -388,7 +408,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     /// @dev Books the part of the FWA purchase pause after now to the hours it covers.
     function _notePause() internal {
         uint256 until = fwa.purchasesResumeAt();
-        uint256 from = block.timestamp;
+        uint256 from = _now();
         while (from < until && from >= t0) {
             uint256 idx = (from - t0) / HOUR + 1;
             uint256 hourEnd = t0 + idx * HOUR;
@@ -438,7 +458,7 @@ contract PlayMonthTest is ForkBase, Deploy {
 
     function _onWithdrawn(address from, bytes memory data) internal {
         (uint256 shares, uint256 paidNow, uint256 enqueued) = abi.decode(data, (uint256, uint256, uint256));
-        OpenClaim memory c = OpenClaim(from, curHour, block.timestamp, shares, paidNow, enqueued, queued, false);
+        OpenClaim memory c = OpenClaim(from, curHour, _now(), shares, paidNow, enqueued, queued, false);
         if (enqueued == 0) {
             _claimRow(c, 0, 0);
         } else {
@@ -456,7 +476,7 @@ contract PlayMonthTest is ForkBase, Deploy {
             OpenClaim storage c = openClaims[i];
             if (!c.closed && c.queueIndex < head) {
                 c.closed = true;
-                _claimRow(c, block.timestamp - c.at, 0);
+                _claimRow(c, _now() - c.at, 0);
             }
         }
     }
@@ -464,7 +484,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     function _closeClaims() internal {
         for (uint256 i; i < openClaims.length; ++i) {
             OpenClaim storage c = openClaims[i];
-            if (!c.closed) _claimRow(c, block.timestamp - c.at, 1);
+            if (!c.closed) _claimRow(c, _now() - c.at, 1);
         }
     }
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Reads run directories written by test/scenario/PlayMonth.t.sol and prints the player and depositor tables.
 
-usage: report.py RUN_DIR [RUN_DIR ...] [--fwa SNAPSHOT_JSON] [--no-html]
+usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [SNAPSHOT_JSON]] [--pool ADDRESS] [--no-html]
 
 Each RUN_DIR holds pulls.csv, hourly.csv and claims.csv. The tables print one column per run, plus an
-FWA column when --fwa names a snapshot.json from script/fwa_snapshot.py. Unless --no-html is given,
-report.html is written into each RUN_DIR. Standard library only.
+FWA column when --fwa is given. SNAPSHOT_JSON is written by script/fwa_snapshot.py and defaults to
+evidence/play/fwa_snapshot.json. The file holds several pools; the FWA column shows its `default` pool
+(the mixed-price pool) unless --pool names another. The header line lists every pool's ticket and
+listing count. Unless --no-html is given, report.html is written into each RUN_DIR. Standard library only.
 """
 import csv
 import json
@@ -14,6 +16,7 @@ import os
 import sys
 
 ETH = 10**18
+DEFAULT_SNAPSHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "play", "fwa_snapshot.json")
 TRIGGERS = ["Weight", "GrailCap", "Claim", "GrailStep", "Restock", "Quiet"]
 # Edges of the return buckets, as multiples of the ticket. The last bucket is open ended.
 EDGES = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3, 5, 10]
@@ -302,11 +305,14 @@ def write_html(m, fwa):
 
 
 def main(argv):
-    dirs, fwa_path, html = [], None, True
-    it = iter(argv)
-    for a in it:
+    dirs, fwa_path, pool, html = [], None, None, True
+    args = list(argv)
+    while args:
+        a = args.pop(0)
         if a == "--fwa":
-            fwa_path = next(it)
+            fwa_path = args.pop(0) if args and args[0].endswith(".json") else DEFAULT_SNAPSHOT
+        elif a == "--pool":
+            pool = args.pop(0)
         elif a == "--no-html":
             html = False
         elif a in ("-h", "--help"):
@@ -325,12 +331,36 @@ def main(argv):
     fwa = None
     if fwa_path:
         with open(fwa_path) as f:
-            fwa = flatten_snapshot(json.load(f))
+            snap, header = select_snapshot(json.load(f), pool)
+        fwa = flatten_snapshot(snap)
+        print(header)
     print(render_table(runs + ([fwa] if fwa else [])))
     if html:
         for m in runs:
             print("wrote", write_html(m, fwa))
     return 0
+
+
+def snapshot_pools(doc):
+    """Returns (default address, {address: pool snapshot}) for the multi-pool shape or the old single-pool shape."""
+    if "pools" in doc:
+        return doc["default"], doc["pools"]
+    return doc["pool"], {doc["pool"]: doc}
+
+
+def select_snapshot(doc, pool=None):
+    """Returns (snapshot of `pool` or the default pool, header line listing every pool's ticket and listings)."""
+    default, pools = snapshot_pools(doc)
+    want = (pool or default).lower()
+    byaddr = {a.lower(): v for a, v in pools.items()}
+    if want not in byaddr:
+        raise SystemExit(f"pool {want} is not in the snapshot; pools: {', '.join(pools)}")
+    parts = []
+    for a, v in sorted(pools.items(), key=lambda kv: kv[0].lower() != want):
+        tag = " (shown)" if a.lower() == want else ""
+        parts.append(f"{a[:10]}{tag} ticket {v['ticketWei'] / ETH:.6f} ETH, {v['activeListings']} listings")
+    block = next(iter(pools.values()))["block"]
+    return byaddr[want], f"FWA pools at block {block}: " + "; ".join(parts)
 
 
 def flatten_snapshot(snap):
