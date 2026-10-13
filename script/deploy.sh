@@ -35,7 +35,7 @@ REQUIRED=(CHAIN_ID RPC_URL DEPLOYER ADMIN SHAPES FWA_FACTORY FWA_IMPLEMENTATION 
   GRAIL_MINOR_TARGET_WEI GRAIL_MINOR_STEP_WEI GRAIL_MINOR_LIST_BPS GRAIL_MINOR_DECAY_WEI_PER_PULL GRAIL_MINOR_FLOOR_WEI
   GRAIL_MAJOR_TARGET_WEI GRAIL_MAJOR_STEP_WEI GRAIL_MAJOR_LIST_BPS GRAIL_MAJOR_DECAY_WEI_PER_PULL GRAIL_MAJOR_FLOOR_WEI
   NAV_CAP_WEI ROTATE_INTERVAL_SECONDS OPENING_DEADLINE_SECONDS MIN_ITEMS
-  GRAIL_PROB_CAP_BPS BATCH_MIN BATCH_MAX_AGE_SECONDS SURPRISE_BPS RESTORE_K BAND_BPS RESERVE_BPS)
+  GRAIL_PROB_CAP_BPS BATCH_MIN BATCH_MAX_AGE_SECONDS SURPRISE_BPS RESTORE_K BAND_BPS RESERVE_BPS TIP_WEI)
 [[ "$ENV_NAME" == "anvil" ]] || REQUIRED+=(DRAW_PACKS)
 for v in "${REQUIRED[@]}"; do
   [[ -n "${!v:-}" ]] || refuse "$v is empty in $ENV_FILE"
@@ -142,10 +142,10 @@ fi
 # Warm the build before the broadcast.
 forge build --skip test
 
-# EIP-170: Pool, PoolAdmin and Lens runtime code must fit 24576 bytes. A local fork started with
+# EIP-170: Pool, PoolAdmin, PoolListing and Lens runtime code must fit 24576 bytes. A local fork started with
 # --disable-code-size-limit can set ANVIL_DISABLE_SIZE_LIMIT=1 to continue past this guard.
 SIZE_ARGS=()
-for c in Pool PoolAdmin Lens; do
+for c in Pool PoolAdmin PoolListing Lens; do
   SIZE=$(( ($(forge inspect "$c" deployedBytecode | wc -c) - 3) / 2 ))
   if (( SIZE > 24576 )); then
     if [[ "$ENV_NAME" == "anvil" && "${ANVIL_DISABLE_SIZE_LIMIT:-0}" == "1" ]]; then

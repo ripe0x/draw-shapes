@@ -23,7 +23,7 @@ import sys
 
 ETH = 10**18
 DEFAULT_REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "fwa", "reference.json")
-TRIGGERS = ["Claim", "GrailStep", "Decay", "Held"]
+TRIGGERS = ["Claim", "GrailStep", "Held"]
 SETTLE_TRIGGERS = ["Batch", "Age", "Thin"]
 # Edges of the return buckets, as multiples of the ticket. The last bucket is open ended.
 EDGES = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3, 5, 10]

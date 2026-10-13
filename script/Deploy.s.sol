@@ -9,11 +9,12 @@ import {ShapePacks} from "draw-packs/ShapePacks.sol";
 import {ShapePackRenderer} from "draw-packs/ShapePackRenderer.sol";
 import {Pool} from "../src/Pool.sol";
 import {PoolAdmin} from "../src/PoolAdmin.sol";
+import {PoolListing} from "../src/PoolListing.sol";
 import {Lens} from "../src/Lens.sol";
 import {PricingLib} from "../src/lib/PricingLib.sol";
 import {IPool, IPoolTypes} from "../src/interfaces/IPool.sol";
 
-/// @notice Deploys `PoolAdmin`, `Pool` and `Lens` and checks their constructor state in the same run.
+/// @notice Deploys `PoolAdmin`, `PoolListing`, `Pool` and `Lens` and checks their constructor state in the same run.
 ///         Writes the deployment record to `DEPLOYMENT_RECORD`.
 /// @dev One script for every chain. `block.chainid` selects the guards: 1 pins the dependency
 ///      addresses and the launch parameters, 11155111 pins the dependency addresses, 31337 accepts
@@ -38,7 +39,7 @@ contract Deploy is Script {
     uint256 internal constant MAJOR = 1;
 
     /// @notice Deploys the pool, verifies it and writes the record.
-    function run() external returns (Pool pool, PoolAdmin module, Lens lens) {
+    function run() external returns (Pool pool, PoolAdmin module, PoolListing listing, Lens lens) {
         IPoolTypes.Params memory p = _params();
         _guardChain(p);
         _guardDrawPacks(p);
@@ -49,12 +50,13 @@ contract Deploy is Script {
             p.drawPacks = address(new ShapePacks(p.shapes, address(renderer), p.admin, "Draw Packs", "DRAW", 2));
         }
         module = new PoolAdmin();
-        pool = new Pool(p, address(module));
+        listing = new PoolListing();
+        pool = new Pool(p, address(module), address(listing));
         lens = new Lens(pool);
         vm.stopBroadcast();
 
-        _postflight(pool, module, lens, p);
-        _writeRecord(pool, module, lens, p);
+        _postflight(pool, module, listing, lens, p);
+        _writeRecord(pool, module, listing, lens, p);
     }
 
     // ------------------------------------------------------------------ inputs
@@ -104,6 +106,7 @@ contract Deploy is Script {
         p.restoreK = vm.envUint("RESTORE_K");
         p.bandBps = vm.envUint("BAND_BPS");
         p.reserveBps = vm.envUint("RESERVE_BPS");
+        p.tipWei = vm.envUint("TIP_WEI");
     }
 
     /// @dev Rows are separated by `;`, each row is `rung,rung,...:shareBps`.
@@ -167,10 +170,15 @@ contract Deploy is Script {
 
     // ------------------------------------------------------------------ postflight
 
-    function _postflight(Pool pool, PoolAdmin module, Lens lens, IPoolTypes.Params memory p) internal view {
+    function _postflight(Pool pool, PoolAdmin module, PoolListing listing, Lens lens, IPoolTypes.Params memory p)
+        internal
+        view
+    {
         require(address(pool).code.length != 0, "pool has no code");
         require(address(module).code.length != 0, "module has no code");
         require(pool.adminModule() == address(module), "adminModule");
+        require(address(listing).code.length != 0, "listing module has no code");
+        require(pool.listingModule() == address(listing), "listingModule");
         require(!IPool(address(pool)).canImport(address(0), 1), "admin module unreachable");
         require(address(lens).code.length != 0 && address(lens.pool()) == address(pool), "lens");
         require(pool.admin() == p.admin, "admin");
@@ -191,6 +199,7 @@ contract Deploy is Script {
         require(IPool(address(pool)).restoreK() == p.restoreK, "restoreK");
         require(IPool(address(pool)).bandBps() == p.bandBps, "bandBps");
         require(IPool(address(pool)).reserveBps() == p.reserveBps, "reserveBps");
+        require(IPool(address(pool)).tipWei() == p.tipWei, "tipWei");
 
         (uint16 premium, uint16 maint, uint16 feed, uint16 minorShare) = pool.feeSplit();
         require(
@@ -229,11 +238,14 @@ contract Deploy is Script {
 
     // ------------------------------------------------------------------ record
 
-    function _writeRecord(Pool pool, PoolAdmin module, Lens lens, IPoolTypes.Params memory p) internal {
+    function _writeRecord(Pool pool, PoolAdmin module, PoolListing listing, Lens lens, IPoolTypes.Params memory p)
+        internal
+    {
         string memory k = "record";
         vm.serializeUint(k, "chainId", block.chainid);
         vm.serializeString(k, "pool", _lower(address(pool)));
         vm.serializeString(k, "adminModule", _lower(address(module)));
+        vm.serializeString(k, "listingModule", _lower(address(listing)));
         vm.serializeString(k, "lens", _lower(address(lens)));
         vm.serializeString(k, "shapes", _lower(p.shapes));
         vm.serializeString(k, "drawPacks", _lower(p.drawPacks));

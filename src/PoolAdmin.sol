@@ -17,14 +17,6 @@ import {IPool} from "./interfaces/IPool.sol";
 /// @dev Runs by delegatecall from the `fallback` of `Pool` and acts on the storage of the calling
 ///      pool. A direct call to this contract reverts `NotDelegated`.
 contract PoolAdmin is PoolBooks {
-    /// @dev Address of this contract, compared with `address(this)` to detect a direct call.
-    address private immutable self = address(this);
-
-    modifier onlyDelegated() {
-        if (address(this) == self) revert NotDelegated();
-        _;
-    }
-
     // ------------------------------------------------------------------ admin
 
     /// @notice Creates the FWA pool through the factory, approves it for both collections and sets
@@ -147,6 +139,12 @@ contract PoolAdmin is PoolBooks {
     function setReserve(uint256 reserveBps_) external onlyDelegated {
         _admin();
         _setReserve(reserveBps_);
+    }
+
+    /// @dev `tipWei_` is at most 0.01 ether.
+    function setTip(uint256 tipWei_) external onlyDelegated {
+        _admin();
+        _setTip(tipWei_);
     }
 
     /// @notice Allows `settle` to list while FWA's inventory change cooldown is nonzero.

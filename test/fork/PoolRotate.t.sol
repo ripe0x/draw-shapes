@@ -277,7 +277,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         assertGt(maintenanceBefore, 1 ether, "settle credited the maintenance share");
         assertEq(maintenanceBefore - maintenanceAfter, s.refund, "maintenance fell by the refund");
         assertGt(s.refund, 0);
-        assertGe(s.refund, 0.0005 ether, "refund covers the tip");
+        assertGe(s.refund, IPool(address(pool)).tipWei(), "refund covers the tip");
         assertLe(s.refund, maintenanceBefore);
         assertEq(keeper.balance, s.refund, "caller received the refund");
         _assertRegistry();
@@ -285,6 +285,24 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
         pool.rotate();
+    }
+
+    function test_rotateRefundCarriesTheAdminTip() public {
+        _openReady();
+        vm.prank(admin);
+        IPool(address(pool)).setTip(0.003 ether);
+        uint256[] memory ids = _acquire(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        pool.setMaintenance(1 ether);
+        vm.deal(address(pool), address(pool).balance + 1 ether);
+        vm.prank(keeper);
+        pool.settle(20);
+        _warpToRotation();
+
+        Liq memory s = _rotateAsKeeper();
+
+        assertGe(s.refund, 0.003 ether, "the rotate refund carries the set tip");
+        assertEq(keeper.balance, s.refund);
     }
 
     function test_rotateBlockedByAnUnsettledAcquisitionPaysNoRefund() public {

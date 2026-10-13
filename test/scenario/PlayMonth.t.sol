@@ -5,6 +5,7 @@ import {Vm, console2} from "forge-std/Test.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {Pool} from "../../src/Pool.sol";
 import {PoolAdmin} from "../../src/PoolAdmin.sol";
+import {PoolListing} from "../../src/PoolListing.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 import {ForkBase} from "../fork/ForkBase.sol";
@@ -77,7 +78,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal queued;
 
     // per-hour accumulators
-    uint256[4] internal rotTrig;
+    uint256[3] internal rotTrig;
     uint256[3] internal setTrig;
     uint256 internal settleListedHour;
     uint256 internal settleRefundHour;
@@ -177,7 +178,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         IPoolTypes.Params memory p = _params();
         p.drawPacks = address(drawPacks);
         PoolAdmin module = new PoolAdmin();
-        pool = IPool(address(new Pool(p, address(module))));
+        pool = IPool(address(new Pool(p, address(module), address(new PoolListing()))));
 
         rowIsPack = new bool[](p.mix.length);
         for (uint256 i; i < p.mix.length; ++i) {
@@ -537,7 +538,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         _truncate(
             "hourly.csv",
             "hour,navPerShare,cash,backing,receivable,claims,listedCount,grailBacking0,grailNotional0,grailOddsBps0,"
-            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotDecay,rotHeld,"
+            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotHeld,"
             "inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds,"
             "settles,setBatch,setAge,setThin,settleListed,settleRefund"
         );
@@ -582,7 +583,7 @@ contract PlayMonthTest is ForkBase, Deploy {
             line = string.concat(_c(_c(line, b), notional), ",", _fixed4(odds));
         }
         line = _c(_c(line, rotates), rotTrig[0]);
-        line = _c(_c(_c(line, rotTrig[1]), rotTrig[2]), rotTrig[3]);
+        line = _c(_c(line, rotTrig[1]), rotTrig[2]);
         line = _c(_c(line, inventoryChanged), h < pauseSec.length ? pauseSec[h] : 0);
         line = _c(_c(_c(line, pullsHour), rejectedHour), waitHour);
         line = _c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]);

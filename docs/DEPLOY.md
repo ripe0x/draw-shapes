@@ -28,18 +28,19 @@ ETHERSCAN_API_KEY=... script/deploy.sh mainnet
 - Shapes, the FWA factory and Draw Packs have code. The factory `implementation()` and
   `vrfService()` equal the env values.
 - Mainnet runs from a clean `main`. A dry run reports a branch or tree failure and continues.
-- Pool, PoolAdmin and Lens runtime code fits 24576 bytes. A local fork started with
+- Pool, PoolAdmin, PoolListing and Lens runtime code fits 24576 bytes. A local fork started with
   `--disable-code-size-limit` can run with `ANVIL_DISABLE_SIZE_LIMIT=1`.
 - `.env` is untracked. `--slow` is always passed.
 
-`Deploy.s.sol` then checks the chain: mainnet pins Shapes, the factory, the fee split, the entry
+`Deploy.s.sol` deploys `PoolAdmin`, `PoolListing`, `Pool` (constructed with both module addresses) and `Lens`, in that
+order. It then checks the chain: mainnet pins Shapes, the factory, the fee split, the entry
 curve, `rotateInterval` 900 and the 24 hour opening deadline. Draw Packs must have a minimum pack
 value of two ladder units and wrap the same Shapes. After the broadcast it reads every constructor
-value back from the pool.
+value back from the pool, including `tipWei`, `adminModule` and `listingModule`.
 
 ## Record
 
-`deployments/<chainId>.json` holds the addresses (`pool`, `adminModule`, `lens`, ...), `gitCommit`,
+`deployments/<chainId>.json` holds the addresses (`pool`, `adminModule`, `listingModule`, `lens`, ...), `gitCommit`,
 `blockNumber` and `deployedAt`. A local run writes `deployments/31337-<port>.json`, which git ignores. A broadcast with
 `CREATE_POOL=1` (anvil only) adds `fwaPool` and `openingDeadlineAt`.
 
@@ -61,9 +62,9 @@ The pool is Opening and takes deposits at once. The admin then:
 
 Run a keeper on a short interval. It reads `Lens.settleDue()` (or `Pool.settleDue()`) and calls `Pool.settle(20)`
 whenever `settleDue() != None`. A nonzero value means a batch, an age or a thin board reason holds and funded work is
-queued. The caller receives a refund from `maintenance` when the call lists at least one item. `settle` lists while the
+queued. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL track. `settle` lists while the
 factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on.
 
 The keeper also reads `rotateDue()` and calls `Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the
-spacing since `lastRotateAt` has passed and a reason holds: Claim, GrailStep, Decay or Held. A rotate that leaves
+spacing since `lastRotateAt` has passed and a reason holds: Claim, GrailStep or Held. A rotate that leaves
 inventory unchanged keeps its reason true, so the keeper simulates the call or backs off between attempts.

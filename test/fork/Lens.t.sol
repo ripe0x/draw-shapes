@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Pool} from "../../src/Pool.sol";
 import {PoolAdmin} from "../../src/PoolAdmin.sol";
+import {PoolListing} from "../../src/PoolListing.sol";
 import {Lens} from "../../src/Lens.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
@@ -73,7 +74,7 @@ contract LensForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- quote
 
     function test_quoteIsNotLiveBeforeOpenAndZeroBeforeTheFwaPoolExists() public {
-        Pool bare = new Pool(_params(), address(new PoolAdmin()));
+        Pool bare = new Pool(_params(), address(new PoolAdmin()), address(new PoolListing()));
         Lens bareLens = new Lens(bare);
         Lens.Quote memory q = bareLens.quote(1);
         assertEq(q.total, 0);
@@ -310,12 +311,13 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.openingDeadlineAt, IPool(address(pool)).openingDeadlineAt());
         assertEq(p.minItems, 10);
         assertEq(p.grailProbCapBps, 2_000);
-        assertEq(p.batchMin, 5);
+        assertEq(p.batchMin, 20);
         assertEq(p.batchMaxAge, 1 hours);
         assertEq(p.surpriseBps, 200);
         assertEq(p.restoreK, 8);
         assertEq(p.bandBps, 3_000);
         assertEq(p.reserveBps, 1_000);
+        assertEq(p.tipWei, 0.0002 ether);
         assertFalse(p.listWhilePaused);
         assertEq(p.maxBatch, IPool(address(pool)).maxBatch());
         assertEq(p.concurrency, IPool(address(pool)).concurrency());

@@ -124,6 +124,7 @@ contract Lens {
         uint256 restoreK;
         uint256 bandBps;
         uint256 reserveBps;
+        uint256 tipWei;
         bool listWhilePaused;
         uint256 maxBatch;
         uint256 concurrency;
@@ -356,6 +357,7 @@ contract Lens {
         p.restoreK = _ip().restoreK();
         p.bandBps = _ip().bandBps();
         p.reserveBps = _ip().reserveBps();
+        p.tipWei = _ip().tipWei();
         p.listWhilePaused = _ip().listWhilePaused();
         p.maxBatch = _ip().maxBatch();
         p.concurrency = _ip().concurrency();

@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {Pool} from "../../src/Pool.sol";
 import {PoolAdmin} from "../../src/PoolAdmin.sol";
+import {PoolListing} from "../../src/PoolListing.sol";
 import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
@@ -15,7 +16,7 @@ contract PoolHarness is Pool {
 
     error Preview(uint256 nav, uint256 cash, uint256 claims);
 
-    constructor(Params memory p) Pool(p, address(new PoolAdmin())) {}
+    constructor(Params memory p) Pool(p, address(new PoolAdmin()), address(new PoolListing())) {}
 
     /// @dev Moves `amount` from `cash` to `backing` and sends the ETH out, as a mint does.
     function spendOnBacking(uint256 amount) external {
@@ -106,7 +107,8 @@ contract PoolHarness is Pool {
     /// @dev Runs the pass `open` repeats: pays claims, queues each row's missing items and lists
     ///      the queue and the held items. Returns the number listed.
     function restock() external returns (uint256) {
-        return _openBoard();
+        _payClaims();
+        return IPool(address(this)).openBoard();
     }
 
     function sync() external {
@@ -283,12 +285,13 @@ abstract contract PoolFixture is Test {
         p.openingDeadline = 24 hours;
         p.minItems = 10;
         p.grailProbCapBps = 2_000;
-        p.batchMin = 5;
+        p.batchMin = 20;
         p.batchMaxAge = 1 hours;
         p.surpriseBps = 200;
         p.restoreK = 8;
         p.bandBps = 3_000;
         p.reserveBps = 1_000;
+        p.tipWei = 0.0002 ether;
     }
 
     /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `rotate`
@@ -445,9 +448,61 @@ contract PoolConstructorTest is PoolFixture {
         new PoolHarness(p);
     }
 
+    function test_revert_tipAboveBound() public {
+        IPoolTypes.Params memory p = _params();
+        p.tipWei = 0.01 ether + 1;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+        p.tipWei = 0.01 ether;
+        assertEq(IPool(address(new PoolHarness(p))).tipWei(), 0.01 ether);
+    }
+
+    function test_revert_moduleAddressZero() public {
+        IPoolTypes.Params memory p = _params();
+        address admin_ = address(new PoolAdmin());
+        address listing_ = address(new PoolListing());
+        vm.expectRevert(IPoolTypes.ZeroAddress.selector);
+        new Pool(p, address(0), listing_);
+        vm.expectRevert(IPoolTypes.ZeroAddress.selector);
+        new Pool(p, admin_, address(0));
+    }
+
+    function test_constructorStoresTheModulesAndTheTip() public {
+        PoolHarness pool = _deploy(_params());
+        assertTrue(pool.adminModule().code.length != 0);
+        assertTrue(pool.listingModule().code.length != 0);
+        assertTrue(pool.adminModule() != pool.listingModule());
+        assertEq(IPool(address(pool)).tipWei(), 0.0002 ether);
+    }
+
+    function test_revert_listingSelectorsOnThePoolFromAnyOtherSender() public {
+        PoolHarness pool = _deploy(_params());
+        vm.prank(alice);
+        vm.expectRevert(IPoolTypes.NotSelf.selector);
+        IPool(address(pool)).listBatch(1);
+        vm.prank(alice);
+        vm.expectRevert(IPoolTypes.NotSelf.selector);
+        IPool(address(pool)).openBoard();
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.NotSelf.selector);
+        IPool(address(pool)).listBatch(1);
+    }
+
+    function test_revert_listingModuleCalledDirectly() public {
+        PoolHarness pool = _deploy(_params());
+        IPool listing = IPool(pool.listingModule());
+        vm.expectRevert(IPoolTypes.NotDelegated.selector);
+        listing.listBatch(1);
+        vm.expectRevert(IPoolTypes.NotDelegated.selector);
+        listing.openBoard();
+        vm.prank(address(listing));
+        vm.expectRevert(IPoolTypes.NotDelegated.selector);
+        listing.listBatch(1);
+    }
+
     function test_constructorStoresReplacementParams() public {
         PoolHarness pool = _deploy(_params());
-        assertEq(IPool(address(pool)).batchMin(), 5);
+        assertEq(IPool(address(pool)).batchMin(), 20);
         assertEq(IPool(address(pool)).batchMaxAge(), 1 hours);
         assertEq(IPool(address(pool)).surpriseBps(), 200);
         assertEq(IPool(address(pool)).restoreK(), 8);

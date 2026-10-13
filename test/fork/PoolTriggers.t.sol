@@ -218,65 +218,191 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         _assertDue(IPoolTypes.RotateTrigger.GrailStep);
     }
 
-    function test_decayTriggerFiresWhenAListedTrackHasPullsAndALowerPrice() public {
+    /// @dev Grows the minor track to a 0.04 ETH listing, empties both buckets so no GrailStep is due
+    ///      and queues one replacement so that `settleDue` is `Thin`.
+    function _decayedTrackWithDueSettle() internal {
         _openReady();
         _enableMinor();
         pool.growTrack(0);
         pool.loseGrailBucket(0, _bucketOf(0));
         pool.loseGrailBucket(1, _bucketOf(1));
-        _warpToSpacing();
-        _assertDue(IPoolTypes.RotateTrigger.None);
-
-        pool.recordPulls(1);
-        _assertDue(IPoolTypes.RotateTrigger.Decay);
+        pool.pushReplacement(1);
+        pool.setMaintenance(1 ether);
+        vm.deal(address(pool), address(pool).balance + 1 ether);
     }
 
-    function test_decayTriggerIsNoneWhenTheTrackIsAtItsFloor() public {
+    function _notionalOf(uint256 t) internal view returns (uint256 notional) {
+        (,,, notional,,,,,,,,) = IPool(address(pool)).grail(t);
+    }
+
+    /// @dev `GrailListed` events (list or reprice of a track) of the last `_settleAs` call.
+    uint256 internal grailListedInSettle;
+    /// @dev Items listed by the last `_settleAs` call.
+    uint256 internal listedInSettle;
+
+    function _settleAs(address who) internal returns (uint256 refund) {
+        vm.recordLogs();
+        vm.prank(who);
+        pool.settle(20);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        grailListedInSettle = 0;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(pool)) continue;
+            if (logs[i].topics[0] == IPoolTypes.GrailListed.selector) ++grailListedInSettle;
+            if (logs[i].topics[0] == IPoolTypes.Settled.selector) {
+                (listedInSettle, refund) = abi.decode(logs[i].data, (uint256, uint256));
+            }
+        }
+    }
+
+    function test_decayIsNotARotateTrigger() public {
         _openReady();
         _enableMinor();
         pool.growTrack(0);
         pool.loseGrailBucket(0, _bucketOf(0));
         pool.loseGrailBucket(1, _bucketOf(1));
+        pool.recordPulls(100);
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.None);
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
+    }
+
+    function test_aDueSettleRepricesAListedTrackAndPaysTheRefund() public {
+        _setCooldown(0);
+        _decayedTrackWithDueSettle();
+        pool.recordPulls(1);
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.Thin));
+        assertEq(_notionalOf(0), 0.04 ether);
+
+        uint256 refund = _settleAs(keeper);
+
+        assertEq(_notionalOf(0), 0.039 ether, "one pull at 0.001 ETH");
+        assertGt(refund, 0, "a due settle that repriced pays the refund");
+        assertEq(keeper.balance, refund);
+        (,,,,,,,,, uint256 pulls,,) = IPool(address(pool)).grail(0);
+        assertEq(pulls, 0, "the reprice restarts the pull count");
+    }
+
+    function test_aSettleThatIsNotDueDoesNotReprice() public {
+        _openReady();
+        _enableMinor();
+        pool.growTrack(0);
+        pool.loseGrailBucket(0, _bucketOf(0));
+        pool.loseGrailBucket(1, _bucketOf(1));
+        pool.setMaintenance(1 ether);
+        vm.deal(address(pool), address(pool).balance + 1 ether);
+        pool.recordPulls(1);
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.None), "nothing queued, nothing held");
+
+        uint256 refund = _settleAs(keeper);
+
+        assertEq(_notionalOf(0), 0.04 ether, "the reprice rides on a due settle");
+        assertEq(refund, 0);
+        (,,,,,,,,, uint256 pulls,,) = IPool(address(pool)).grail(0);
+        assertEq(pulls, 1);
+    }
+
+    function test_rotateLeavesTheListPriceAlone() public {
+        _openReady();
+        assertEq(factory.inventoryChangeCooldown(), 300, "settle may not list, so the Held rotation does");
+        _enableMinor();
+        pool.growTrack(0);
+        pool.loseGrailBucket(0, _bucketOf(0));
+        pool.loseGrailBucket(1, _bucketOf(1));
+        _pooledCapture(1);
+        pool.recordPulls(5);
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.Held);
+        uint256 before_ = _notionalOf(0);
+        (,,,,,,,,, uint256 pullsBefore,,) = IPool(address(pool)).grail(0);
+        assertEq(pullsBefore, 6, "one booked capture and five recorded pulls");
+
+        vm.prank(keeper);
+        pool.rotate();
+
+        assertEq(_notionalOf(0), before_, "rotate lists the queue and does not reprice");
+        (,,,,,,,,, uint256 pulls,,) = IPool(address(pool)).grail(0);
+        assertEq(pulls, pullsBefore, "the pull count is unchanged");
+    }
+
+    function test_aDueSettleDoesNotRepriceUnderANonzeroCooldown() public {
+        _decayedTrackWithDueSettle();
+        pool.recordPulls(1);
+        assertEq(factory.inventoryChangeCooldown(), 300);
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.Thin));
+
+        uint256 refund = _settleAs(keeper);
+
+        assertEq(_notionalOf(0), 0.04 ether, "no FWA inventory call while the cooldown is nonzero");
+        assertEq(grailListedInSettle, 0);
+        assertEq(listedInSettle, 0);
+        assertEq(refund, 0);
+        (,,,,,,,,, uint256 pulls,,) = IPool(address(pool)).grail(0);
+        assertEq(pulls, 1, "the pull count keeps running");
+    }
+
+    function test_listWhilePausedLetsADueSettleRepriceUnderACooldown() public {
+        _decayedTrackWithDueSettle();
+        vm.prank(admin);
+        IPool(address(pool)).setListWhilePaused(true);
+        pool.recordPulls(1);
+        assertEq(factory.inventoryChangeCooldown(), 300);
+
+        uint256 refund = _settleAs(keeper);
+
+        assertEq(_notionalOf(0), 0.039 ether);
+        assertEq(grailListedInSettle, 1);
+        assertGt(refund, 0);
+    }
+
+    function test_aDueSettleStopsAtTheFloor() public {
+        _setCooldown(0);
+        _decayedTrackWithDueSettle();
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);
         pool.recordPulls(100_000);
-        _warpToSpacing();
-        _assertDue(IPoolTypes.RotateTrigger.Decay);
-        vm.prank(keeper);
-        pool.rotate();
+
+        _settleAs(keeper);
+
         (,,, uint256 notional,,,,, uint256 floorWei,,,) = IPool(address(pool)).grail(0);
         assertEq(notional, floorWei);
+        assertEq(grailListedInSettle, 1, "the first settle repriced the track to the floor");
         pool.recordPulls(1);
-        _warpToSpacing();
-        _assertDue(IPoolTypes.RotateTrigger.None);
+        pool.pushReplacement(1);
+        uint256 refund = _settleAs(keeper);
+        assertEq(grailListedInSettle, 0, "at the floor a due settle has nothing to reprice");
+        assertEq(_notionalOf(0), floorWei);
+        assertEq(listedInSettle, 1, "the settle listed the queued replacement");
+        assertGt(refund, 0, "the refund covers the listing");
     }
 
-    function test_decayTriggerCoversTheProbabilityCapLift() public {
-        _openReady();
-        _enableMinor();
-        pool.growTrack(0);
-        pool.loseGrailBucket(0, _bucketOf(0));
-        pool.loseGrailBucket(1, _bucketOf(1));
+    function test_aDueSettleLiftsThePriceWhenTheProbabilityCapIsExceeded() public {
+        _setCooldown(0);
+        _decayedTrackWithDueSettle();
         pool.recordPulls(1);
-        _warpToSpacing();
-        _assertDue(IPoolTypes.RotateTrigger.Decay);
-        vm.prank(keeper);
-        pool.rotate();
-        (,,, uint256 decayed,,,,,,,,) = IPool(address(pool)).grail(0);
+        _settleAs(keeper);
+        uint256 decayed = _notionalOf(0);
         assertEq(decayed, 0.039 ether, "one pull at 0.001 ETH");
 
+        // The settle lists the queued replacement before it reprices, which adds FWA weight. A dry
+        // run reads the weight outside the track after that listing and is then reverted.
+        pool.recordPulls(1);
+        pool.pushReplacement(1);
+        uint256 snapshot = vm.snapshotState();
+        _settleAs(keeper);
+        uint256 restWeight = clone.totalWeight() - 1e36 / _notionalOf(0);
+        vm.revertToState(snapshot);
+        assertEq(_notionalOf(0), decayed, "dry run reverted");
+
         // A cap that the full price of 0.04 ETH meets and 0.039 ETH exceeds asks for a lift.
-        uint256 restWeight = clone.totalWeight() - 1e36 / decayed;
         uint256 fullWeight = 1e36 / 0.04 ether;
         uint256 capBps = fullWeight * 10_000 / (restWeight + fullWeight) + 1;
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(capBps);
-        pool.recordPulls(1);
-        _warpToSpacing();
-        _assertDue(IPoolTypes.RotateTrigger.Decay);
-        vm.prank(keeper);
-        pool.rotate();
-        (,,, uint256 lifted,,,,,,,,) = IPool(address(pool)).grail(0);
+        _settleAs(keeper);
+
+        uint256 lifted = _notionalOf(0);
         assertGt(lifted, decayed, "the price rose");
         assertLe(lifted, 0.04 ether);
     }

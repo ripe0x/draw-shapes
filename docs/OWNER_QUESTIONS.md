@@ -92,6 +92,28 @@ j. Size plan (recorded, not built): Pool 24,395 B and PoolAdmin 23,974 B leave n
    `_listBatch`, `_listItems`, `_openBoard`) into a third module reached the same way as
    `chooseRow`, which frees roughly 3 KB in Pool.
 
+## Owner decision 10, 2026-10-13: listing module, decay in settle, tip setter, bigger batches
+
+a. The listing engine (`_fill`, `_collectQueue`, `_listBatch`, `_listItems`, `_openBoard`) lives in
+   `PoolListing`, a third module with the same storage layout, reached by selector from Pool's
+   fallback and only through Pool's own self-calls (`onlySelf`). Sizes after: Pool 22,387 B,
+   PoolAdmin 24,021 B, PoolListing 7,738 B. PoolAdmin has 555 B of margin; the next admin change
+   needs a byte budget.
+b. The GRAIL decay reprice (1 percent step) and the probability lift run inside a due `settle`,
+   under the same listing condition as the batch (factory cooldown 0 or `listWhilePaused`), so
+   a reprice rides a refunded call and never touches FWA inventory while a cooldown is live.
+   Rotate's reasons are Claim, GrailStep and Held.
+c. Batches: `batchMin` 20, `batchMaxAge` 3,600 s, `MAX_LIST_PER_SETTLE` 25 so one due settle
+   clears a batch (a 20-item settle costs about 10.9M gas). The tip is `tipWei`, `setTip`
+   (at most 0.01 ETH), launch 0.0002 ETH, used by settle and rotate refunds.
+d. Minor GRAIL `listBps` 10,000 at launch (lists at 1 ETH at target); `setGrail` lowers it later.
+e. Measured, 500 a day for 7 days at cooldown 0: 40 rotates (all GrailStep), 174 settles,
+   refunds 0.043 ETH against 1.04 ETH of maintenance inflow; NAV per share 1.0408; listed items
+   average 91. At 100 a day: 21 rotates, 117 settles, 0.024 ETH refunds against 0.33 ETH.
+f. Lab, 365 days at 500 a day and 1 gwei: keeper cost 34 ETH fully refunded from 62.5 ETH of
+   maintenance; the bucket runs dry above about 3 gwei because the per-item mint and list gas
+   (about 27 ETH per gwei per year) is structural. Levers: `maintenanceBps`, the tip, batch size.
+
 ## Guesses taken during the run
 
 Every entry carries its status in the title: decided (folded into SPEC on 2026-10-13) or superseded by an owner decision.

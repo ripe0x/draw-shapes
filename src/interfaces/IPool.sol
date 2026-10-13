@@ -67,14 +67,12 @@ interface IPoolTypes {
         uint256 listingId;
     }
 
-    /// @dev Reason `rotate` is due, in evaluation order. `None` when no reason holds. `Decay` covers
-    ///      a GRAIL price decrease, a probability cap lift and the listing of an unlisted pack.
-    ///      `Held` lists queued replacements and held items while `settle` may not list.
+    /// @dev Reason `rotate` is due, in evaluation order. `None` when no reason holds. `Held` lists
+    ///      queued replacements and held items while `settle` may not list.
     enum RotateTrigger {
         None,
         Claim,
         GrailStep,
-        Decay,
         Held
     }
 
@@ -108,6 +106,7 @@ interface IPoolTypes {
         uint256 restoreK;
         uint256 bandBps;
         uint256 reserveBps;
+        uint256 tipWei;
     }
 
     error ZeroAddress();
@@ -166,6 +165,7 @@ interface IPoolTypes {
     error AlreadyRegistered();
     error InvalidTrack();
     error NotDelegated();
+    error NotSelf();
 
     event Deposited(address indexed to, uint256 value, uint256 contribution, uint256 shares);
     event Withdrawn(address indexed from, uint256 shares, uint256 paidNow, uint256 enqueued);
@@ -220,6 +220,7 @@ interface IPool is IPoolTypes {
     function fwaFactory() external view returns (address);
     function oldPool() external view returns (address);
     function adminModule() external view returns (address);
+    function listingModule() external view returns (address);
     function admin() external view returns (address);
     function lifecycle() external view returns (Lifecycle);
     function pullsPaused() external view returns (bool);
@@ -268,6 +269,7 @@ interface IPool is IPoolTypes {
     function restoreK() external view returns (uint256);
     function bandBps() external view returns (uint256);
     function reserveBps() external view returns (uint256);
+    function tipWei() external view returns (uint256);
     function listWhilePaused() external view returns (bool);
     function oldestQueuedAt() external view returns (uint256);
     function fwaPool() external view returns (IFWAClone);
@@ -311,6 +313,9 @@ interface IPool is IPoolTypes {
     function rotateDue() external view returns (RotateTrigger);
     function settleDue() external view returns (SettleTrigger);
     function chooseRow(uint256 requestId, uint256 capturedRow) external view returns (uint256 row, bool surprise);
+    /// @dev `PoolListing` entrypoints. Callable by the pool itself only.
+    function listBatch(uint256 max) external returns (uint256 listed);
+    function openBoard() external returns (uint256 listed);
     function acquire(
         address purchaser,
         uint256 maxAcquisitionFee,
@@ -360,6 +365,7 @@ interface IPool is IPoolTypes {
     function setBatch(uint256 batchMin_, uint256 batchMaxAge_) external;
     function setReplacement(uint256 surpriseBps_, uint256 restoreK_, uint256 bandBps_) external;
     function setReserve(uint256 reserveBps_) external;
+    function setTip(uint256 tipWei_) external;
     function setListWhilePaused(bool on) external;
     function setPaused(bool pulls, bool deposits) external;
     function setPurchaseGate(bool on) external;

@@ -10,7 +10,7 @@ import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
-///         the pool: growth steps, compose at native denominations, decay in `rotate`, capture and
+///         the pool: growth steps, compose at native denominations, decay in `settle`, capture and
 ///         the selection probability lift.
 /// @dev Minor track: step 0.05 ETH, target 0.5 ETH, list at 80 percent, decay 0.001 ETH per pull,
 ///      floor 0.1 ETH. Its backing reaches a native denomination at 0.1 ETH and 0.5 ETH. Major
@@ -26,6 +26,8 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
     function setUp() public {
         setUpFork();
         openFactory();
+        vm.prank(factory.owner());
+        factory.setInventoryChangeCooldown(0);
         deployDrawPacks(admin);
         mintFee = shapes.mintFee();
         vm.deal(alice, 10_000 ether);
@@ -111,6 +113,19 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _warpPastRotateGate(pool);
         vm.prank(keeper);
         pool.growTrack(uint8(t));
+    }
+
+    /// @dev Makes `settleDue` nonzero: `batchMin` 1 and one queued replacement.
+    function _makeSettleDue() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setBatch(1, 1 hours);
+        if (pool.replacementLength() == 0) pool.pushReplacement(0);
+        assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None, "settle is due");
+    }
+
+    function _settleAsKeeper() internal {
+        vm.prank(keeper);
+        pool.settle(20);
     }
 
     function _rotateAsKeeper() internal {
@@ -342,7 +357,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(_backing(1), 0.15 ether);
     }
 
-    function test_decayInRotateLowersThePriceByPullsTimesDecayDownToTheFloor() public {
+    function test_decayInSettleLowersThePriceByPullsTimesDecayDownToTheFloor() public {
         _openReady();
         for (uint256 i; i < 10; ++i) {
             _grow(0);
@@ -352,9 +367,9 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
         pool.recordPulls(100);
         assertEq(_pulls(0), 100, "listed track counts pulls");
-        _warpToRotation();
+        _makeSettleDue();
         vm.recordLogs();
-        pool.rotate();
+        _settleAsKeeper();
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertEq(_listing(0), listingId, "repriced in place");
@@ -366,15 +381,15 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertGe(listed, 1);
 
         pool.recordPulls(5_000);
-        _warpToRotation();
-        pool.rotate();
+        _makeSettleDue();
+        _settleAsKeeper();
         (price,) = _price(listingId);
         assertEq(price, 0.1 ether, "never below the floor");
         assertEq(_notional(0), 0.1 ether);
 
         pool.recordPulls(10);
-        _warpToRotation();
-        assertTrue(pool.rotateDue() != IPoolTypes.RotateTrigger.Decay, "at the floor no decay is due");
+        _makeSettleDue();
+        _settleAsKeeper();
         (price,) = _price(listingId);
         assertEq(price, 0.1 ether, "at the floor there is nothing to reprice");
         assertEq(_pulls(0), 10, "pulls keep counting");
@@ -394,16 +409,15 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(_notional(0), 0.4 ether);
 
         pool.recordPulls(3);
-        _warpToRotation();
-        assertEq(uint256(pool.rotateDue()), uint256(IPoolTypes.RotateTrigger.None), "0.75 percent is not due");
+        _makeSettleDue();
+        _settleAsKeeper();
         (uint256 price,) = _price(listingId);
-        assertEq(price, 0.4 ether);
+        assertEq(price, 0.4 ether, "0.75 percent waits");
         assertEq(_pulls(0), 3, "the pulls keep counting");
 
         pool.recordPulls(1);
-        _warpToRotation();
-        assertEq(uint256(pool.rotateDue()), uint256(IPoolTypes.RotateTrigger.Decay), "1 percent is due");
-        pool.rotate();
+        _makeSettleDue();
+        _settleAsKeeper();
         assertEq(_notional(0), 0.396 ether, "4 pulls at 0.001 ETH");
         assertEq(_pulls(0), 0);
         _assertI1();
@@ -451,22 +465,19 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         warpPastCooldown(clone);
         uint256[] memory ids = _acquire(player, 1);
         pool.recordPulls(100);
-        _warpToRotation();
+        _makeSettleDue();
 
-        vm.prank(keeper);
-        pool.rotate();
+        _settleAsKeeper();
 
         assertEq(_notional(0), 0.4 ether, "locked while an acquisition is unsettled");
         assertEq(_pulls(0), 100, "the unsettled pull is counted once booked");
 
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
-        _warpToRotation();
-        vm.prank(keeper);
-        pool.rotate();
+        _settleAsKeeper();
         assertEq(_notional(0), 0.4 ether - 101 * 0.001 ether, "repriced once settled");
     }
 
-    function test_rotateListsAPackThatIsNoLongerListed() public {
+    function test_settleListsAPackThatIsNoLongerListed() public {
         _openReady();
         for (uint256 i; i < 10; ++i) {
             _grow(0);
@@ -475,9 +486,9 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.unlistGrail(0);
         assertEq(_listing(0), 0);
         assertEq(drawPacks.ownerOf(packId), address(pool));
-        _warpToRotation();
+        _makeSettleDue();
 
-        pool.rotate();
+        _settleAsKeeper();
 
         assertTrue(_listing(0) != 0, "listed again");
         assertEq(_packId(0), packId);
@@ -613,7 +624,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         return (1e36 / price) * 10_000 > clone.totalWeight() * IPool(address(pool)).grailProbCapBps();
     }
 
-    function test_rotateLiftsAGrailPriceWhoseWeightExceedsTheProbabilityCap() public {
+    function test_settleLiftsAGrailPriceWhoseWeightExceedsTheProbabilityCap() public {
         _openReady();
         pool.loseGrailBucket(1, _bucket(1));
         vm.startPrank(admin);
@@ -628,9 +639,8 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
         // Ten pulls decay the 0.04 ETH list price to 0.03 ETH, which the cap allows on the full board.
         pool.recordPulls(10);
-        _warpToRotation();
-        vm.prank(keeper);
-        pool.rotate();
+        _makeSettleDue();
+        _settleAsKeeper();
         assertEq(_notional(0), 0.03 ether);
         assertFalse(_capExceeded());
 
@@ -651,10 +661,9 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(clone.unsettledAcquisitionCount(), 0);
         assertTrue(_capExceeded());
 
-        _warpToRotation();
+        _makeSettleDue();
         vm.recordLogs();
-        vm.prank(keeper);
-        pool.rotate();
+        _settleAsKeeper();
         (uint256 listed,) = _countTrack(vm.getRecordedLogs(), IPoolTypes.GrailListed.selector, 0);
         assertEq(listed, 1);
 

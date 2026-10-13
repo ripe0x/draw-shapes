@@ -27,6 +27,8 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     function setUp() public {
         setUpFork();
         openFactory();
+        vm.prank(factory.owner());
+        factory.setInventoryChangeCooldown(0);
         deployDrawPacks(admin);
         mintFee = shapes.mintFee();
         vm.deal(alice, 10_000 ether);
@@ -202,7 +204,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         new PoolHarness(p);
     }
 
-    function test_settleActivatesAStagedGrailListingAndRotateRepricesIt() public {
+    function test_settleActivatesAStagedGrailListingAndRepricesIt() public {
         _openLarge();
         _enableMinor();
         _grow(0);
@@ -220,15 +222,14 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Staged), "staged behind the unsettled acquisition");
         pool.setGrailListing(0, pack, stagedId, notional);
         pool.recordPulls(10);
+        vm.prank(admin);
+        IPool(address(pool)).setBatch(1, 1 hours);
 
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
         _settle();
         (, status) = _price(stagedId);
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by settle");
-        _warpToRotation();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Decay));
-        _rotate();
 
         uint256 price;
         (price, status) = _price(stagedId);
@@ -240,6 +241,9 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- A2: refund gate
 
     function test_refundIsPaidOncePerRotateIntervalWhenEveryRotateBooks() public {
+        // A nonzero cooldown keeps settle from listing, so each replacement waits for a rotation.
+        vm.prank(factory.owner());
+        factory.setInventoryChangeCooldown(300);
         _openLarge();
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
@@ -283,10 +287,11 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
         pool.recordPulls(100);
         assertEq(_pulls(0), 100);
-        _warpToRotation();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the decay would cross the cap");
-        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
-        pool.rotate();
+        vm.prank(admin);
+        IPool(address(pool)).setBatch(1, 1 hours);
+        pool.pushReplacement(0);
+        assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None);
+        _settle();
         (uint256 price,) = _price(listingId);
         assertEq(price, 0.04 ether, "the reprice to the 0.02 ETH floor would exceed the cap");
         assertEq(_notional(0), 0.04 ether);
@@ -294,8 +299,9 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Decay), "the cap allows the reprice");
-        _rotate();
+        pool.pushReplacement(0);
+        assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None, "the first settle listed the queue");
+        _settle();
         (price,) = _price(listingId);
         assertEq(price, 0.02 ether, "reprices once the cap allows it");
     }

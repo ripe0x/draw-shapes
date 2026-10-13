@@ -10,9 +10,10 @@ import {IFWAClone} from "./interfaces/IFWAClone.sol";
 import {IPoolTypes} from "./interfaces/IPool.sol";
 
 /// @title PoolStorage
-/// @notice Storage layout, constants and internal helpers shared by `Pool` and `PoolAdmin`.
-/// @dev `PoolAdmin` runs by delegatecall from the `fallback` of `Pool`, so both contracts inherit
-///      this layout and the reentrancy guard slot.
+/// @notice Storage layout, constants and internal helpers shared by `Pool`, `PoolAdmin` and
+///         `PoolListing`.
+/// @dev `PoolAdmin` and `PoolListing` run by delegatecall from the `fallback` of `Pool`, so the
+///      three contracts inherit this layout and the reentrancy guard slot.
 abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     // ------------------------------------------------------------------ constants
 
@@ -22,6 +23,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant MAX_CURVE_CAP_BPS = 2_500;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
+    uint256 internal constant MAX_OPEN_MINTS = 20;
+    uint256 internal constant MAX_TIP = 0.01 ether;
     uint256 internal constant MAX_RESTORE_K = 100;
     uint256 internal constant MAX_BAND_BPS = 100_000;
 
@@ -78,6 +81,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal _reserveBps;
     /// @dev When true `settle` lists while FWA's inventory change cooldown is nonzero.
     bool internal _listWhilePaused;
+    /// @dev Wei added to the gas cost in every `settle` and `rotate` refund.
+    uint256 internal _tipWei;
 
     IFWAClone public fwaPool;
     uint256 internal _maxBatch;
@@ -385,6 +390,11 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         _surpriseBps = surprise;
         _restoreK = restore;
         _bandBps = band;
+    }
+
+    function _setTip(uint256 tip) internal {
+        if (tip > MAX_TIP) revert LimitOutOfRange();
+        _tipWei = tip;
     }
 
     function _setReserve(uint256 bps) internal {

@@ -25,16 +25,19 @@ Shares are nontransferable. There is one admin role.
 
 | Contract | Role |
 | --- | --- |
-| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL tracks, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates to `PoolAdmin`. |
-| `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import, getters. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
+| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL tracks, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch` and `openBoard` to `listingModule` and every other selector to `adminModule`. |
+| `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import, getters, `chooseRow`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
+| `PoolListing.sol` | Listing engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`. Entrypoints `listBatch(max)` and `openBoard()`. Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
 | `PoolBooks.sol`, `PoolStorage.sol` | Shared bases: settlement, harvest, margin split, row choice; storage layout, item registry, parameter validation. `interfaces/IPool.sol` holds the combined ABI, types, errors and events. |
 | `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
 | Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
 | Shapes | Mainnet `0x6fe9193276bf7abcbee44ab7afd717d637d6faf0`. `mintBatchTo`, `redeem`, `mintFee`. |
 | FWA V2 clone | Created by the pool through the factory. `listNFT`, `listNFTs`, `updatePrice`, `withdrawListingTo`, `processAcquisitions`, `withdrawOwnerProceeds`, `acquire`, `acquireBatch`, `setPurchaseOperator`, `retirePool`. |
 
-`Pool` and `PoolAdmin` compile with via_ir. The `PoolAdmin` module is the only delegatecall target. Pure math is in
-internal libraries (`PricingLib`). Runtime sizes: `Pool` 24,395 B, `PoolAdmin` 23,974 B, `Lens` 13,382 B (limit 24,576 B).
+`Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
+delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
+`nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
+Runtime sizes: `Pool` 22,387 B, `PoolAdmin` 24,021 B, `PoolListing` 7,738 B, `Lens` 13,469 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 
@@ -70,7 +73,7 @@ Invariants, enforced by the invariant suite:
 Constructor: Shapes, Draw Packs, FWA factory, admin, `oldPool` (zero unless the pool succeeds another), mix table, fee
 split, GRAIL track parameters, `navCap`, entry curve, `rotateInterval`, `openingDeadline` (seconds, started by
 `createFwaPool`), `minItems`, `grailProbCapBps`, `batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`,
-`reserveBps` and the `PoolAdmin` address.
+`reserveBps`, `tipWei` and the `PoolAdmin` and `PoolListing` addresses.
 
 Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 
@@ -83,6 +86,7 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setGrail(track, targetWei, stepWei, listBps, decayWeiPerPull, floorWei)` | `listBps` 1 to 10,000. `floorWei` above zero and at most `targetWei * listBps / 10_000`. `stepWei` a multiple of the Shapes unit and at least two units. |
 | `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
 | `setBatch(batchMin, batchMaxAge)`, `setReplacement(surpriseBps, restoreK, bandBps)` | Both above zero. At most 10,000, 100 and 100,000. |
+| `setTip(tipWei)` | At most 0.01 ether. |
 | `setMaxBatch(n)`, `setConcurrency(n)`, `setRotateInterval(seconds)`, `setAdmin(address)` | At most FWA's live values (`n` above zero for `setMaxBatch`). At least FWA's `inventoryChangeCooldown`. Nonzero. |
 
 Launch values: premium 200, maintenance 100, feed 400, minor share per `launch-profile.json`; entry curve base 1,100,
@@ -90,10 +94,12 @@ slope 2,000, cap 2,500, reference 55 ETH; opening deadline 24 h. The owner set t
 - `minItems` 100: the board stays above FWA's 10 outstanding requests. `navCap` 100 ETH: bounds the opening.
 - Mix 0.01 Shape 38 percent, 0.02 pack 28, 0.03 pack 19, 0.05 Shape 10, 0.1 Shape 4, 0.5 Shape 1: the 0.1 and 0.5
   rows restore the large pieces of the launch profile at a small share.
-- `rotateInterval` 900 s, `batchMin` 5, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`).
+- `rotateInterval` 900 s, `batchMin` 20, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`).
+- `tipWei` 0.0002 ether: the fixed part of every `settle` and `rotate` refund.
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
-`grailProbCapBps` and the GRAIL tracks are set in `script/env/<env>.env`. The launch `decayWeiPerPull` is 0.0001 ETH for both tracks.
+`grailProbCapBps` and the GRAIL tracks are set in `script/env/<env>.env`. The launch `decayWeiPerPull` is 0.0001 ETH for both
+tracks. The minor track lists at `listBps` 10,000 and the major track at 7,500.
 
 ## 6. Lifecycle
 
@@ -204,24 +210,24 @@ nonempty and cleared when it empties. `randomWord` is FWA's word for the request
 4. Band: a chosen row with `count >= max(target + 1, ceil(target * (10_000 + bandBps) / 10_000))` becomes the row of
    largest deficit (lowest index on a tie). When no row is below target the step 2 row stands.
 
-Filling. `settle`, `rotate` and `open` fill queue entries in order and list them with `listNFTs`. A Shape row takes a
+Filling. `settle`, `rotate` and `open` fill queue entries in order and list them with `listNFTs` (`PoolListing`). A Shape row takes a
 held Shape of its rung, else mints one. A pack row lists a held pack of equal backing, else calls `createPack(shapeIds,
 mintCounts)` with one held Shape per rung that has one and a mint count for the others. A mint needs spendable cash,
 `cash - claims - nav * reserveBps / 10_000`, of at least its cost. An entry that cash cannot fund stays queued.
 
 `settle(maxCount)` (anyone) books, harvests and calls `activateListings` when FWA holds no unsettled acquisition. When
 `settleDue()` is nonzero and the factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on, it lists at most
-`MAX_LIST_PER_SETTLE` (10) items. `settleDue()` returns the first of these, and `None` outside Live or when no held item
-exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued replacement
-is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`.
+`MAX_LIST_PER_SETTLE` (25) items, then reprices both GRAIL tracks (section 11) while FWA holds no unsettled acquisition
+and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
+held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
+replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`. A
+reprice rides on a due settle and never makes one due.
 
 `rotate()`. Anyone. Reverts `RotateTooSoon` until `rotateInterval` has passed since `lastRotateAt`, and `RotateNotDue`
 unless a reason holds. `lastRotateAt` moves when the call changed inventory. Reasons, in evaluation order:
 1. Claim: the head queued claim is at least `rotateInterval` old.
 2. GrailStep: a track below `targetWei` holds a bucket that covers a step and its mint fees.
-3. Decay: a listed GRAIL track has `pullsSinceList` above zero and its decayed price, at least 1 percent below the list price, or its price lifted to restore
-   `grailProbCapBps`, differs from its list price. An unlisted pack whose next price keeps the cap counts as well.
-4. Held: `settle` may not list (cooldown above zero and `listWhilePaused` off), and a held item exists or spendable cash
+3. Held: `settle` may not list (cooldown above zero and `listWhilePaused` off), and a held item exists or spendable cash
    covers the queue head.
 
 `rotateDue()` returns the first reason that holds, and `None` before the spacing ends, outside Live and when no reason
@@ -229,7 +235,7 @@ holds. A reason can hold while its work is blocked, such as Claim while FWA hold
 leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. Steps, each bounded: (1) settle and harvest; (2) pay
 claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 20 queued replacements
 and held items; (4) `activateListings` when FWA holds no unsettled acquisition and the walk is level; (5) GRAIL, per
-track: grow when funded, otherwise decay or lift the list price; (6) refund the caller. `open()` queues each row's
+track: grow when funded; (6) refund the caller. `open()` queues each row's
 missing items against its target depth and runs step 3.
 
 ## 10. Upkeep and refund
@@ -239,10 +245,10 @@ from `cash`. Listing runs in `settle` and `rotate`, because every FWA listing re
 factory's `inventoryChangeCooldown`. FWA rejects `withdrawListing` and `updatePrice` while any acquisition is
 unsettled, so under continuous pull flow liquidation, GRAIL growth and repricing wait for a gap that a pause opens.
 
-Refunds come from `maintenance`: `refund = min(maintenance, (gasUsed + 30,000) * block.basefee + tip)`, with `tip` a
-constant 0.0005 ETH. `settle` pays when `settleDue()` was nonzero and the call listed at least one item, and emits
-`Settled(listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew or repriced) and
-`rotateInterval` has passed since `lastRefundAt`: one refund per interval.
+Refunds come from `maintenance`: `refund = min(maintenance, (gasUsed + 30,000) * block.basefee + tipWei)`, with `tipWei`
+a parameter (section 5, `setTip`). `settle` pays when `settleDue()` was nonzero and the call listed an item or repriced a
+track, and emits `Settled(listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew or grew a
+track) and `rotateInterval` has passed since `lastRefundAt`: one refund per interval.
 
 ## 11. GRAIL tracks
 
@@ -254,23 +260,24 @@ Growth (trigger GrailStep), per track: requires `bucket >= stepWei + mint fees`,
 `packId == 0`, else `addToPack`; `backing += step`; if the pack's contents sum to a native rung, opens, composes at
 Shapes, and repacks it as one Shape; `notional = backing * listBps / 10_000`; lists. It resets `pullsSinceList`.
 
-Decay (reason Decay), inside `rotate`, after the growth step, for a track the growth step left unchanged: `next =
-max(floorWei, notional - decayWeiPerPull * pullsSinceList)`. The reprice runs when the listing is Active, `next` is at
-least 1 percent (`notional / 100`) below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice` and resets
+Decay, inside `settle` after the listing step and under the same listing condition (cooldown 0 or `listWhilePaused`), per track: `next = max(floorWei, notional - decayWeiPerPull *
+pullsSinceList)`. The reprice runs when the listing is Active, `next` is at least 1 percent (`notional / 100`) below
+`notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice` and resets
 `pullsSinceList`. An unlisted pack is listed at `next`. On capture, proceeds go to the track's receivable and then its
 bucket, and `packId` and `backing` reset to 0.
 
-Probability cap (reason Decay). When the listed GRAIL weight exceeds `grailProbCapBps`, `rotate` lifts a track's
+Probability cap, inside `settle` after the decay. When the listed GRAIL weight exceeds `grailProbCapBps`, `settle` lifts a track's
 `notional` to the smallest price that restores the cap, at most `backing * listBps / 10_000`. The lift needs an Active
 listing and no unsettled acquisitions, and it resets `pullsSinceList`. The board depth guard keeps at least
-`concurrency` ordinary items listed, so a first minor listing at 0.075 ETH holds about 1.3 percent of selection weight.
+`concurrency` ordinary items listed, so a first minor listing at 0.1 ETH holds about 1 percent of selection weight.
 
 ## 12. Admin
 
-`PoolAdmin` implements `createFwaPool`, the setters (section 5), `setPurchaseGate`, `startExit`, `exportStep`,
+`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`), `setPurchaseGate`, `startExit`, `exportStep`,
 `transferGrailEstate(t, to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and the getters of the
 replacement, batch and reserve parameters, row counts, mix rows, held Shapes by denomination, queue and claim entries
 and GRAIL tracks. `chooseRow(requestId, capturedRow)` returns the replacement row for a fulfilled request.
+`PoolListing` implements `listBatch(max)` and `openBoard()`, which only `Pool` calls on itself.
 
 `sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item or a GRAIL
 pack). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
@@ -313,7 +320,7 @@ imported tokens.
 
 Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail(t)`, `claims()`,
 `reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `parameters()` lists the constructor values and
-the setter values, including the batch, replacement, reserve and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
+the setter values, including the batch, replacement, reserve, `tipWei` and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
 solvency and board depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
 
 ## 15. Out of scope for v1

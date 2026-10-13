@@ -120,6 +120,8 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setReserve(0);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setTip(0);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setListWhilePaused(true);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setPaused(true, true);
@@ -445,6 +447,25 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).batchMin(), 3);
         assertEq(IPool(address(pool)).batchMaxAge(), 600);
         vm.stopPrank();
+    }
+
+    function test_setTipBounds() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setTip(0.01 ether + 1);
+        _expectParamSet(IPool.setTip.selector);
+        IPool(address(pool)).setTip(0.01 ether);
+        assertEq(IPool(address(pool)).tipWei(), 0.01 ether);
+        IPool(address(pool)).setTip(0);
+        assertEq(IPool(address(pool)).tipWei(), 0);
+        vm.stopPrank();
+    }
+
+    function test_setTipIsAdminOnly() public {
+        vm.prank(alice);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setTip(1);
+        assertEq(IPool(address(pool)).tipWei(), 0.0002 ether);
     }
 
     function test_setReplacementBounds() public {

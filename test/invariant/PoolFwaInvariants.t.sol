@@ -54,8 +54,10 @@ contract PoolFwaHandler is ForkBase {
     bool public i6Broken;
     bool public harvestBroken;
     bool public booksBehindAfterPricing;
-    /// @dev Set when `settle` pays a refund without listing an item.
+    /// @dev Set when `settle` pays a refund without listing an item or repricing a GRAIL track.
     bool public settleBroken;
+    /// @dev `GrailListed` events since the last `Settled` or `Rotated` event.
+    uint256 internal _grailListedInCall;
     uint256 public settleListed;
     uint256 public settleRefunds;
     /// @dev Shapes `pullWithShapes` and `redeemAndDeposit` left in the pool as held items.
@@ -153,7 +155,10 @@ contract PoolFwaHandler is ForkBase {
                 } else {
                     _queuedAmount[_paidIndex] -= fee;
                 }
+            } else if (topic == IPoolTypes.GrailListed.selector) {
+                ++_grailListedInCall;
             } else if (topic == IPoolTypes.Rotated.selector) {
+                _grailListedInCall = 0;
                 (,, uint256 refund) = abi.decode(logs[i].data, (bool, bool, uint256));
                 ghostRefunds += refund;
                 _batchRefund += refund;
@@ -162,7 +167,8 @@ contract PoolFwaHandler is ForkBase {
                 ghostRefunds += refund;
                 _batchRefund += refund;
                 settleListed += listed;
-                if (refund != 0 && listed == 0) settleBroken = true;
+                if (refund != 0 && listed == 0 && _grailListedInCall == 0) settleBroken = true;
+                _grailListedInCall = 0;
                 if (refund != 0) ++settleRefunds;
             }
         }
@@ -788,7 +794,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
         invariant_queueMatchesRowCounters();
-        invariant_settleRefundsOnlyAListingCall();
+        invariant_settleRefundsOnlyAWorkingCall();
         invariant_I3_withdrawalNeverExceedsNavShare();
         invariant_I4_claimsPaidInRequestOrder();
         invariant_I6_maintenanceFallsOnlyByRotateRefunds();
@@ -805,7 +811,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
         invariant_queueMatchesRowCounters();
-        invariant_settleRefundsOnlyAListingCall();
+        invariant_settleRefundsOnlyAWorkingCall();
         invariant_I3_withdrawalNeverExceedsNavShare();
         invariant_I4_claimsPaidInRequestOrder();
         invariant_I6_maintenanceFallsOnlyByRotateRefunds();
@@ -970,10 +976,10 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).oldestQueuedAt() == 0, pool.replacementLength() == 0);
     }
 
-    /// @dev `settle` pays a refund only for a call that listed an item.
+    /// @dev `settle` pays a refund only for a call that listed an item or repriced a GRAIL track.
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
-    function invariant_settleRefundsOnlyAListingCall() public view {
+    function invariant_settleRefundsOnlyAWorkingCall() public view {
         assertFalse(handler.settleBroken());
     }
 

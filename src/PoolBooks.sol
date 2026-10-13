@@ -3,14 +3,25 @@ pragma solidity 0.8.28;
 
 import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
+import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
+import {IERC721Value} from "shapes/interfaces/IERC721Value.sol";
 import {PricingLib} from "./lib/PricingLib.sol";
 import {PoolStorage} from "./PoolStorage.sol";
 import {IFWAClone} from "./interfaces/IFWAClone.sol";
 
 /// @title PoolBooks
 /// @notice Settlement of FWA acquisitions and harvest of FWA owner proceeds into the buckets,
-///         shared by `Pool` and `PoolAdmin`.
+///         shared by `Pool`, `PoolAdmin` and `PoolListing`.
 abstract contract PoolBooks is PoolStorage {
+    /// @dev Address of the deployed module, compared with `address(this)` to detect a direct call.
+    address private immutable self = address(this);
+
+    /// @dev Reverts `NotDelegated` on a direct call to a module.
+    modifier onlyDelegated() {
+        if (address(this) == self) revert NotDelegated();
+        _;
+    }
+
     /// @dev Brings the books level with FWA before share pricing: processes and books up to
     ///      `MAX_SETTLE_ITEMS` acquisitions, requires the booking walk to reach FWA's processing
     ///      queue, then harvests. FWA processes acquisitions permissionlessly, so share pricing
@@ -269,6 +280,35 @@ abstract contract PoolBooks is PoolStorage {
             g.receivable -= cut;
             gap -= cut;
         }
+    }
+
+    /// @dev Cash that a mint or a kept Shape may use: `cash` less `claims` and the reserve of
+    ///      `reserveBps` of ordinary NAV, or zero.
+    function _spendable() internal view returns (uint256) {
+        return _spendableAbove(nav() * _reserveBps / BPS);
+    }
+
+    /// @dev `cash` less `claims` and `reserve`, or zero. A batch passes the reserve read before its
+    ///      first mint, so the items it has taken out of the books do not lower it.
+    function _spendableAbove(uint256 reserve) internal view returns (uint256) {
+        uint256 held = claims + reserve;
+        return cash > held ? cash - held : 0;
+    }
+
+    /// @dev Creates a Draw Pack owned by this contract from the Shapes `shapeIds` it owns and the
+    ///      Shapes minted by `counts`, paying `value`. Reverts unless the pack's value is
+    ///      `expected`.
+    function _createPack(uint256[] memory shapeIds, uint32[] memory counts, uint256 value, uint256 expected)
+        internal
+        returns (uint256 packId)
+    {
+        packId = IShapePacks(drawPacks).createPack{value: value}(shapeIds, counts);
+        _checkPackValue(packId, expected);
+    }
+
+    /// @dev Reverts `PackValueMismatch` unless Draw Pack `packId` holds `expected` wei of backing.
+    function _checkPackValue(uint256 packId, uint256 expected) internal view {
+        if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
     }
 
     /// @dev Each listed GRAIL track's `pullsSinceList` rises by `count`.

@@ -7,7 +7,6 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
 import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
-import {IERC721Value} from "shapes/interfaces/IERC721Value.sol";
 import {PricingLib} from "./lib/PricingLib.sol";
 import {PoolBooks} from "./PoolBooks.sol";
 import {IFWAClone, FWAConfigKeys} from "./interfaces/IFWAClone.sol";
@@ -36,16 +35,17 @@ import {IPool} from "./interfaces/IPool.sol";
 ///      `exportedShares` and `exportedNav` and sets Exported. A successor imports through functions
 ///      restricted to its `oldPool` and mints holder shares with `migrateHolder`.
 ///
-///      Admin, exit and successor-import functions are implemented by `PoolAdmin`. `fallback`
-///      delegates to it on the storage layout of `PoolStorage`.
+///      Admin, exit and successor-import functions are implemented by `PoolAdmin`. The listing
+///      engine is implemented by `PoolListing`. `fallback` delegates `listBatch` and `openBoard`
+///      to `listingModule` and every other call to `adminModule`, on the storage layout of
+///      `PoolStorage`.
 ///
 ///      Tracks are indexed `MINOR = 0` and `MAJOR = 1`. Share, claim and bucket amounts are in wei.
 contract Pool is PoolBooks {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant MAX_CLAIM_ITEMS = 20;
-    uint256 internal constant MAX_OPEN_MINTS = 20;
-    uint256 internal constant MAX_LIST_PER_SETTLE = 10;
+    uint256 internal constant MAX_LIST_PER_SETTLE = 25;
     /// @dev Queued replacements and held items listed by one `rotate`.
     uint256 internal constant MAX_LIST_PER_ROTATE = 20;
     /// @dev Listed items above `concurrency` below which `settleDue` returns `Thin`.
@@ -53,9 +53,6 @@ contract Pool is PoolBooks {
     uint256 internal constant SETTLE_BUDGET = 3;
     uint256 internal constant MAX_LIQUIDATE_ITEMS = 25;
     uint256 internal constant MAX_ACTIVATIONS = 20;
-    /// @dev Added to the refund of every `rotate` that changed inventory and of every `settle` that
-    ///      listed.
-    uint256 internal constant ROTATE_TIP = 0.0005 ether;
     /// @dev Intrinsic transaction gas plus the refund transfer, added to the measured gas.
     uint256 internal constant ROTATE_GAS_OVERHEAD = 30_000;
 
@@ -65,15 +62,18 @@ contract Pool is PoolBooks {
 
     /// @notice `PoolAdmin` instance that `fallback` delegates to.
     address public immutable adminModule;
+    /// @notice `PoolListing` instance that `fallback` delegates `listBatch` and `openBoard` to.
+    address public immutable listingModule;
 
-    constructor(Params memory p, address adminModule_) {
+    constructor(Params memory p, address adminModule_, address listingModule_) {
         if (
             p.shapes == address(0) || p.drawPacks == address(0) || p.fwaFactory == address(0) || p.admin == address(0)
-                || adminModule_ == address(0)
+                || adminModule_ == address(0) || listingModule_ == address(0)
         ) {
             revert ZeroAddress();
         }
         adminModule = adminModule_;
+        listingModule = listingModule_;
         shapes = p.shapes;
         drawPacks = p.drawPacks;
         fwaFactory = p.fwaFactory;
@@ -89,6 +89,7 @@ contract Pool is PoolBooks {
         _setBatch(p.batchMin, p.batchMaxAge);
         _setReplacement(p.surpriseBps, p.restoreK, p.bandBps);
         _setReserve(p.reserveBps);
+        _setTip(p.tipWei);
 
         _initGrail(MINOR, p.minor);
         _initGrail(MAJOR, p.major);
@@ -99,7 +100,8 @@ contract Pool is PoolBooks {
 
     /// @notice Enables FWA acquisitions and builds the board after the opening deadline. Each call
     ///         pays queued claims, queues the items each row lacks against its target depth, then
-    ///         fills and lists the queue and the held items, at most `MAX_OPEN_MINTS` in all. The
+    ///         fills and lists the queue and the held items, at most `MAX_OPEN_MINTS` in all
+    ///         (`PoolListing.openBoard`). The
     ///         pool becomes Live on the first call that lists fewer than `MAX_OPEN_MINTS` items,
     ///         and `open` stays callable while Opening.
     function open() external nonReentrant {
@@ -111,7 +113,8 @@ contract Pool is PoolBooks {
         if (_read(address(fwa), IFWAClone.localPurchasesEnabled.selector, 0) == 0) {
             _call(address(fwa), IFWAClone.setBool.selector, FWAConfigKeys.ACQUISITIONS_ENABLED, 1);
         }
-        if (_openBoard() < MAX_OPEN_MINTS) {
+        _payClaims();
+        if (_call(address(this), IPool.openBoard.selector, 0, 0) < MAX_OPEN_MINTS) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
             emit Opened();
@@ -155,8 +158,7 @@ contract Pool is PoolBooks {
 
     /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, lists the
     ///         queued replacements and held items while `settle` may not list, activates staged
-    ///         FWA listings, reprices or grows the GRAIL tracks, then refunds the caller from
-    ///         `maintenance`. Reverts `RotateTooSoon` until `rotateInterval` has passed since
+    ///         FWA listings, grows the GRAIL tracks, then refunds the caller from `maintenance`. Reverts `RotateTooSoon` until `rotateInterval` has passed since
     ///         `lastRotateAt` and `RotateNotDue` while `rotateDue` is `None`. `lastRotateAt` moves
     ///         when the rotation changed inventory. The refund is paid only when inventory
     ///         changed, once per `rotateInterval`.
@@ -172,14 +174,14 @@ contract Pool is PoolBooks {
         if (!_listingAllowed() && _listBatch(MAX_LIST_PER_ROTATE) != 0) inventoryChanged = true;
         bool busy = _busy();
         if (!busy) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
-        bool grailChanged = _rotateGrail(MINOR, busy);
-        grailChanged = _rotateGrail(MAJOR, busy) || grailChanged;
+        bool grailChanged = _growGrail(MINOR, busy) == 0;
+        grailChanged = _growGrail(MAJOR, busy) == 0 || grailChanged;
         inventoryChanged = inventoryChanged || grailChanged;
         if (inventoryChanged) lastRotateAt = block.timestamp;
         _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
     }
 
-    /// @notice First reason `rotate` is due, in the order Claim, GrailStep, Decay, Held. `None`
+    /// @notice First reason `rotate` is due, in the order Claim, GrailStep, Held. `None`
     ///         when no reason holds, when `rotateInterval` has not passed since `lastRotateAt`, and
     ///         when the pool is not Live. `rotate` is callable exactly when this returns a value
     ///         other than `None`.
@@ -188,6 +190,11 @@ contract Pool is PoolBooks {
             return RotateTrigger.None;
         }
         return _rotateTrigger();
+    }
+
+    /// @notice Wei added to the gas cost in every `settle` and `rotate` refund.
+    function tipWei() external view returns (uint256) {
+        return _tipWei;
     }
 
     /// @notice First reason `settle` lists replacements: `Batch` when `batchMin` replacements are
@@ -314,23 +321,27 @@ contract Pool is PoolBooks {
     }
 
     /// @notice Processes up to `maxCount` FWA acquisitions, books their results, harvests and
-    ///         activates staged FWA listings. When `settleDue` is not `None` and listing is allowed,
-    ///         fills and lists at most `MAX_LIST_PER_SETTLE` items from the replacement queue and the
-    ///         held items, and refunds the caller `(gasUsed + ROTATE_GAS_OVERHEAD) * basefee +
-    ///         ROTATE_TIP` from `maintenance`, capped by the bucket. The refund needs at least one
-    ///         listed item. Listing is allowed while the factory's `inventoryChangeCooldown` is zero
-    ///         or `listWhilePaused` is set.
+    ///         activates staged FWA listings. When `settleDue` is not `None`, it lists at most
+    ///         `MAX_LIST_PER_SETTLE` items from the replacement queue and the held items while
+    ///         listing is allowed, then reprices both GRAIL tracks (`_nextPrice`) while FWA holds
+    ///         no unsettled acquisition and the booking walk is level. A due call that listed an
+    ///         item or repriced a track refunds the caller `(gasUsed + ROTATE_GAS_OVERHEAD) *
+    ///         basefee + tipWei` from `maintenance`, capped by the bucket. Listing is allowed
+    ///         while the factory's `inventoryChangeCooldown` is zero or `listWhilePaused` is set.
     function settle(uint256 maxCount) external nonReentrant {
         uint256 gasStart = gasleft();
         if (address(fwaPool) == address(0)) revert FwaPoolMissing();
         _processAndSettle(maxCount < MAX_SETTLE_ITEMS ? maxCount : MAX_SETTLE_ITEMS);
         _harvest();
-        if (!_busy()) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
+        bool busy = _busy();
+        if (!busy) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
         uint256 listed;
         uint256 refund;
         if (settleDue() != SettleTrigger.None && _listingAllowed()) {
             listed = _listBatch(MAX_LIST_PER_SETTLE);
-            if (listed != 0) refund = _chargeRefund(gasStart);
+            bool repriced = !busy && _repriceGrail(MINOR);
+            repriced = !busy && _repriceGrail(MAJOR) || repriced;
+            if (listed != 0 || repriced) refund = _chargeRefund(gasStart);
         }
         emit Settled(listed, refund);
         if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
@@ -352,10 +363,12 @@ contract Pool is PoolBooks {
         return this.onERC721Received.selector;
     }
 
-    /// @notice Delegates every other call to `adminModule` and returns its return data or revert
-    ///         data.
+    /// @notice Delegates `listBatch` and `openBoard` to `listingModule` and every other call to
+    ///         `adminModule`, and returns the module's return data or revert data.
     fallback() external payable {
         address module = adminModule;
+        bytes4 sig = msg.sig;
+        if (sig == IPool.listBatch.selector || sig == IPool.openBoard.selector) module = listingModule;
         assembly ("memory-safe") {
             calldatacopy(0, 0, calldatasize())
             let ok := delegatecall(gas(), module, 0, calldatasize(), 0, 0)
@@ -366,6 +379,11 @@ contract Pool is PoolBooks {
     }
 
     // ------------------------------------------------------------------ internal
+
+    /// @dev Lists up to `max` items through `PoolListing.listBatch`. Returns the number listed.
+    function _listBatch(uint256 max) internal returns (uint256) {
+        return _call(address(this), IPool.listBatch.selector, max, 0);
+    }
 
     /// @dev Reads the row choice from `PoolAdmin.chooseRow`, which holds the sampling code.
     function _chooseRow(uint256 requestId, uint256 capturedRow)
@@ -473,7 +491,7 @@ contract Pool is PoolBooks {
         return harvested || nextSequenceToBook != booked;
     }
 
-    /// @dev Pays the caller `min(maintenance, gas cost + ROTATE_TIP)` when the rotation changed
+    /// @dev Pays the caller `min(maintenance, gas cost + tipWei)` when the rotation changed
     ///      inventory and `rotateInterval` has passed since `lastRefundAt`. The transfer is the
     ///      last step.
     function _refund(uint256 gasStart, bool changed, bool inventoryChanged) internal {
@@ -486,11 +504,11 @@ contract Pool is PoolBooks {
         if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
     }
 
-    /// @dev Deducts `min(maintenance, (gas used + ROTATE_GAS_OVERHEAD) * basefee + ROTATE_TIP)` from
+    /// @dev Deducts `min(maintenance, (gas used + ROTATE_GAS_OVERHEAD) * basefee + tipWei)` from
     ///      `maintenance` and returns it. The caller pays it out.
     function _chargeRefund(uint256 gasStart) internal returns (uint256 refund) {
         uint256 bucket = maintenance;
-        uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + ROTATE_TIP;
+        uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + _tipWei;
         refund = cost < bucket ? cost : bucket;
         maintenance = bucket - refund;
     }
@@ -714,15 +732,14 @@ contract Pool is PoolBooks {
 
     /// @dev First reason `rotate` is due. The spacing since `lastRotateAt` is checked by the
     ///      callers. Claim: the head claim is at least `rotateInterval` old. GrailStep: a track
-    ///      below `targetWei` holds a bucket that covers a step. Decay: `_repriceDue` holds for a
-    ///      track. Held: `settle` may not list and a replacement or held item can be listed.
+    ///      below `targetWei` holds a bucket that covers a step. Held: `settle` may not list and a
+    ///      replacement or held item can be listed.
     function _rotateTrigger() internal view returns (RotateTrigger) {
         uint256 head = claimHead;
         if (head < _claimQueue.length && block.timestamp >= _claimQueue[head].requestedAt + rotateInterval) {
             return RotateTrigger.Claim;
         }
         if (_growReady(MINOR) || _growReady(MAJOR)) return RotateTrigger.GrailStep;
-        if (_repriceDue(MINOR) || _repriceDue(MAJOR)) return RotateTrigger.Decay;
         if (!_listingAllowed() && _listWork()) return RotateTrigger.Held;
         return RotateTrigger.None;
     }
@@ -742,14 +759,7 @@ contract Pool is PoolBooks {
             && _spendable() >= _rowCost(_replacementQueue[head], _mintFee());
     }
 
-    /// @dev True when `_rotateGrail` would reprice track `t` and the track is unlisted or has
-    ///      `pullsSinceList` above zero.
-    function _repriceDue(uint256 t) internal view returns (bool) {
-        Grail storage g = _grail[t];
-        return (g.listingId == 0 || g.pullsSinceList != 0) && _nextPrice(t, g) != 0;
-    }
-
-    /// @dev List price that `_rotateGrail` sets for track `t`, or zero when it sets none: the
+    /// @dev List price that `_repriceGrail` sets for track `t`, or zero when it sets none: the
     ///      decayed price of an unlisted pack, the decayed price of an Active listing when it is at
     ///      least `notional / 100` below `notional` and keeps the probability cap, else the lifted
     ///      price of an Active listing while the cap is exceeded and the lift raises the price.
@@ -774,162 +784,9 @@ contract Pool is PoolBooks {
         return g.bucket >= cost;
     }
 
-    /// @dev Cash that a mint or a kept Shape may use: `cash` less `claims` and the reserve of
-    ///      `reserveBps` of ordinary NAV, or zero.
-    function _spendable() internal view returns (uint256) {
-        return _spendableAbove(nav() * _reserveBps / BPS);
-    }
-
-    /// @dev `cash` less `claims` and `reserve`, or zero. A batch passes the reserve read before its
-    ///      first mint, so the items it has taken out of the books do not lower it.
-    function _spendableAbove(uint256 reserve) internal view returns (uint256) {
-        uint256 held = claims + reserve;
-        return cash > held ? cash - held : 0;
-    }
-
     /// @dev Row backing plus the mint fee of every Shape the row mints.
     function _rowCost(uint256 row, uint256 fee) internal view returns (uint256) {
         return _rowBackingWei[row] + fee * _mix[row].rungs.length;
-    }
-
-    /// @dev Pays queued claims, queues each row's missing items up to `MAX_OPEN_MINTS` entries in
-    ///      all, then fills and lists the queue and the held items, `MAX_OPEN_MINTS` at most.
-    ///      Returns the number listed.
-    function _openBoard() internal returns (uint256) {
-        _payClaims();
-        uint256 queued = _replacementQueue.length - replacementHead;
-        for (uint256 r; r < _mix.length; ++r) {
-            uint256 target = PricingLib.rowDepth(minItems, _mix[r].shareBps);
-            for (; queued < MAX_OPEN_MINTS && _rowCount[r] + _queuedByRow[r] < target; ++queued) {
-                _enqueue(r);
-            }
-        }
-        return _listBatch(MAX_OPEN_MINTS);
-    }
-
-    /// @dev Fills the queued replacements in order and lists them, then lists held items, at most
-    ///      `max` items in all. Returns the number listed.
-    function _listBatch(uint256 max) internal returns (uint256 n) {
-        uint256 fee = _mintFee();
-        Item[] memory batch = new Item[](max);
-        n = _collectQueue(batch, max, fee, nav() * _reserveBps / BPS);
-        while (n < max && _held.length != 0) {
-            batch[n++] = _removeHeld(_held.length - 1);
-        }
-        _listItems(batch, n, fee);
-    }
-
-    /// @dev Fills queue entries from `replacementHead` into `batch[n..max)`. Stops at the first
-    ///      entry `_fill` cannot fund. Sets `oldestQueuedAt` to zero when the queue empties. Returns
-    ///      the new item count.
-    function _collectQueue(Item[] memory batch, uint256 max, uint256 fee, uint256 reserve)
-        internal
-        returns (uint256 n)
-    {
-        uint256 head = replacementHead;
-        uint256 length = _replacementQueue.length;
-        while (head < length && n < max) {
-            uint256 row = _replacementQueue[head];
-            (Item memory it, bool ok) = _fill(row, fee, reserve);
-            if (!ok) break;
-            batch[n++] = it;
-            --_queuedByRow[row];
-            ++head;
-        }
-        replacementHead = head;
-        if (head == length) _oldestQueuedAt = 0;
-        return n;
-    }
-
-    /// @dev Builds one token of `row` owned by this contract and not yet booked. A Shape row takes
-    ///      a held Shape of its rung, else mints one. A Draw Pack row takes a held pack of equal
-    ///      backing, else creates a pack from one held Shape per rung that has one and mints the
-    ///      other rungs. Held items taken here leave the books until `_listItems` books the
-    ///      result. Minting needs `_spendable()` to cover the backing and mint fees of the minted
-    ///      Shapes. Returns `ok` false and changes nothing when it does not.
-    function _fill(uint256 row, uint256 fee, uint256 reserve) internal returns (Item memory it, bool ok) {
-        uint8[] storage rungs = _mix[row].rungs;
-        uint256 n = rungs.length;
-        uint256 value = _rowBackingWei[row];
-        it.row = uint16(row);
-        it.value = value;
-        if (n == 1) {
-            uint256[] storage held = _heldByDenom[rungs[0]];
-            if (held.length != 0) {
-                it = _removeHeld(_heldPos[shapes][held[held.length - 1]] - 1);
-                it.row = uint16(row);
-                return (it, true);
-            }
-            if (_spendableAbove(reserve) < value + fee) return (it, false);
-            cash -= value + fee;
-            it.collection = shapes;
-            it.tokenId = _callFull(shapes, value + fee, IShapes.mintBatchTo.selector, value, 1, uint160(address(this)));
-            return (it, true);
-        }
-
-        if (_heldPacks != 0) {
-            for (uint256 i = _held.length; i != 0; --i) {
-                Item storage candidate = _held[i - 1];
-                if (candidate.collection == drawPacks && candidate.value == value) {
-                    it = _removeHeld(i - 1);
-                    it.row = uint16(row);
-                    return (it, true);
-                }
-            }
-        }
-        uint256[] memory used = new uint256[](Denominations.COUNT);
-        bool[] memory fromHeld = new bool[](n);
-        uint32[] memory counts = new uint32[](Denominations.COUNT);
-        uint256 cost;
-        uint256 minted;
-        for (uint256 i; i < n; ++i) {
-            uint8 d = rungs[i];
-            if (_heldByDenom[d].length > used[d]) {
-                ++used[d];
-                fromHeld[i] = true;
-            } else {
-                ++counts[d];
-                ++minted;
-                cost += Denominations.amountAt(d) + fee;
-            }
-        }
-        if (cost != 0 && _spendableAbove(reserve) < cost) return (it, false);
-        cash -= cost;
-        uint256[] memory ids = new uint256[](n - minted);
-        uint256 k;
-        for (uint256 i; i < n; ++i) {
-            if (!fromHeld[i]) continue;
-            uint256[] storage held = _heldByDenom[rungs[i]];
-            uint256 id = held[held.length - 1];
-            _removeHeld(_heldPos[shapes][id] - 1);
-            _call(shapes, IERC721.approve.selector, uint160(drawPacks), id);
-            ids[k++] = id;
-        }
-        it.collection = drawPacks;
-        it.tokenId = _createPack(ids, counts, cost, value);
-        return (it, true);
-    }
-
-    /// @dev Lists `batch[0..n)` on the FWA pool in chunks of `MAX_INVENTORY_BATCH` and books each
-    ///      item as listed.
-    function _listItems(Item[] memory batch, uint256 n, uint256 fee) internal {
-        if (n == 0) return;
-        uint256 chunk = _read(address(fwaPool), IFWAClone.MAX_INVENTORY_BATCH.selector, 0);
-        FeeSplit memory split = feeSplit;
-        for (uint256 start; start < n; start += chunk) {
-            uint256 m = n - start < chunk ? n - start : chunk;
-            IFWAClone.InventoryInput[] memory inputs = new IFWAClone.InventoryInput[](m);
-            for (uint256 i; i < m; ++i) {
-                Item memory it = batch[start + i];
-                inputs[i] = IFWAClone.InventoryInput(it.collection, it.tokenId, _listingPrice(it, fee, split));
-            }
-            uint256[] memory ids = fwaPool.listNFTs(inputs);
-            for (uint256 i; i < m; ++i) {
-                Item memory it = batch[start + i];
-                it.listingId = ids[i];
-                _addItem(it);
-            }
-        }
     }
 
     /// @dev `status` of FWA listing `listingId`, the eighth word of `listings(listingId)`.
@@ -967,45 +824,11 @@ contract Pool is PoolBooks {
         }
     }
 
-    /// @dev Creates a Draw Pack owned by this contract from the Shapes `shapeIds` it owns and the
-    ///      Shapes minted by `counts`, paying `value`. Reverts unless the pack's value is
-    ///      `expected`.
-    function _createPack(uint256[] memory shapeIds, uint32[] memory counts, uint256 value, uint256 expected)
-        internal
-        returns (uint256 packId)
-    {
-        packId = IShapePacks(drawPacks).createPack{value: value}(shapeIds, counts);
-        _checkPackValue(packId, expected);
-    }
-
-    /// @dev Reverts `PackValueMismatch` unless Draw Pack `packId` holds `expected` wei of backing.
-    function _checkPackValue(uint256 packId, uint256 expected) internal view {
-        if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
-    }
-
-    function _listingPrice(Item memory it, uint256 fee, FeeSplit memory split) internal view returns (uint256) {
-        uint256 value = it.value;
-        return PricingLib.listingPrice(
-            value,
-            split.premiumBps,
-            split.maintenanceBps,
-            split.feedBps,
-            PricingLib.mintLineBps(fee * _mix[it.row].rungs.length, value)
-        );
-    }
-
-    /// @dev One rotation step for track `t`: grows it when ready, otherwise lists an unlisted pack,
-    ///      lowers the list price by the decay accrued since the last listing or reprice, or lifts
-    ///      the price when the listed GRAIL weight exceeds `grailProbCapBps`. A listed track is
-    ///      repriced only when its listing is Active. A decay applies when the new price
-    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is at least 1 percent below the
-    ///      current one and keeps the listed GRAIL weight within `grailProbCapBps`. A lift applies
-    ///      when the weight is above the cap at the current price. Returns whether the FWA listing
-    ///      changed. `busy` is true while FWA holds unsettled acquisitions, which lock
-    ///      repricing and withdrawal.
-    function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
-        if (_growGrail(t, busy) == 0) return true;
-        if (busy) return false;
+    /// @dev Sets track `t`'s list price to `_nextPrice`: lists an unlisted pack, applies a decay of
+    ///      at least 1 percent of the list price, or lifts the price while the listed GRAIL weight
+    ///      exceeds `grailProbCapBps`. The caller ensures FWA holds no unsettled acquisition, which
+    ///      locks repricing. Returns whether the FWA listing changed.
+    function _repriceGrail(uint256 t) internal returns (bool) {
         Grail storage g = _grail[t];
         uint256 price = _nextPrice(t, g);
         if (price == 0) return false;
