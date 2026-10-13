@@ -9,10 +9,8 @@ writes CSVs. `script/report.py` turns them into tables and an HTML page. The con
 2. `FORK_BLOCK=26170000 forge test --match-contract PlayMonth --match-test test_play500PerDay`
 3. `python3 script/report.py evidence/play/test_play500PerDay`
 4. `open evidence/play/test_play500PerDay/report.html`
-5. Compare with FWA: `python3 script/fwa_snapshot.py --out evidence/play/fwa_snapshot.json`, then
-   `python3 script/report.py evidence/play/test_play500PerDay --fwa evidence/play/fwa_snapshot.json`.
-   The snapshot holds two pools; `--fwa` compares against its default, the mixed-price pool
-   `0xfac9af47...`, and `--pool <address>` selects the other (`0x39fde68b...`, all listings at 0.001 ETH).
+5. Compare with FWA: `python3 script/report.py evidence/play/test_play500PerDay --fwa`. The flag reads
+   `evidence/fwa/reference.json` unless a path follows it.
 
 Tests: `test_play100PerDay`, `test_play500PerDay`, `test_play2000PerDay`, and `test_playCustom`, which runs
 when `PLAY_PULLS_PER_DAY` is set. The first run at a fresh fork block fills the RPC cache and is slow.
@@ -48,11 +46,27 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
   from `withdraw` until the claim queue head passes its entry. Payouts from cash count as 0 h.
 - Board: purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
   Rotate calls are counted by the trigger `rotateDue()` returned. A keeper tick runs every 5 minutes.
-- Return buckets list the share of pulls by value over ticket. With `--fwa`, the FWA column holds the same
-  metrics from the listing weights, where value is the listing price.
+- Return buckets list the share of pulls by value over ticket. With `--fwa`, two reference columns follow the
+  run columns: "FWA V1 observed" and "FWA V2 main, expected" (see FWA reference data).
 
 Files per run: `pulls.csv` (one row per request), `hourly.csv` (hour 0 is the baseline, hour h covers the h-th
 hour), `claims.csv`, `run.txt` (resolved inputs), `report.html`.
+
+## FWA reference data
+
+`evidence/fwa/` holds static copies of two FWA datasets. Nothing fetches from a chain or an API.
+
+- `reference.json`: read by `report.py --fwa`.
+  - V1 observed: 2,401 draws of the V1 main pool `0xB276F62D...` between 12 and 15 September 2026, each valued at
+    the verified 90 percent ETH cashout over the request fee. Holds summary stats, the return histogram on the
+    `report.py` buckets and the mean ticket. Per-draw rows are in `v1-draws.csv`.
+  - V2 main, expected: launch snapshot of the V2 main pool `0x958C4118...` at block 25,991,175. Holds the ticket,
+    the expected value, the 90 percent ETH settlement discount and the expected cashout of 0.857x the ticket.
+    Win frequency is unknown, so the median, p5, p95 and win rows read "unknown".
+  - Exclusions: wallet gas, VRF, FWA token rewards, epoch rewards, NFT resale value.
+- `v1-history-README.md` and `v2-launch-README.md`: method and limits of each dataset, copied from the source repo.
+
+Provenance: copied from `evidence/fee-odds-review` of the `shapes-on-fwa-v2` repo on 2026-10-13.
 
 ## Live anvil (not built yet)
 

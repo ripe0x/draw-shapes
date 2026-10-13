@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Reads run directories written by test/scenario/PlayMonth.t.sol and prints the player and depositor tables.
 
-usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [SNAPSHOT_JSON]] [--pool ADDRESS] [--no-html]
+usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [REFERENCE_JSON]] [--no-html]
 
-Each RUN_DIR holds pulls.csv, hourly.csv and claims.csv. The tables print one column per run, plus an
-FWA column when --fwa is given. SNAPSHOT_JSON is written by script/fwa_snapshot.py and defaults to
-evidence/play/fwa_snapshot.json. The file holds several pools; the FWA column shows its `default` pool
-(the mixed-price pool) unless --pool names another. The header line lists every pool's ticket and
-listing count. Unless --no-html is given, report.html is written into each RUN_DIR. Standard library only.
+Each RUN_DIR holds pulls.csv, hourly.csv and claims.csv. The tables print one column per run. With --fwa
+two reference columns are added from REFERENCE_JSON (default evidence/fwa/reference.json, a static copy):
+"FWA V1 observed" (2,401 draws of the V1 main pool valued at the 90 percent ETH cashout) and
+"FWA V2 main, expected" (launch snapshot of the V2 main pool; only the ticket, the expected cashout over
+ticket and the listing count are known). Unless --no-html is given, report.html is written into each RUN_DIR.
+Standard library only.
 """
 import csv
 import json
@@ -16,7 +17,7 @@ import os
 import sys
 
 ETH = 10**18
-DEFAULT_SNAPSHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "play", "fwa_snapshot.json")
+DEFAULT_REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "fwa", "reference.json")
 TRIGGERS = ["Weight", "GrailCap", "Claim", "GrailStep", "Restock", "Quiet"]
 # Edges of the return buckets, as multiples of the ticket. The last bucket is open ended.
 EDGES = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3, 5, 10]
@@ -192,7 +193,7 @@ def render_table(cols):
         cells = []
         for c, w in zip(cols, col_w):
             v = c.get(key)
-            cells.append((fmt(v) if key in c else "-").rjust(w))
+            cells.append((v if isinstance(v, str) else fmt(v) if key in c else "-").rjust(w))
         lines.append(label.ljust(label_w) + "  " + "  ".join(cells))
     lines.append("")
     lines.append("Return buckets, share of pulls by value / ticket")
@@ -285,10 +286,9 @@ def write_html(m, fwa):
         ),
     ]
     hist_series = [(m["name"], m["hist"])] if "hist" in m else []
-    if fwa and "hist" in fwa:
-        hist_series.append(("FWA " + fwa["name"], fwa["hist"]))
+    hist_series += [(f["name"], f["hist"]) for f in fwa if "hist" in f]
     charts.append(histogram("Player return, share of pulls by value / ticket", hist_series))
-    table = render_table([m] + ([fwa] if fwa else []))
+    table = render_table([m] + fwa)
     html = (
         "<!doctype html><meta charset=utf-8><title>Play report</title>"
         "<style>body{font-family:system-ui,sans-serif;margin:16px auto;max-width:700px;padding:0 16px}"
@@ -305,14 +305,12 @@ def write_html(m, fwa):
 
 
 def main(argv):
-    dirs, fwa_path, pool, html = [], None, None, True
+    dirs, fwa_path, html = [], None, True
     args = list(argv)
     while args:
         a = args.pop(0)
         if a == "--fwa":
-            fwa_path = args.pop(0) if args and args[0].endswith(".json") else DEFAULT_SNAPSHOT
-        elif a == "--pool":
-            pool = args.pop(0)
+            fwa_path = args.pop(0) if args and args[0].endswith(".json") else DEFAULT_REFERENCE
         elif a == "--no-html":
             html = False
         elif a in ("-h", "--help"):
@@ -328,56 +326,58 @@ def main(argv):
         m = analyze(d)
         m["dir"] = d
         runs.append(m)
-    fwa = None
+    fwa = []
     if fwa_path:
         with open(fwa_path) as f:
-            snap, header = select_snapshot(json.load(f), pool)
-        fwa = flatten_snapshot(snap)
-        print(header)
-    print(render_table(runs + ([fwa] if fwa else [])))
+            ref = json.load(f)
+        fwa = reference_columns(ref)
+        print(reference_header(ref))
+    print(render_table(runs + fwa))
     if html:
         for m in runs:
             print("wrote", write_html(m, fwa))
     return 0
 
 
-def snapshot_pools(doc):
-    """Returns (default address, {address: pool snapshot}) for the multi-pool shape or the old single-pool shape."""
-    if "pools" in doc:
-        return doc["default"], doc["pools"]
-    return doc["pool"], {doc["pool"]: doc}
+def reference_header(ref):
+    v1, v2 = ref["v1"], ref["v2"]
+    return (
+        f"FWA V1 observed: pool {v1['pool'][:10]}, {v1['draws']:,} draws, {v1['window']}, valued at the "
+        f"{100 * v1['cashoutFraction']:.0f}% ETH cashout. "
+        f"FWA V2 main, expected: pool {v2['pool'][:10]}, block {v2['block']:,}, ticket {v2['ticketWei'] / ETH:.6f} ETH, "
+        f"{v2['activeListings']} listings, {v2['ethSettlementDiscountBps'] / 100:g}% settlement discount. "
+        f"Excluded: {ref['exclusions']}."
+    )
 
 
-def select_snapshot(doc, pool=None):
-    """Returns (snapshot of `pool` or the default pool, header line listing every pool's ticket and listings)."""
-    default, pools = snapshot_pools(doc)
-    want = (pool or default).lower()
-    byaddr = {a.lower(): v for a, v in pools.items()}
-    if want not in byaddr:
-        raise SystemExit(f"pool {want} is not in the snapshot; pools: {', '.join(pools)}")
-    parts = []
-    for a, v in sorted(pools.items(), key=lambda kv: kv[0].lower() != want):
-        tag = " (shown)" if a.lower() == want else ""
-        parts.append(f"{a[:10]}{tag} ticket {v['ticketWei'] / ETH:.6f} ETH, {v['activeListings']} listings")
-    block = next(iter(pools.values()))["block"]
-    return byaddr[want], f"FWA pools at block {block}: " + "; ".join(parts)
-
-
-def flatten_snapshot(snap):
-    """Maps snapshot.json onto the metric keys of analyze()."""
-    s = snap["stats"]
-    return {
-        "name": "FWA " + snap["pool"][:8],
-        "pulls": None,
-        "ticket": snap["ticketWei"] / ETH,
-        "mean": s["mean"],
-        "median": s["median"],
-        "p5": s["p5"],
-        "p95": s["p95"],
-        "ge1": s["shareAtOrAbove"],
-        "lt_half": s["shareBelowHalf"],
-        "hist": snap["histogram"]["share"],
-    }
+def reference_columns(ref):
+    """Maps reference.json onto the metric keys of analyze(): the V1 observed column and the V2 expected column."""
+    v1, v2, s = ref["v1"], ref["v2"], ref["v1"]["stats"]
+    return [
+        {
+            "name": "FWA V1 observed",
+            "pulls": v1["draws"],
+            "ticket": v1["ticketMeanWei"] / ETH,
+            "mean": s["mean"],
+            "median": s["median"],
+            "p5": s["p5"],
+            "p95": s["p95"],
+            "ge1": s["shareAtOrAbove"],
+            "lt_half": s["shareBelowHalf"],
+            "hist": v1["histogram"]["share"],
+        },
+        {
+            "name": "FWA V2 main, expected",
+            "ticket": v2["ticketWei"] / ETH,
+            "mean": v2["expectedCashoutOverTicket"],
+            "median": "unknown",
+            "p5": "unknown",
+            "p95": "unknown",
+            "ge1": "unknown",
+            "lt_half": "unknown",
+            "listed_avg": str(v2["activeListings"]),
+        },
+    ]
 
 
 if __name__ == "__main__":
