@@ -55,7 +55,8 @@ outside ordinary NAV.
 
 Invariants, enforced by the invariant suite:
 
-- I1 `address(this).balance >= cash + claims + maintenance + sum(grail[t].bucket)`.
+- I1 `address(this).balance >= cash + maintenance + sum(grail[t].bucket)`. Claims are a NAV
+  liability paid from `cash`; a queued claim is by definition the part cash did not cover.
 - I2 `backing` equals the sum of `valueOf` or denomination over every ordinary token the pool owns
   or has listed.
 - I3 Shares redeem at ordinary NAV per share; a withdrawal never pays more than that at request
@@ -63,8 +64,10 @@ Invariants, enforced by the invariant suite:
 - I4 Claims are paid in request order.
 - I5 A GRAIL bucket pays only for its own track's mints, pack additions and list-price gap.
 - I6 `maintenance` pays only `rotate` refunds and is never negative.
-- I7 Ordinary NAV does not decrease across a settled pull except by the replacement mint fee,
-  which the ticket's mint line funds.
+- I7 Buckets outside ordinary NAV (`maintenance`, `grail[t].bucket`) are credited only from
+  netted positive margin (section 9). Ordinary NAV changes at a settled capture by
+  `proceeds - value` less the replacement mint fee; per capture that can be negative, in
+  expectation over the board it is positive.
 
 ## 5. Parameters
 
@@ -148,12 +151,25 @@ The mix table is an array of rows: rungs (one for a Shape, two or more for a Dra
 weight share. Target board depth = `max(minItems, pulls in the trailing 4 hours)`, scaled by row
 share.
 
-Settlement: `settle(maxCount)` calls FWA `processAcquisitions(maxCount)`, then reads each newly
-settled acquisition. For a captured ordinary listing: `backing -= value`, `receivable += price`,
-replacement row enqueued, fee split of `price - backing` credited to `cash` (premium),
-`maintenance`, and the GRAIL buckets (feed, split by `minorShareBps`), mint line reserved in
-`cash` for the replacement. For a captured GRAIL listing: `receivable += price`, that track's
-bucket is credited when harvested, the track resets to step one.
+Settlement. FWA pays the pool owner per acquisition `paid - (paid - base) / 2`, where `paid` is
+the escrowed fee and `base = min(fee, weightedBackingTotal / totalWeight)` at request time (the
+harmonic mean of list prices). Proceeds are the same for every capture in a batch regardless of
+which listing was delivered. The pool therefore:
+
+1. At `pull`, records `base` per request id from the public reads `weightedBackingTotal()`,
+   `totalWeight()` and the quoted fee, so `proceeds` is known per acquisition without an event.
+2. In `settle(maxCount)`, calls `processAcquisitions(maxCount)`, then walks its own request ids
+   in order. For each acquisition whose FWA status is Fulfilled and not yet booked: ordinary
+   capture: `backing -= value`, `receivable += proceeds`, `margin += int(proceeds) - int(value)`,
+   replacement row enqueued, mint line reserved in `cash`. GRAIL capture: `grail[t].receivable +=
+   proceeds`, track resets. Refunded or timed-out acquisition: nothing booked; a listing returned
+   after a failed delivery is re-listed by the next `rotate`.
+3. When `margin > 0`, split it pro rata by `premiumBps : maintenanceBps : feedBps`: premium stays
+   in ordinary NAV, maintenance and feed leave it (feed split by `minorShareBps`); set `margin =
+   0`. Negative `margin` carries forward until later captures repay it. Per-capture positive-only
+   splitting is wrong: it credits buckets with wins and charges ordinary NAV with losses.
+4. At harvest (`withdrawOwnerProceeds`), the received amount must equal `receivable +
+   sum(grail[t].receivable)`; a difference is a settlement bug and reverts.
 
 `rotate()`. Anyone. Requires `rotateInterval` elapsed since the last rotation that changed
 inventory. In order, each bounded:
@@ -201,7 +217,9 @@ The gap between `backing` and the capture `price` is the track's cost and is pai
 `setPaused`, setters in section 5, `setAdmin`, `createFwaPool`, `startExit`,
 `transferGrailEstate(t, to)` (Exporting or Exported only), `sweep(token, id, to)` for tokens the
 pool does not account for, `adminCall(target, data, value)` with a post-call check that I1 and I2
-hold. `setPurchaseOperator` on the FWA pool is set to the pool at creation and never changed.
+hold. `purchaseOperator` on the FWA pool is left unset so FWA's own UI can acquire from the pool
+directly; the pool's `pull` is a convenience path that adds the upkeep slice and Shapes payment.
+Direct FWA purchases are booked by the next `settle`. (Pending owner confirmation, 2026-10-12.)
 
 ## 13. Exit: retirement and migration
 
