@@ -8,6 +8,7 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
 import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
+import {IERC721Value} from "shapes/interfaces/IERC721Value.sol";
 import {PricingLib} from "./lib/PricingLib.sol";
 import {IFWAClone, FWAConfigKeys} from "./interfaces/IFWAClone.sol";
 import {IFWACloneFactory} from "./interfaces/IFWACloneFactory.sol";
@@ -28,6 +29,11 @@ import {IFWACloneFactory} from "./interfaces/IFWACloneFactory.sol";
 ///      Invariant I1: `address(this).balance >= cash + maintenance + grail[0].bucket +
 ///      grail[1].bucket`. ETH received outside the accounted paths raises the balance and stays
 ///      unaccounted, so I1 is an inequality.
+///
+///      Exit: `startExit(dest)` closes pulls, deposits, rotation and GRAIL growth. `exportStep` moves
+///      ordinary items in bounded steps, and GRAIL tracks on migration, then records
+///      `exportedShares` and `exportedNav` and sets Exported. A successor imports through functions
+///      restricted to its `oldPool` and mints holder shares with `migrateHolder`.
 ///
 ///      Tracks are indexed `MINOR = 0` and `MAJOR = 1`. Share, claim and bucket amounts are in wei.
 contract Pool is ReentrancyGuard {
@@ -104,6 +110,7 @@ contract Pool is ReentrancyGuard {
         address drawPacks;
         address fwaFactory;
         address admin;
+        address oldPool;
         PricingLib.MixRow[] mix;
         FeeSplit feeSplit;
         GrailParams minor;
@@ -156,6 +163,15 @@ contract Pool is ReentrancyGuard {
     error RedeemMismatch();
     error GrailNotReady();
     error FwaBusy();
+    error NotExiting();
+    error InvalidDest();
+    error NotOldPool();
+    error ImportClosed();
+    error ImportNotFinal();
+    error NoMatchingRow();
+    error TokenNotReceived();
+    error GrailOccupied();
+    error AlreadyMigrated();
 
     // ------------------------------------------------------------------ events
 
@@ -180,6 +196,12 @@ contract Pool is ReentrancyGuard {
     event GrailListed(uint256 indexed track, uint256 listingId, uint256 notional);
     /// @dev `proceeds` is zero for a write-off of a pending delivery.
     event GrailCaptured(uint256 indexed track, uint256 indexed requestId, uint256 proceeds);
+    event ExitStarted(address indexed dest);
+    /// @dev `nav` is `exportedNav`, `shares` is `exportedShares`.
+    event Exported(uint256 shares, uint256 nav);
+    event GrailEstateTransferred(uint256 indexed track, address indexed to, uint256 packId, uint256 bucket);
+    event Imported(uint256 nav, uint256 shares);
+    event Migrated(address indexed holder, uint256 shares);
 
     // ------------------------------------------------------------------ constants and immutables
 
@@ -202,6 +224,8 @@ contract Pool is ReentrancyGuard {
     address public immutable shapes;
     address public immutable drawPacks;
     address public immutable fwaFactory;
+    /// @notice Pool this one succeeds, or zero. Only `oldPool` may call the import functions.
+    address public immutable oldPool;
 
     // ------------------------------------------------------------------ storage
 
@@ -209,6 +233,7 @@ contract Pool is ReentrancyGuard {
     Lifecycle public lifecycle;
     bool public pullsPaused;
     bool public depositsPaused;
+    bool internal importFinalized;
 
     uint256 public cash;
     uint256 public backing;
@@ -272,6 +297,20 @@ contract Pool is ReentrancyGuard {
     /// @dev Position of each listing id inside its row's `_listedByRow` array.
     mapping(uint256 listingId => uint256) internal _listedIndex;
 
+    /// @notice Destination of the export: this pool for retirement, a successor for migration.
+    address public exitDest;
+    /// @notice Share supply at export. On a successor, the share supply of `oldPool` reported by
+    ///         `finalizeImport`.
+    uint256 public exportedShares;
+    /// @notice Ordinary NAV plus maintenance at export, including items already moved to the
+    ///         successor.
+    uint256 public exportedNav;
+    /// @notice Successor side: NAV received from `oldPool`, and the shares minted against it.
+    uint256 public importedNav;
+    uint256 public importedShares;
+    /// @notice Successor side: holders whose `oldPool` shares were converted by `migrateHolder`.
+    mapping(address holder => bool) public migrated;
+
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
         _;
@@ -293,6 +332,7 @@ contract Pool is ReentrancyGuard {
         shapes = p.shapes;
         drawPacks = p.drawPacks;
         fwaFactory = p.fwaFactory;
+        oldPool = p.oldPool;
         admin = p.admin;
         feeSplit = p.feeSplit;
         curve = p.curve;
@@ -316,37 +356,19 @@ contract Pool is ReentrancyGuard {
         return assets > claims ? assets - claims : 0;
     }
 
-    function mixLength() external view returns (uint256) {
-        return _mix.length;
-    }
-
-    /// @notice Listed item for FWA `listingId`. `listingId` is zero in the result for an unknown id.
-    function listedItem(uint256 listingId) external view returns (Item memory) {
-        return _listed[listingId];
-    }
-
-    function heldCount() external view returns (uint256) {
-        return _held.length;
-    }
-
-    function heldItem(uint256 index) external view returns (Item memory) {
-        return _held[index];
-    }
-
     /// @notice Listed plus held ordinary items of `row`.
     function rowCount(uint256 row) external view returns (uint256) {
         return _rowCount[row];
     }
 
-    function replacementLength() external view returns (uint256) {
-        return replacementQueue.length - replacementHead;
-    }
-
-    /// @notice FWA base price recorded for pull request `requestId`. `recorded` is false for a
-    ///         request opened directly at the FWA pool.
-    function baseOf(uint256 requestId) external view returns (uint256 base, bool recorded) {
-        uint256 stored = _basePlusOne[requestId];
-        return (stored == 0 ? 0 : stored - 1, stored != 0);
+    /// @notice Rungs and weight share of mix row `i`.
+    function mixRow(uint256 i) external view returns (uint8[] memory rungs, uint16 shareBps) {
+        uint8[] storage stored = _mix[i].rungs;
+        rungs = new uint8[](stored.length);
+        for (uint256 j; j < rungs.length; ++j) {
+            rungs[j] = stored[j];
+        }
+        shareBps = _mix[i].shareBps;
     }
 
     // ------------------------------------------------------------------ opening
@@ -359,16 +381,20 @@ contract Pool is ReentrancyGuard {
         if (address(fwaPool) != address(0)) revert FwaPoolExists();
 
         IFWACloneFactory factory = IFWACloneFactory(fwaFactory);
-        if (expectedFee != 0) SafeTransferLib.safeApprove(factory.fwaToken(), address(factory), expectedFee);
+        if (expectedFee != 0) {
+            SafeTransferLib.safeApprove(
+                address(uint160(_read(fwaFactory, IFWACloneFactory.fwaToken.selector, 0))), fwaFactory, expectedFee
+            );
+        }
         IFWAClone clone = IFWAClone(factory.createPool(bytes32(0), expectedFee));
 
         fwaPool = clone;
-        maxBatch = factory.maxAcquisitionsPerTx();
-        concurrency = factory.maxOutstandingRequestsPerPool();
+        maxBatch = _read(fwaFactory, IFWACloneFactory.maxAcquisitionsPerTx.selector, 0);
+        concurrency = _read(fwaFactory, IFWACloneFactory.maxOutstandingRequestsPerPool.selector, 0);
         nextSequenceToBook = 1;
         openingDeadlineAt = block.timestamp + openingDeadline;
-        IShapes(shapes).setApprovalForAll(address(clone), true);
-        IShapePacks(drawPacks).setApprovalForAll(address(clone), true);
+        _call(shapes, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
+        _call(drawPacks, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
         emit FwaPoolCreated(address(clone));
     }
 
@@ -376,11 +402,14 @@ contract Pool is ReentrancyGuard {
     ///         runs one restock. The pool becomes Live on the first call that mints fewer than
     ///         `MAX_MINTS_PER_RESTOCK` tokens, and stays callable while Opening.
     function open() external nonReentrant {
+        _notExiting();
         if (lifecycle != Lifecycle.Opening) revert NotOpening();
         IFWAClone fwa = fwaPool;
         if (address(fwa) == address(0)) revert FwaPoolMissing();
         if (block.timestamp < openingDeadlineAt) revert OpeningDeadlineNotReached();
-        if (!fwa.localPurchasesEnabled()) fwa.setBool(FWAConfigKeys.ACQUISITIONS_ENABLED, true);
+        if (_read(address(fwa), IFWAClone.localPurchasesEnabled.selector, 0) == 0) {
+            _call(address(fwa), IFWAClone.setBool.selector, FWAConfigKeys.ACQUISITIONS_ENABLED, 1);
+        }
         if (_restock() < MAX_MINTS_PER_RESTOCK) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
@@ -392,6 +421,7 @@ contract Pool is ReentrancyGuard {
 
     /// @notice Deposits `msg.value` for shares at ordinary NAV, net of the entry contribution.
     function deposit() external payable nonReentrant {
+        _notExiting();
         _sync();
         _deposit(msg.sender, msg.value);
     }
@@ -436,7 +466,7 @@ contract Pool is ReentrancyGuard {
     ///         and lists the board, reprices or grows the GRAIL tracks, then refunds the caller
     ///         from `maintenance`. Callable once `rotateInterval` has passed since `lastRotateAt`.
     function rotate() external nonReentrant {
-        if (lifecycle != Lifecycle.Live) revert NotLive();
+        _requireLive();
         if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
         uint256 gasStart = gasleft();
 
@@ -458,7 +488,7 @@ contract Pool is ReentrancyGuard {
     ///         `GrailNotReady` unless the bucket covers the step and its mint fees and `backing`
     ///         is below `targetWei`, and `FwaBusy` while FWA holds unsettled acquisitions.
     function growGrail(uint8 t) external nonReentrant {
-        if (lifecycle != Lifecycle.Live) revert NotLive();
+        _requireLive();
         if (t > MAJOR) revert GrailNotReady();
         _sync();
         uint256 status = _growGrail(t, _unsettled() != 0);
@@ -482,12 +512,14 @@ contract Pool is ReentrancyGuard {
         payable
         nonReentrant
     {
+        _requireLive();
         _pull(msg.sender, count, maxFee, deadline, msg.value + _redeemShapes(tokenIds));
     }
 
     /// @notice Redeems the caller's Shape `tokenId` and deposits the proceeds. The caller must have
     ///         approved this contract for the token.
     function redeemAndDeposit(uint256 tokenId) external nonReentrant {
+        _notExiting();
         _sync();
         uint256[] memory ids = new uint256[](1);
         ids[0] = tokenId;
@@ -498,6 +530,183 @@ contract Pool is ReentrancyGuard {
     function settle(uint256 maxCount) external nonReentrant {
         if (address(fwaPool) == address(0)) revert FwaPoolMissing();
         _processAndSettle(maxCount < MAX_SETTLE_ITEMS ? maxCount : MAX_SETTLE_ITEMS);
+    }
+
+    // ------------------------------------------------------------------ exit
+
+    /// @notice Closes pulls, deposits, rotation and GRAIL growth. `dest` is this pool for
+    ///         retirement or a successor whose `oldPool` is this pool for migration. Callable in
+    ///         Opening and Live once the FWA pool exists.
+    function startExit(address dest) external onlyAdmin {
+        _notExiting();
+        if (address(fwaPool) == address(0)) revert FwaPoolMissing();
+        if (dest != address(this) && address(uint160(_read(dest, this.oldPool.selector, 0))) != address(this)) {
+            revert InvalidDest();
+        }
+        exitDest = dest;
+        lifecycle = Lifecycle.Exiting;
+        emit ExitStarted(dest);
+    }
+
+    /// @notice Moves up to `maxItems` ordinary listings, held items and GRAIL tracks out of the
+    ///         pool, then settles the exit. Ordinary items are redeemed into `cash` on retirement.
+    ///         On migration they go to the successor while `cash` covers `claims`, and are redeemed
+    ///         into `cash` until it does. GRAIL tracks move on migration only. The call that moves
+    ///         the last item folds `maintenance` into `cash`, records `exportedShares` and
+    ///         `exportedNav`, sends `cash - claims` to the successor, sets Exported, retires the FWA
+    ///         pool and finalizes the import. Reverts `FwaBusy` while FWA holds unsettled
+    ///         acquisitions or the booking walk is behind. Returns whether the export is complete.
+    function exportStep(uint256 maxItems) external nonReentrant returns (bool) {
+        if (lifecycle != Lifecycle.Exiting) revert NotExiting();
+        _processAndSettle(MAX_SETTLE_ITEMS);
+        if (_busy()) revert FwaBusy();
+        _harvest();
+
+        address dest = exitDest;
+        bool migrate = dest != address(this);
+        uint256 movedNav;
+        while (maxItems != 0 && (listedCount != 0 || _held.length != 0)) {
+            --maxItems;
+            bool move = migrate && cash >= claims;
+            Item memory it;
+            if (listedCount != 0) {
+                uint256 row;
+                while (_listedByRow[row].length == 0) ++row;
+                uint256 listingId = _lastListed(row);
+                _withdrawListing(listingId, move ? dest : address(this));
+                it = _removeListed(listingId);
+            } else {
+                it = _removeHeld(_held.length - 1);
+                if (move) _transfer(it.collection, address(this), dest, it.tokenId);
+            }
+            if (move) {
+                _call(dest, this.importItem.selector, uint160(it.collection), it.tokenId);
+                movedNav += it.value;
+            } else {
+                _redeemItem(it);
+            }
+        }
+        bool pending = listedCount != 0 || _held.length != 0;
+        for (uint256 t; migrate && t <= MAJOR; ++t) {
+            Grail storage g = grail[t];
+            if (g.packId == 0 && g.bucket == 0) continue;
+            if (maxItems == 0) {
+                pending = true;
+            } else {
+                --maxItems;
+                (uint256 packId, uint256 bucket) = _takeGrail(g, dest);
+                _callFull(dest, bucket, this.importGrail.selector, t, packId, 0);
+            }
+        }
+        exportedNav += movedNav;
+        if (pending) return false;
+
+        cash += maintenance;
+        maintenance = 0;
+        uint256 exported = exportedNav + nav();
+        uint256 shares = totalShares;
+        exportedNav = exported;
+        exportedShares = shares;
+        lifecycle = Lifecycle.Exported;
+        _call(address(fwaPool), IFWAClone.retirePool.selector, 0, 0);
+        if (migrate) {
+            uint256 out = cash > claims ? cash - claims : 0;
+            cash -= out;
+            _callFull(dest, out, this.importCash.selector, 0, 0, 0);
+            _call(dest, this.finalizeImport.selector, shares, 0);
+        }
+        emit Exported(shares, exported);
+        return true;
+    }
+
+    /// @notice Sends track `t`'s pack and bucket to `to` and clears the track. Callable by the
+    ///         admin from `Exiting` on. Withdraws the track's FWA listing first, which FWA
+    ///         rejects while it holds unsettled acquisitions.
+    function transferGrailEstate(uint8 t, address to) external onlyAdmin nonReentrant {
+        if (lifecycle < Lifecycle.Exiting) revert NotExiting();
+        if (to == address(0)) revert ZeroAddress();
+        _sync();
+        (uint256 packId, uint256 bucket) = _takeGrail(grail[t], to);
+        emit GrailEstateTransferred(t, to, packId, bucket);
+        SafeTransferLib.safeTransferETH(to, bucket);
+    }
+
+    // ------------------------------------------------------------------ successor import
+
+    /// @dev Restricts a function to `oldPool` while the pool is Opening or Live and the import is
+    ///      open.
+    modifier onlyOldPool() {
+        _checkOldPool();
+        _;
+    }
+
+    function _checkOldPool() internal view {
+        if (msg.sender != oldPool) revert NotOldPool();
+        _notExiting();
+        if (importFinalized) revert ImportClosed();
+    }
+
+    /// @notice Registers a Shape or Draw Pack that `oldPool` transferred to this pool as a held
+    ///         ordinary item of the first mix row with the token's value and kind. The next
+    ///         `rotate` or `open` lists it.
+    function importItem(address collection, uint256 tokenId) external onlyOldPool {
+        bool pack = collection == drawPacks;
+        if (!pack && collection != shapes) revert NoMatchingRow();
+        _requireOwned(collection, tokenId);
+        uint256 value = _read(collection, pack ? IERC721Value.valueOf.selector : IShapes.backingOf.selector, tokenId);
+        for (uint256 r; r < _mix.length; ++r) {
+            if (_rowBackingWei[r] == value && (_mix[r].rungs.length > 1) == pack) {
+                _addItem(Item(collection, uint16(r), tokenId, value, 0));
+                importedNav += value;
+                return;
+            }
+        }
+        revert NoMatchingRow();
+    }
+
+    /// @notice Takes track `t`'s pack and bucket from `oldPool`. `packId` is zero when the track
+    ///         has no pack. The next `rotate` lists the pack at `listBps` of its backing.
+    function importGrail(uint8 t, uint256 packId) external payable onlyOldPool {
+        Grail storage g = grail[t];
+        if (g.packId != 0) revert GrailOccupied();
+        g.bucket += msg.value;
+        if (packId != 0) {
+            _requireOwned(drawPacks, packId);
+            uint256 value = _read(drawPacks, IERC721Value.valueOf.selector, packId);
+            g.packId = packId;
+            g.backing = value;
+            g.notional = PricingLib.grailNotional(value, g.listBps);
+        }
+    }
+
+    /// @notice Credits `msg.value` from `oldPool` to `cash`. It counts toward `importedNav` and
+    ///         bypasses `navCap`.
+    function importCash() external payable onlyOldPool {
+        cash += msg.value;
+        importedNav += msg.value;
+    }
+
+    /// @notice Closes the import and mints `importedShares` for `importedNav` at the NAV per share
+    ///         before the import. `exportedShares_` is the share supply of `oldPool`.
+    function finalizeImport(uint256 exportedShares_) external onlyOldPool {
+        uint256 imported = importedNav;
+        uint256 minted = PricingLib.sharesFor(imported, nav() - imported, totalShares);
+        importedShares = minted;
+        totalShares += minted;
+        exportedShares = exportedShares_;
+        importFinalized = true;
+        emit Imported(imported, minted);
+    }
+
+    /// @notice Mints `holder` the share of `importedShares` that matches `holder`'s share of
+    ///         `oldPool`. Once per holder. The rounding remainder stays in `totalShares`.
+    function migrateHolder(address holder) external {
+        if (!importFinalized) revert ImportNotFinal();
+        if (migrated[holder]) revert AlreadyMigrated();
+        migrated[holder] = true;
+        uint256 shares = _read(oldPool, this.sharesOf.selector, uint160(holder)) * importedShares / exportedShares;
+        sharesOf[holder] += shares;
+        emit Migrated(holder, shares);
     }
 
     /// @notice Accepts ETH from Shapes redemptions and FWA proceeds. The ETH is booked by the
@@ -523,11 +732,23 @@ contract Pool is ReentrancyGuard {
         _harvest();
     }
 
+    /// @dev Reverts `PoolExiting` from `Exiting` on.
+    function _notExiting() internal view {
+        if (lifecycle >= Lifecycle.Exiting) revert PoolExiting();
+    }
+
+    /// @dev Reverts unless the pool is Live: `PoolExiting` from `Exiting` on, `NotLive` before.
+    function _requireLive() internal view {
+        if (lifecycle != Lifecycle.Live) {
+            _notExiting();
+            revert NotLive();
+        }
+    }
+
     /// @dev Mints shares to `to` for `value`. The entry contribution goes to the GRAIL buckets,
     ///      split by `minorShareBps`. Shares are priced on NAV before the deposit.
     function _deposit(address to, uint256 value) internal {
         if (depositsPaused) revert DepositsPaused();
-        if (lifecycle >= Lifecycle.Exiting) revert PoolExiting();
         if (value == 0) revert ZeroAmount();
         uint256 currentNav = nav();
         if (currentNav == 0 && totalShares != 0) revert NavZero();
@@ -550,14 +771,14 @@ contract Pool is ReentrancyGuard {
         emit Deposited(to, value, contribution, shares);
     }
 
-    /// @dev Pays claims from `cash` starting at `claimHead`, at most `maxItems` queue entries. A
+    /// @dev Pays claims from `cash` starting at `claimHead`, at most `MAX_CLAIM_ITEMS` queue entries. A
     ///      partly paid head claim keeps its place with a reduced `amount`. Storage is updated
     ///      before any transfer. Recipients are paid with `forceSafeTransferETH`, so a recipient
     ///      that rejects ETH cannot stall the queue.
-    function _payClaims(uint256 maxItems) internal {
+    function _payClaims() internal {
         uint256 head = claimHead;
         uint256 pending = claimQueue.length - head;
-        uint256 limit = pending < maxItems ? pending : maxItems;
+        uint256 limit = pending < MAX_CLAIM_ITEMS ? pending : MAX_CLAIM_ITEMS;
         address[] memory recipients = new address[](limit);
         uint256[] memory payouts = new uint256[](limit);
         uint256 available = cash;
@@ -590,9 +811,9 @@ contract Pool is ReentrancyGuard {
     /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Returns
     ///      whether a listing was withdrawn.
     function _clearClaims() internal returns (bool withdrawn) {
-        _payClaims(MAX_CLAIM_ITEMS);
+        _payClaims();
         withdrawn = _liquidateForClaims(MAX_LIQUIDATE_ITEMS);
-        if (withdrawn) _payClaims(MAX_CLAIM_ITEMS);
+        if (withdrawn) _payClaims();
     }
 
     /// @dev Settles up to `MAX_SETTLE_ITEMS` acquisitions and harvests. Returns whether a booking
@@ -626,11 +847,10 @@ contract Pool is ReentrancyGuard {
     function _liquidateForClaims(uint256 maxItems) internal returns (bool withdrawn) {
         uint256 head = claimHead;
         if (head == claimQueue.length || listedCount == 0) return false;
-        IFWAClone fwa = fwaPool;
         if (_busy()) return false;
         uint256 mintFee = _mintFee();
         for (uint256 n; n < maxItems && listedCount != 0 && cash < claimQueue[head].amount; ++n) {
-            _liquidateOne(fwa, head, mintFee);
+            _liquidateOne(head, mintFee);
             withdrawn = true;
         }
     }
@@ -638,16 +858,11 @@ contract Pool is ReentrancyGuard {
     /// @dev Withdraws the last listed item of the most overweight row, redeems it into `cash` and
     ///      deducts the mint fees of the redeemed Shapes from the claim at `head`. The deducted ETH
     ///      stays in `cash` for the replacement mint.
-    function _liquidateOne(IFWAClone fwa, uint256 head, uint256 mintFee) internal {
-        uint256[] storage ids = _listedByRow[_mostOverweightListedRow()];
-        uint256 listingId = ids[ids.length - 1];
-        fwa.withdrawListing(listingId);
+    function _liquidateOne(uint256 head, uint256 mintFee) internal {
+        uint256 listingId = _lastListed(_mostOverweightListedRow());
+        _withdrawListing(listingId, address(this));
         Item memory it = _removeListed(listingId);
-
-        uint256 balanceBefore = address(this).balance;
-        IShapes(it.collection).redeem(it.tokenId);
-        if (address(this).balance - balanceBefore != it.value) revert RedeemMismatch();
-        cash += it.value;
+        _redeemItem(it);
 
         Claim storage c = claimQueue[head];
         uint256 amount = c.amount;
@@ -656,6 +871,48 @@ contract Pool is ReentrancyGuard {
         c.amount = amount - fee;
         claims -= fee;
         emit Liquidated(listingId, it.value, fee);
+    }
+
+    /// @dev Last listing id of `row`.
+    function _lastListed(uint256 row) internal view returns (uint256) {
+        uint256[] storage ids = _listedByRow[row];
+        return ids[ids.length - 1];
+    }
+
+    /// @dev Withdraws FWA listing `listingId`; the token goes to `to`.
+    function _withdrawListing(uint256 listingId, address to) internal {
+        _call(address(fwaPool), IFWAClone.withdrawListingTo.selector, listingId, uint160(to));
+    }
+
+    /// @dev Redeems ordinary item `it`, which this contract owns, at its collection into `cash`.
+    function _redeemItem(Item memory it) internal {
+        uint256 balanceBefore = address(this).balance;
+        _call(it.collection, IShapes.redeem.selector, it.tokenId, 0);
+        if (address(this).balance - balanceBefore != it.value) revert RedeemMismatch();
+        cash += it.value;
+    }
+
+    /// @dev Withdraws the track's listing, transfers its pack to `to` and clears the track. Returns
+    ///      the pack id and the bucket, which the caller sends.
+    function _takeGrail(Grail storage g, address to) internal returns (uint256 packId, uint256 bucket) {
+        packId = g.packId;
+        bucket = g.bucket;
+        _unlistGrail(g);
+        if (packId != 0) _transfer(drawPacks, address(this), to, packId);
+        _resetGrail(g);
+        g.bucket = 0;
+    }
+
+    /// @dev ERC-721 `transferFrom` of `tokenId` of `collection`.
+    function _transfer(address collection, address from, address to, uint256 tokenId) internal {
+        _callFull(collection, 0, IERC721.transferFrom.selector, uint160(from), uint160(to), tokenId);
+    }
+
+    /// @dev Reverts `TokenNotReceived` unless this contract owns `tokenId` of `collection`.
+    function _requireOwned(address collection, uint256 tokenId) internal view {
+        if (address(uint160(_read(collection, IERC721.ownerOf.selector, tokenId))) != address(this)) {
+            revert TokenNotReceived();
+        }
     }
 
     /// @dev Row with listed items that maximizes `rowCount / shareBps`, compared by cross
@@ -680,18 +937,24 @@ contract Pool is ReentrancyGuard {
     /// @dev Buys `count` acquisitions for `purchaser` with `value` wei available. `value` is
     ///      already in the pool balance and outside every bucket.
     function _pull(address purchaser, uint256 count, uint256 maxFee, uint256 deadline, uint256 value) internal {
-        if (lifecycle != Lifecycle.Live) revert NotLive();
+        _requireLive();
         if (pullsPaused) revert PullsPaused();
         if (count == 0 || count > maxBatch) revert InvalidCount();
         _requirePurchasable(value);
 
         IFWAClone fwa = fwaPool;
-        (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
+        (uint256 fee, uint256 total) = _quote(count);
         if (fee > maxFee) revert FeeAboveMax(fee, maxFee);
         if (value < total) revert InsufficientValue(value, total);
 
         uint256[] memory ids = fwa.acquireBatch{value: total}(
-            purchaser, count, maxFee, 0, fwa.selectionSlippageBps(), fwa.inventoryVersion(), deadline
+            purchaser,
+            count,
+            maxFee,
+            0,
+            _read(address(fwa), IFWAClone.selectionSlippageBps.selector, 0),
+            _read(address(fwa), IFWAClone.inventoryVersion.selector, 0),
+            deadline
         );
         _recordBases(fwa, fee, ids);
         _recordPulls(count);
@@ -704,7 +967,7 @@ contract Pool is ReentrancyGuard {
     /// @dev Transfers `tokenIds` from the caller and redeems them. Returns the ETH redeemed.
     function _redeemShapes(uint256[] memory tokenIds) internal returns (uint256) {
         for (uint256 i; i < tokenIds.length; ++i) {
-            IERC721(shapes).transferFrom(msg.sender, address(this), tokenIds[i]);
+            _transfer(shapes, msg.sender, address(this), tokenIds[i]);
         }
         return IShapes(shapes).redeemBatch(tokenIds);
     }
@@ -713,7 +976,7 @@ contract Pool is ReentrancyGuard {
     ///      reserves staged listings without activating them, so `weightedBackingTotal` and
     ///      `totalWeight` read after the call equal their values at every request.
     function _recordBases(IFWAClone fwa, uint256 fee, uint256[] memory ids) internal {
-        uint256 base = fwa.weightedBackingTotal() / _totalWeight();
+        uint256 base = _read(address(fwa), IFWAClone.weightedBackingTotal.selector, 0) / _totalWeight();
         if (base > fee) base = fee;
         for (uint256 i; i < ids.length; ++i) {
             _basePlusOne[ids[i]] = base + 1;
@@ -727,7 +990,7 @@ contract Pool is ReentrancyGuard {
     function _upkeep() internal {
         _processAndSettle(SETTLE_BUDGET);
         _harvest();
-        _payClaims(MAX_CLAIM_ITEMS);
+        _payClaims();
         uint256 head = replacementHead;
         if (head == replacementQueue.length) return;
         uint256 mintFee = _mintFee();
@@ -743,7 +1006,7 @@ contract Pool is ReentrancyGuard {
     ///      `grailProbCapBps` of the FWA selection weight.
     function _requirePurchasable(uint256 incoming) internal view {
         IFWAClone fwa = fwaPool;
-        if (block.timestamp < fwa.purchasesResumeAt()) revert PurchasesCoolingDown();
+        if (block.timestamp < _read(address(fwa), IFWAClone.purchasesResumeAt.selector, 0)) revert PurchasesCoolingDown();
         if (address(this).balance < incoming + cash + maintenance + grail[MINOR].bucket + grail[MAJOR].bucket) {
             revert Insolvent();
         }
@@ -761,7 +1024,7 @@ contract Pool is ReentrancyGuard {
 
     /// @dev Advances FWA's processing queue by `maxItems`, then books the results.
     function _processAndSettle(uint256 maxItems) internal {
-        fwaPool.processAcquisitions(maxItems);
+        _call(address(fwaPool), IFWAClone.processAcquisitions.selector, maxItems, 0);
         _settle(maxItems);
     }
 
@@ -790,17 +1053,18 @@ contract Pool is ReentrancyGuard {
         uint64 start = seq;
         uint256 mintFee = _mintFee();
         for (uint256 n; seq < end && n < maxItems; ++n) {
-            uint256 requestId = fwa.requestIdAtSequence(seq);
-            (,, uint256 paid, uint256 listingId, IFWAClone.AcquisitionStatus status) = fwa.acquisitions(requestId);
-            if (status == IFWAClone.AcquisitionStatus.Fulfilled) {
+            uint256 requestId = _read(address(fwa), IFWAClone.requestIdAtSequence.selector, seq);
+            (uint256 paid, uint256 listingId, uint256 status) = _acquisition(requestId);
+            if (status == uint256(IFWAClone.AcquisitionStatus.Fulfilled)) {
                 _capture(requestId, listingId, paid, mintFee);
-            } else if (status == IFWAClone.AcquisitionStatus.DeliveryRefunded) {
+            } else if (status == uint256(IFWAClone.AcquisitionStatus.DeliveryRefunded)) {
                 _recoverRefunded(fwa, listingId);
-            } else if (status == IFWAClone.AcquisitionStatus.DeliveryPending) {
+            } else if (status == uint256(IFWAClone.AcquisitionStatus.DeliveryPending)) {
                 _writeOff(requestId, listingId);
             } else if (
-                status != IFWAClone.AcquisitionStatus.Expired && status != IFWAClone.AcquisitionStatus.Refunded
-                    && status != IFWAClone.AcquisitionStatus.TimedOut
+                status != uint256(IFWAClone.AcquisitionStatus.Expired)
+                    && status != uint256(IFWAClone.AcquisitionStatus.Refunded)
+                    && status != uint256(IFWAClone.AcquisitionStatus.TimedOut)
             ) {
                 break;
             }
@@ -841,12 +1105,26 @@ contract Pool is ReentrancyGuard {
     function _closeGrail(uint256 t, uint256 requestId, uint256 proceeds) internal {
         Grail storage g = grail[t];
         g.receivable += proceeds;
+        _resetGrail(g);
+        emit GrailCaptured(t, requestId, proceeds);
+    }
+
+    /// @dev Clears the pack fields of a track whose pack left the pool.
+    function _resetGrail(Grail storage g) internal {
         g.packId = 0;
         g.backing = 0;
         g.notional = 0;
         g.listingId = 0;
         g.pullsSinceList = 0;
-        emit GrailCaptured(t, requestId, proceeds);
+    }
+
+    /// @dev Withdraws the track's FWA listing to this contract when it is listed.
+    function _unlistGrail(Grail storage g) internal {
+        uint256 id = g.listingId;
+        if (id != 0) {
+            _withdrawListing(id, address(this));
+            g.listingId = 0;
+        }
     }
 
     /// @dev Removes the listed item from backing and charges its value to `margin`. A GRAIL
@@ -874,7 +1152,7 @@ contract Pool is ReentrancyGuard {
             it.listingId = 0;
             _addItem(it);
         }
-        fwa.recoverRefundedNFT(listingId);
+        _call(address(fwa), IFWAClone.recoverRefundedNFT.selector, listingId, 0);
     }
 
     /// @dev Splits positive `margin`. The mint line owed is covered first and stays in ordinary
@@ -932,7 +1210,7 @@ contract Pool is ReentrancyGuard {
     function _harvest() internal returns (bool) {
         if (nextSequenceToBook < _nextToProcess() || _ownerProceeds() == 0) return false;
 
-        uint256 received = fwaPool.withdrawOwnerProceeds();
+        uint256 received = _call(address(fwaPool), IFWAClone.withdrawOwnerProceeds.selector, 0, 0);
         uint256 expected = _bookedReceivables();
         if (received < expected) revert HarvestShortfall(received, expected);
 
@@ -1025,7 +1303,7 @@ contract Pool is ReentrancyGuard {
     ///      mints per call. New inventory is minted only when the queue is empty and only from
     ///      `cash` above one step of the cheapest row. Returns the number of tokens minted.
     function _restock() internal returns (uint256 mints) {
-        _payClaims(MAX_CLAIM_ITEMS);
+        _payClaims();
         uint256 fee = _mintFee();
 
         uint256 head = replacementHead;
@@ -1080,7 +1358,7 @@ contract Pool is ReentrancyGuard {
         uint256 tokenId;
         if (rungs.length == 1) {
             collection = shapes;
-            tokenId = IShapes(collection).mintBatchTo{value: cost}(value, 1, address(this));
+            tokenId = _callFull(collection, cost, IShapes.mintBatchTo.selector, value, 1, uint160(address(this)));
         } else {
             collection = drawPacks;
             uint32[] memory counts = new uint32[](Denominations.COUNT);
@@ -1095,19 +1373,19 @@ contract Pool is ReentrancyGuard {
     /// @dev FWA and Shapes reads used at several call sites. Each is one function so the external
     ///      call is compiled once.
     function _mintFee() internal view returns (uint256) {
-        return IShapes(shapes).mintFee();
+        return _read(shapes, IShapes.mintFee.selector, 0);
     }
 
     function _totalWeight() internal view returns (uint256) {
-        return fwaPool.totalWeight();
+        return _read(address(fwaPool), IFWAClone.totalWeight.selector, 0);
     }
 
     function _ownerProceeds() internal view returns (uint256) {
-        return fwaPool.ownerProceeds();
+        return _read(address(fwaPool), IFWAClone.ownerProceeds.selector, 0);
     }
 
     function _nextToProcess() internal view returns (uint64) {
-        return fwaPool.nextSequenceToProcess();
+        return uint64(_read(address(fwaPool), IFWAClone.nextSequenceToProcess.selector, 0));
     }
 
     /// @dev True while FWA holds unsettled acquisitions or the booking walk is behind its processing queue.
@@ -1116,7 +1394,104 @@ contract Pool is ReentrancyGuard {
     }
 
     function _unsettled() internal view returns (uint256) {
-        return fwaPool.unsettledAcquisitionCount();
+        return _read(address(fwaPool), IFWAClone.unsettledAcquisitionCount.selector, 0);
+    }
+
+    /// @dev `priceEscrowed`, `listingId` and `status` of FWA acquisition `requestId`, which are the
+    ///      third to fifth words of `acquisitions(requestId)`.
+    function _acquisition(uint256 requestId) internal view returns (uint256 paid, uint256 listingId, uint256 status) {
+        address fwa = address(fwaPool);
+        bytes4 selector = IFWAClone.acquisitions.selector;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), requestId)
+            if iszero(staticcall(gas(), fwa, m, 0x24, m, 0xa0)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            if lt(returndatasize(), 0xa0) { revert(0, 0) }
+            paid := mload(add(m, 0x40))
+            listingId := mload(add(m, 0x60))
+            status := mload(add(m, 0x80))
+        }
+    }
+
+    /// @dev First and third word of FWA `quoteAcquisitionPrice(count)`: `fee` and `total`.
+    function _quote(uint256 count) internal view returns (uint256 fee, uint256 total) {
+        address fwa = address(fwaPool);
+        bytes4 selector = bytes4(keccak256("quoteAcquisitionPrice(uint256)"));
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), count)
+            if iszero(staticcall(gas(), fwa, m, 0x24, m, 0x60)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            if lt(returndatasize(), 0x60) { revert(0, 0) }
+            fee := mload(m)
+            total := mload(add(m, 0x40))
+        }
+    }
+
+    /// @dev Static call of `selector` on `target` with the word argument `a`. The calldata is 36
+    ///      bytes: solc-compiled targets ignore arguments a getter does not read. Returns the first
+    ///      word of the return data. Reverts with the target's revert data and when the target
+    ///      returns less than one word, which includes a target without code.
+    function _read(address target, bytes4 selector, uint256 a) internal view returns (uint256 r) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), a)
+            if iszero(staticcall(gas(), target, m, 0x24, 0, 0x20)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            if lt(returndatasize(), 0x20) { revert(0, 0) }
+            r := mload(0)
+        }
+    }
+
+    /// @dev Calls `selector` on `target` with the word arguments `a` and `b` and no value. The
+    ///      calldata is 68 bytes: solc-compiled targets ignore arguments a function does not read.
+    ///      Returns the first word of the return data, zero when there is none. Reverts with the
+    ///      target's revert data and when the target has no code.
+    function _call(address target, bytes4 selector, uint256 a, uint256 b) internal returns (uint256 r) {
+        assembly ("memory-safe") {
+            if iszero(extcodesize(target)) { revert(0, 0) }
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), a)
+            mstore(add(m, 0x24), b)
+            mstore(0, 0)
+            if iszero(call(gas(), target, 0, m, 0x44, 0, 0x20)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            r := mload(0)
+        }
+    }
+
+    /// @dev `_call` with `value` wei and a third word argument `c`. The calldata is 100 bytes.
+    function _callFull(address target, uint256 value, bytes4 selector, uint256 a, uint256 b, uint256 c)
+        internal
+        returns (uint256 r)
+    {
+        assembly ("memory-safe") {
+            if iszero(extcodesize(target)) { revert(0, 0) }
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), a)
+            mstore(add(m, 0x24), b)
+            mstore(add(m, 0x44), c)
+            mstore(0, 0)
+            if iszero(call(gas(), target, value, m, 0x64, 0, 0x20)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            r := mload(0)
+        }
     }
 
     /// @dev Creates a Draw Pack owned by this contract from the Shapes `shapeIds` it owns and the
@@ -1132,7 +1507,7 @@ contract Pool is ReentrancyGuard {
 
     /// @dev Reverts `PackValueMismatch` unless Draw Pack `packId` holds `expected` wei of backing.
     function _checkPackValue(uint256 packId, uint256 expected) internal view {
-        if (IShapePacks(drawPacks).valueOf(packId) != expected) revert PackValueMismatch();
+        if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
     }
 
     /// @dev Lists every held item on the FWA pool in chunks of `MAX_INVENTORY_BATCH` and moves
@@ -1140,7 +1515,7 @@ contract Pool is ReentrancyGuard {
     function _listHeld(uint256 fee) internal {
         uint256 listed = _held.length;
         if (listed == 0) return;
-        uint256 batch = fwaPool.MAX_INVENTORY_BATCH();
+        uint256 batch = _read(address(fwaPool), IFWAClone.MAX_INVENTORY_BATCH.selector, 0);
         FeeSplit memory split = feeSplit;
         uint256 remaining = listed;
         while (remaining != 0) {
@@ -1209,10 +1584,7 @@ contract Pool is ReentrancyGuard {
         uint256 cost = step + _mintFee() * shapeCount;
         if (g.bucket < cost) return 1;
         if (busy) return 2;
-        if (g.listingId != 0) {
-            fwaPool.withdrawListing(g.listingId);
-            g.listingId = 0;
-        }
+        _unlistGrail(g);
 
         g.bucket -= cost;
         uint256 total = g.backing + step;
@@ -1249,7 +1621,7 @@ contract Pool is ReentrancyGuard {
             burn[i] = ids[i + 1];
         }
         IShapes(shapes).compose(ids[0], burn);
-        IShapes(shapes).approve(address(packs), ids[0]);
+        _call(shapes, IERC721.approve.selector, uint160(address(packs)), ids[0]);
         survivor = new uint256[](1);
         survivor[0] = ids[0];
     }
@@ -1259,9 +1631,9 @@ contract Pool is ReentrancyGuard {
     function _priceGrail(uint256 t, Grail storage g, uint256 notional) internal {
         uint256 id = g.listingId;
         if (id == 0) {
-            id = fwaPool.listNFT(drawPacks, g.packId, notional);
+            id = _callFull(address(fwaPool), 0, IFWAClone.listNFT.selector, uint160(drawPacks), g.packId, notional);
         } else {
-            fwaPool.updatePrice(id, notional);
+            _call(address(fwaPool), IFWAClone.updatePrice.selector, id, notional);
         }
         g.listingId = id;
         g.notional = notional;

@@ -43,6 +43,34 @@ contract PoolHarness is Pool {
         maintenance = amount;
     }
 
+    function mixLength() external view returns (uint256) {
+        return _mix.length;
+    }
+
+    /// @dev Listed item for FWA `listingId`; zero fields for an unknown id.
+    function listedItem(uint256 listingId) external view returns (Item memory) {
+        return _listed[listingId];
+    }
+
+    function heldCount() external view returns (uint256) {
+        return _held.length;
+    }
+
+    function heldItem(uint256 index) external view returns (Item memory) {
+        return _held[index];
+    }
+
+    function replacementLength() external view returns (uint256) {
+        return replacementQueue.length - replacementHead;
+    }
+
+    /// @dev FWA base price recorded for pull request `requestId`; `recorded` is false for a
+    ///      request opened directly at the FWA pool.
+    function baseOf(uint256 requestId) external view returns (uint256 base, bool recorded) {
+        uint256 stored = _basePlusOne[requestId];
+        return (stored == 0 ? 0 : stored - 1, stored != 0);
+    }
+
     function listedIds(uint256 row) external view returns (uint256[] memory) {
         return _listedByRow[row];
     }

@@ -28,6 +28,7 @@ contract PoolFwaHandler is ForkBase {
     address[] internal _players;
 
     uint256 public ghostMaintenanceShares;
+    uint256 public ghostMaintenanceFolded;
     uint256[2] public ghostGrailIn;
     uint256[2] public ghostGrailProceeds;
     uint256[2] public ghostGrailSpend;
@@ -62,6 +63,7 @@ contract PoolFwaHandler is ForkBase {
     uint256 public rotations;
     uint256 public liquidations;
     uint256 public liquidatedItems;
+    uint256 public exportSteps;
 
     receive() external payable {}
 
@@ -218,10 +220,48 @@ contract PoolFwaHandler is ForkBase {
         _collect();
     }
 
+    // ------------------------------------------------------------------ exit actions
+
+    /// @dev True from `startExit` on.
+    function _exiting() internal view returns (bool) {
+        return pool.lifecycle() >= Pool.Lifecycle.Exiting;
+    }
+
+    /// @dev Starts a retirement. Once per campaign: only a Live pool can start an exit.
+    function startExitRetire() external recorded {
+        if (pool.lifecycle() != Pool.Lifecycle.Live) return;
+        vm.prank(pool.admin());
+        pool.startExit(address(pool));
+    }
+
+    /// @dev Settles what FWA holds, then moves up to `1 + itemsSeed % 30` items. A step that
+    ///      finishes the export folds `maintenance` into `cash`, which the maintenance ghost state
+    ///      records as folded: the maintenance and maintenance receivable held before the call plus
+    ///      the maintenance shares booked during it.
+    function exportStep(uint8 itemsSeed, uint256 pick) external {
+        if (pool.lifecycle() != Pool.Lifecycle.Exiting) return;
+        _warpToResume();
+        vm.recordLogs();
+        _fulfillOutstanding(pick, false);
+        pool.settle(20);
+        _collect();
+        if (clone.unsettledAcquisitionCount() != 0 || pool.nextSequenceToBook() != clone.nextSequenceToProcess()) {
+            return;
+        }
+        uint256 held = pool.maintenance() + pool.maintenanceReceivable();
+        uint256 sharesBefore = ghostMaintenanceShares;
+        vm.recordLogs();
+        bool done = pool.exportStep(1 + itemsSeed % 30);
+        ++exportSteps;
+        if (done) lastMaintenance = 0;
+        _collect();
+        if (done) ghostMaintenanceFolded += held + ghostMaintenanceShares - sharesBefore;
+    }
+
     // ------------------------------------------------------------------ depositor actions
 
     function deposit(uint96 value, uint8 actorSeed) external recorded {
-        if (pool.nav() == 0) return;
+        if (_exiting() || pool.nav() == 0) return;
         if (base.deposit(value, actorSeed)) _checkPriced();
     }
 
@@ -240,7 +280,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev An actor deposits, all cash is removed and the actor withdraws every share, which
     ///      queues a claim that only listed items can cover.
     function exitIntoQueue(uint96 value, uint8 actorSeed) external recorded {
-        if (pool.claims() != 0 || pool.nav() == 0 || pool.nav() >= pool.navCap()) return;
+        if (_exiting() || pool.claims() != 0 || pool.nav() == 0 || pool.nav() >= pool.navCap()) return;
         base.deposit(value, actorSeed);
         // `PoolHandler.withdraw` clears the recorded logs when it previews, so read these first.
         _collect();
@@ -276,6 +316,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev Warps to the end of the rotation interval and calls `rotate` as this contract, which
     ///      receives the refund. The ETH received must equal the logged refund.
     function rotate() external {
+        if (_exiting()) return;
         uint256 at = pool.lastRotateAt() + pool.rotateInterval();
         if (block.timestamp < at) vm.warp(at);
         vm.recordLogs();
@@ -293,6 +334,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev Calls `growGrail` on a track that is ready: backing below target, bucket covering the
     ///      step and its mint fees, and no unsettled acquisition at FWA.
     function growGrail(uint8 trackSeed) external recorded {
+        if (_exiting()) return;
         uint256 t = trackSeed % 2;
         (uint256 bucket,, uint256 backing,, uint256 target,,,,,,,) = pool.grail(t);
         if (backing >= target || bucket < _growthCost(t) || clone.unsettledAcquisitionCount() != 0) return;
@@ -311,7 +353,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev A direct FWA purchase is fulfilled and processed, then a depositor prices against the
     ///      books.
     function directThenDeposit(uint8 playerSeed, uint256 pick, uint96 value, uint8 actorSeed) external recorded {
-        if (pool.nav() == 0) return;
+        if (_exiting() || pool.nav() == 0) return;
         _direct(playerSeed, pick, true);
         if (base.deposit(value, actorSeed)) _checkPriced();
     }
@@ -330,7 +372,7 @@ contract PoolFwaHandler is ForkBase {
     }
 
     function redeemAndDeposit(uint8 actorSeed) external recorded {
-        if (pool.nav() == 0) return;
+        if (_exiting() || pool.nav() == 0) return;
         address actor = _actors[actorSeed % _actors.length];
         uint256 tokenId = mintShapes(actor, 0.1 ether, 1);
         vm.startPrank(actor);
@@ -344,6 +386,7 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev Pulls `count` as a player. `fulfillNow` delivers a word for every outstanding request.
     function pull(uint8 countSeed, uint8 playerSeed, uint256 pick, bool fulfillNow) external recorded {
+        if (_exiting()) return;
         _warpToResume();
         uint256 count = bound(countSeed, 1, 3);
         if (count > pool.maxBatch()) return;
@@ -363,6 +406,7 @@ contract PoolFwaHandler is ForkBase {
     }
 
     function _direct(uint8 playerSeed, uint256 pick, bool fulfillNow) internal {
+        if (clone.retired()) return;
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         address player = _players[playerSeed % _players.length];
@@ -378,6 +422,7 @@ contract PoolFwaHandler is ForkBase {
     /// @dev Direct acquisition with the Shapes contract as purchaser, fulfilled on a Shape listing.
     ///      Delivery reverts in the Shapes contract, which leaves the acquisition DeliveryPending.
     function griefShapes(uint256 pick) external recorded {
+        if (clone.retired()) return;
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         acquireAs(SHAPES_ADDR, SHAPES_ADDR, clone, block.timestamp + 1 hours);
@@ -430,6 +475,7 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev Lists held items and mints replacements, as a rotation does.
     function restock() external recorded {
+        if (_exiting()) return;
         pool.restock();
     }
 
@@ -528,7 +574,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         }
         handler = new PoolFwaHandler(pool, clone, actors, players);
 
-        bytes4[] memory selectors = new bytes4[](22);
+        bytes4[] memory selectors = new bytes4[](28);
         selectors[0] = PoolFwaHandler.deposit.selector;
         selectors[1] = PoolFwaHandler.withdraw.selector;
         selectors[2] = PoolFwaHandler.liquidate.selector;
@@ -551,6 +597,13 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[19] = PoolFwaHandler.loseCash.selector;
         selectors[20] = PoolFwaHandler.exitIntoQueue.selector;
         selectors[21] = PoolFwaHandler.growGrail.selector;
+        // The exit actions are listed several times so a campaign usually reaches Exported.
+        selectors[22] = PoolFwaHandler.startExitRetire.selector;
+        selectors[23] = PoolFwaHandler.startExitRetire.selector;
+        selectors[24] = PoolFwaHandler.exportStep.selector;
+        selectors[25] = PoolFwaHandler.exportStep.selector;
+        selectors[26] = PoolFwaHandler.exportStep.selector;
+        selectors[27] = PoolFwaHandler.exportStep.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -613,6 +666,22 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         invariant_marginConserved();
         invariant_I5_grailBucketsPayOnlyForTheirTracks();
         invariant_grailTracksMatchTheirPacks();
+        _retire();
+        invariant_I1_balanceCoversBuckets();
+        invariant_I2_backingMatchesRegistry();
+        invariant_I3_withdrawalNeverExceedsNavShare();
+        invariant_I4_claimsPaidInRequestOrder();
+        invariant_I6_maintenanceFallsOnlyByRotateRefunds();
+        invariant_claimsConserved();
+        invariant_I7_bucketsCreditedOnlyFromSplitsAndContributions();
+        invariant_proceedsConserved();
+        invariant_harvestConsistency();
+        invariant_booksNeverBehindAfterPricing();
+        invariant_sharesSumToTotal();
+        invariant_marginConserved();
+        invariant_I5_grailBucketsPayOnlyForTheirTracks();
+        invariant_grailTracksMatchTheirPacks();
+        invariant_exportedPoolHoldsNoOrdinaryItems();
         emit log_named_uint("grail growths", handler.grailGrowths());
         emit log_named_uint("grail captures", handler.grailCaptures());
         emit log_named_uint("written off", handler.ghostWrittenOff());
@@ -624,6 +693,28 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         emit log_named_uint("rotations", handler.rotations());
         emit log_named_uint("liquidated items", handler.liquidatedItems());
         emit log_named_uint("refunds", handler.ghostRefunds());
+    }
+
+    /// @dev Starts a retirement, exports in steps of up to 30 items, then lets holders withdraw
+    ///      and runs `liquidate` past the claim age.
+    function _retire() internal {
+        handler.startExitRetire();
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exiting));
+        for (uint256 i; i < 12 && pool.lifecycle() == Pool.Lifecycle.Exiting; ++i) {
+            handler.exportStep(uint8(i * 7), i);
+        }
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Exported), "export finished");
+        assertGt(handler.exportSteps(), 1, "more than one step");
+        assertEq(pool.backing(), 0);
+        assertEq(pool.maintenance(), 0);
+        handler.withdraw(type(uint256).max, 0);
+        handler.withdraw(type(uint256).max, 1);
+        handler.warp(3 hours);
+        handler.liquidate();
+        handler.pull(1, 1, 1, true);
+        handler.deposit(1 ether, 0);
+        handler.rotate();
+        assertEq(pool.listedCount() + pool.heldCount(), 0, "no restock after export");
     }
 
     /// @dev Removes the cash, lets a depositor buy most shares and leave, and runs `liquidate` and
@@ -647,6 +738,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         emit log_named_uint("last run: grail growths", handler.grailGrowths());
         emit log_named_uint("last run: grail captures", handler.grailCaptures());
         emit log_named_uint("last run: harvests", handler.harvests());
+        emit log_named_uint("last run: export steps", handler.exportSteps());
+        emit log_named_uint("last run: lifecycle", uint256(pool.lifecycle()));
     }
 
     function _grailBuckets() internal view returns (uint256 total) {
@@ -733,7 +826,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     /// forge-config: default.invariant.depth = 40
     function invariant_I7_bucketsCreditedOnlyFromSplitsAndContributions() public view {
         assertEq(
-            pool.maintenance() + pool.maintenanceReceivable() + handler.ghostRefunds(), handler.ghostMaintenanceShares()
+            pool.maintenance() + pool.maintenanceReceivable() + handler.ghostRefunds() + handler.ghostMaintenanceFolded(),
+            handler.ghostMaintenanceShares()
         );
     }
 
@@ -828,5 +922,17 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             sum += pool.sharesOf(base.actors(i));
         }
         assertEq(sum + pool.sharesOf(alice), pool.totalShares());
+    }
+
+    /// @dev An exported pool holds no ordinary items and its FWA pool is retired.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_exportedPoolHoldsNoOrdinaryItems() public view {
+        if (pool.lifecycle() != Pool.Lifecycle.Exported) return;
+        assertEq(pool.backing(), 0);
+        assertEq(pool.listedCount(), 0);
+        assertEq(pool.heldCount(), 0);
+        assertTrue(clone.retired());
+        assertGt(pool.exportedShares(), 0);
     }
 }
