@@ -1,0 +1,1454 @@
+<title>Draw Shapes Lab</title>
+<style>
+/* Layout: sticky result strip, parameter rail on wide screens (stacked groups on phones), result panels in one column. */
+:root{
+  --bg:#f3f5f8; --surface:#ffffff; --ink:#131820; --ink2:#444d5c; --ink3:#66707f;
+  --line:#dde2ea; --line2:#c2cad6; --field:#f3f5f8;
+  --shapes:#1f62c4; --shapes-soft:rgba(31,98,196,.12); --fwa:#a8620a; --fwa-soft:rgba(168,98,10,.12);
+  --win:rgba(24,140,92,.16); --winink:#0d6b45; --warn:#9a6700; --warn-soft:rgba(154,103,0,.12); --bad:#b3261e;
+  --c1:#1f62c4; --c2:#7a5cc9; --c3:#188c5c; --c4:#6b9a2c; --c5:#d38a14; --c6:#c2463a; --c7:#7a8494; --c8:#b5bcc8; --c9:#4aa3b8;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e1218; --surface:#161b23; --ink:#eceff4; --ink2:#b0b8c5; --ink3:#8d97a6;
+  --line:#272e39; --line2:#394250; --field:#0e1218;
+  --shapes:#5b9bf0; --shapes-soft:rgba(91,155,240,.18); --fwa:#e0953b; --fwa-soft:rgba(224,149,59,.16);
+  --win:rgba(52,190,130,.20); --winink:#5fd8a6; --warn:#e2b04a; --warn-soft:rgba(226,176,74,.16); --bad:#f08178;
+  --c1:#5b9bf0; --c2:#a08be0; --c3:#3fc08a; --c4:#93c24d; --c5:#e5a63a; --c6:#e0746a; --c7:#8d97a6; --c8:#5a6371; --c9:#58b9cf; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1218; --surface:#161b23; --ink:#eceff4; --ink2:#b0b8c5; --ink3:#8d97a6;
+  --line:#272e39; --line2:#394250; --field:#0e1218;
+  --shapes:#5b9bf0; --shapes-soft:rgba(91,155,240,.18); --fwa:#e0953b; --fwa-soft:rgba(224,149,59,.16);
+  --win:rgba(52,190,130,.20); --winink:#5fd8a6; --warn:#e2b04a; --warn-soft:rgba(226,176,74,.16); --bad:#f08178;
+  --c1:#5b9bf0; --c2:#a08be0; --c3:#3fc08a; --c4:#93c24d; --c5:#e5a63a; --c6:#e0746a; --c7:#8d97a6; --c8:#5a6371; --c9:#58b9cf; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;padding-inline:16px}
+.wrap{max-width:1280px;margin:0 auto;padding-block:20px 56px}
+h1{font-size:22px;font-weight:650;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:12px;font-weight:650;letter-spacing:.07em;text-transform:uppercase;color:var(--ink3);margin:0 0 10px}
+h3{font-size:13px;font-weight:600;margin:0 0 6px}
+p{margin:0}
+.intro{color:var(--ink2);max-width:76ch;margin-top:6px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.main{display:grid;gap:14px;min-width:0}
+.layout{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:14px}
+@media (min-width:1020px){.layout{grid-template-columns:340px minmax(0,1fr);align-items:start}
+  .rail{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
+.bar{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;margin-top:14px}
+.grp{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.grp .k{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);margin-right:2px}
+button,select,input{font:inherit;color:var(--ink)}
+.chip{font-size:13px;padding:5px 11px;border-radius:999px;border:1px solid var(--line2);background:var(--surface);cursor:pointer}
+.chip:hover{border-color:var(--ink2)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.btn{font-size:13px;padding:6px 12px;border-radius:7px;border:1px solid var(--line2);background:var(--surface);cursor:pointer}
+.btn:hover{border-color:var(--ink2)}
+.btn.primary{background:var(--shapes);border-color:var(--shapes);color:#fff}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--shapes);outline-offset:2px}
+.fld{display:flex;flex-direction:column;gap:2px;min-width:0}
+.fld .fl{font-size:12.5px;color:var(--ink2);display:flex;gap:6px;align-items:baseline;justify-content:space-between}
+.fld .fl i{font-style:normal;font-size:11px;color:var(--shapes);visibility:hidden}
+.fld.chg .fl i{visibility:visible}
+.fld input,.fld select,.bar input{background:var(--field);border:1px solid var(--line2);border-radius:6px;padding:5px 8px;width:100%;font-family:var(--mono);font-size:13px;min-width:0}
+.bar input{width:96px}
+.fld.chg input{border-color:var(--shapes)}
+.fld.bad input{border-color:var(--bad)}
+.fld .hint{font-size:11.5px;color:var(--ink3);line-height:1.35}
+details.pg{border-top:1px solid var(--line);padding-block:8px}
+details.pg:first-of-type{border-top:0}
+details.pg>summary{cursor:pointer;font-weight:600;font-size:13.5px;padding-block:4px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 14px;margin-top:8px}
+.sub{grid-column:1/-1;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);margin-top:4px}
+table{border-collapse:collapse;width:100%}
+.mix th{font-size:11.5px;font-weight:500;color:var(--ink3);text-align:left;padding:2px 6px 4px 0}
+.mix td{padding:3px 6px 3px 0}
+.mix input{width:100%;background:var(--field);border:1px solid var(--line2);border-radius:6px;padding:4px 6px;font-family:var(--mono);font-size:12.5px;min-width:0}
+.warnbox{background:var(--warn-soft);border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--ink);margin-bottom:10px}
+.warnbox ul{margin:4px 0 0;padding-left:18px}
+.strip{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px 14px}
+.strip div{min-width:0}
+.strip .k{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink3)}
+.strip .v{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+.strip .v small{font-size:11.5px;color:var(--ink3);font-family:var(--sans)}
+.tw{overflow-x:auto}
+table.cmp{min-width:0;font-size:13px}
+table.cmp th{font-size:11.5px;font-weight:600;text-align:right;color:var(--ink2);padding:6px 6px;border-bottom:1px solid var(--line2);vertical-align:bottom}
+table.cmp th:first-child,table.cmp td:first-child{text-align:left}
+table.cmp th.f{color:var(--fwa)} table.cmp th.s{color:var(--shapes)}
+table.cmp td{padding:6px 6px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12.5px}
+table.cmp td:first-child{font-family:var(--sans);font-size:13px;color:var(--ink)}
+table.cmp td.win{background:var(--win);color:var(--winink);font-weight:600}
+table.cmp td.txt{font-family:var(--sans);font-size:11.5px;color:var(--ink2);line-height:1.3}
+.note{font-size:12.5px;color:var(--ink2);margin-top:10px;max-width:90ch}
+.note b{color:var(--ink);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink2);margin:6px 0}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.legend i.sq{height:10px;width:10px;border-radius:2px}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 16px;margin:0 0 14px}
+.metrics div{border-top:1px solid var(--line);padding-top:6px;min-width:0}
+.metrics dt{font-size:11.5px;color:var(--ink3);letter-spacing:.03em}
+.metrics dd{margin:2px 0 0;font-family:var(--mono);font-size:16px;font-variant-numeric:tabular-nums}
+.metrics dd small{display:block;font-family:var(--sans);font-size:11.5px;color:var(--ink3)}
+.chart{position:relative}
+.chart svg{display:block;width:100%;height:auto;touch-action:pan-y}
+.chart text{font-family:var(--mono);font-size:10.5px;fill:var(--ink3)}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;line-height:1.45;white-space:nowrap;display:none;z-index:3;box-shadow:0 4px 14px rgba(0,0,0,.12)}
+.tip b{font-family:var(--mono);font-weight:500}
+.split{display:grid;gap:14px}
+.sbar{display:flex;height:30px;border-radius:6px;overflow:hidden;gap:1px;background:var(--line)}
+.sbar div{min-width:1px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:#fff;overflow:hidden;white-space:nowrap}
+.sname{font-size:12.5px;color:var(--ink2);margin-bottom:4px}
+.sname b{color:var(--ink);font-weight:600}
+table.kv{font-size:12.5px;margin-top:6px}
+table.kv td{padding:3px 6px 3px 0;border-bottom:1px solid var(--line);vertical-align:baseline}
+table.kv td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+table.kv i.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+.sens td,.sens th{font-size:12.5px;padding:6px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.sens th{font-size:11.5px;color:var(--ink3);font-weight:600}
+.sens td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sens .d{display:block;font-size:11.5px;color:var(--ink3);font-family:var(--sans)}
+.tag{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:999px;border:1px solid var(--line2)}
+.tag.p{background:var(--shapes-soft);border-color:transparent;color:var(--shapes)}
+.tag.d{background:var(--fwa-soft);border-color:transparent;color:var(--fwa)}
+.tag.b{background:var(--win);border-color:transparent;color:var(--winink)}
+.pos{color:var(--winink)} .neg{color:var(--bad)}
+.vtbl td.ok{color:var(--winink);font-weight:600} .vtbl td.off{color:var(--bad);font-weight:600}
+.prog{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:8px}
+.prog div{height:100%;width:0;background:var(--shapes)}
+@media (prefers-reduced-motion:no-preference){.prog div{transition:width .15s}}
+@media (max-width:560px){
+  .panel{padding:12px 10px}
+  .strip{position:static;grid-template-columns:repeat(2,minmax(0,1fr))}
+  table.cmp th,table.cmp td{padding:5px 3px}
+  table.cmp td,table.cmp td:first-child{font-size:11.5px}
+  table.cmp td.txt{font-size:10.5px}
+  .bar input{width:84px}
+}
+</style>
+<div class="wrap">
+<header>
+  <h1>Draw Shapes Lab</h1>
+  <p class="intro">Edit any launch value and the results update. The page runs the v1 pool rules over 365 days of tickets and sets the outcome beside the FWA V2 main pool, for players and for depositors. Every figure states its basis. Gas, VRF fees, FWA token and epoch rewards and resale value are excluded throughout.</p>
+</header>
+
+<div class="bar panel" id="runbar" aria-label="Run settings">
+  <div class="grp"><span class="k">Horizon</span><span id="hz"></span></div>
+  <div class="grp"><label class="k" for="tpd">Tickets per day</label><input type="number" id="tpd" min="0" max="20000" step="50" inputmode="numeric"><span id="tpdchips"></span></div>
+  <div class="grp"><label class="k" for="seed">Seed</label><input type="number" id="seed" min="1" max="999999" step="1" inputmode="numeric"></div>
+  <div class="grp"><button class="btn" id="reset" type="button">Reset to launch values</button><span class="num" id="timing" style="font-size:12px;color:var(--ink3)"></span></div>
+</div>
+
+<div class="layout">
+  <aside class="rail panel" id="rail" aria-label="Parameters">
+    <h2>Parameters <span id="chgcount" class="num" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div id="warns"></div>
+    <div id="groups"></div>
+  </aside>
+
+  <main class="main">
+    <div class="strip" id="strip" aria-live="polite"></div>
+
+    <section class="panel" id="players">
+      <h2>Players: Draw Shapes against FWA V2</h2>
+      <div class="tw"><table class="cmp" id="cmp"></table></div>
+      <p class="note" id="cmpnote"></p>
+    </section>
+
+    <section class="panel" id="deps">
+      <h2>Depositors: the opening cohort</h2>
+      <div class="grp" style="margin-bottom:12px"><span class="k" style="font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)">Show horizon</span><span id="hz2"></span></div>
+      <dl class="metrics" id="metrics"></dl>
+      <h3>NAV per share over 365 days</h3>
+      <div class="legend" id="navlegend"></div>
+      <div class="chart" id="navchart"></div>
+      <p class="note" id="depnote"></p>
+      <div class="two" style="margin-top:14px" id="owner"></div>
+    </section>
+
+    <section class="panel" id="keep">
+      <h2>Board and keeper</h2>
+      <dl class="metrics" id="kmetrics"></dl>
+      <h3>Listed items by row, mean of each day</h3>
+      <div class="legend" id="blegend"></div>
+      <div class="chart" id="bchart"></div>
+      <div class="tw"><table class="cmp" id="btbl"></table></div>
+      <p class="note" id="bnote"></p>
+      <h3 style="margin-top:16px">Maintenance bucket and keeper refunds</h3>
+      <div class="legend" id="mlegend"></div>
+      <div class="chart" id="mchart"></div>
+      <p class="note" id="mnote"></p>
+      <h3 style="margin-top:16px">Decay reprice in rotate or inside settle</h3>
+      <div class="tw"><table class="cmp" id="dtbl"></table></div>
+      <p class="note" id="dnote"></p>
+    </section>
+
+    <section class="panel" id="rev">
+      <h2>Where 1 ETH of tickets goes</h2>
+      <div class="split" id="split"></div>
+      <p class="note" id="revnote"></p>
+    </section>
+
+    <section class="panel" id="ex">
+      <h2>One pull, ticket to buckets</h2>
+      <div class="grp" style="margin-bottom:10px"><label class="k" for="exsel" style="font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)">Draw Shapes outcome</label><select id="exsel" style="max-width:260px;background:var(--field);border:1px solid var(--line2);border-radius:6px;padding:5px 8px"></select></div>
+      <div class="two" id="excards"></div>
+      <p class="note" id="exnote"></p>
+    </section>
+
+    <section class="panel" id="sens">
+      <h2>What moves what</h2>
+      <p class="note" style="margin-top:0">Each parameter moves to a low and a high value while the rest stay as set above. The table shows the relative change in the player figures and in end NAV per share at the chosen horizon, averaged over two seeds.</p>
+      <div class="grp" style="margin-top:10px"><button class="btn primary" id="runsens" type="button">Run sensitivity</button><span class="num" id="sensstat" style="font-size:12px;color:var(--ink3)"></span></div>
+      <div class="prog" id="sensprog" hidden><div></div></div>
+      <div class="tw" style="margin-top:10px"><table class="sens" id="senstbl"></table></div>
+    </section>
+
+    <section class="panel" id="val">
+      <h2>Check against the fork runs</h2>
+      <p class="note" style="margin-top:0">The model runs 7 days at 500 tickets a day over 20 seeds and sits beside the recorded mainnet fork runs. <b>Fork run, decision 9</b> is <span class="num">evidence/play/test_play500PerDay</span> as regenerated under the settlement, sampling and reserve rules. <b>Fork run, pre-sampling design</b> is the earlier recording kept for reference. This block ignores the parameters above.</p>
+      <div class="tw" style="margin-top:10px"><table class="cmp vtbl" id="vtbl"></table></div>
+      <p class="note" id="vnote"></p>
+      <h3 style="margin-top:14px">NAV per share by hour, first 7 days</h3>
+      <div class="legend" id="vlegend"></div>
+      <div class="chart" id="vchart"></div>
+    </section>
+
+    <section class="panel" id="basis">
+      <h2>Basis and limits</h2>
+      <div class="note" style="margin-top:0" id="basisnote"></div>
+    </section>
+  </main>
+</div>
+</div>
+<script>
+// MODEL BEGIN
+const LADDER = [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100];
+const TICK = 300;
+const CONCURRENCY = 10, THIN_MARGIN = 5, MAX_LIST = 10;
+const GAS_BASE = 100000, GAS_ITEM = 150000, GAS_OVERHEAD = 30000;
+const NB = 2400, LMIN = Math.log(1e-3), LSPAN = Math.log(1e6);
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function defaultParams() {
+  return {
+    rows: [
+      { backing: 0.01, rungs: 1, share: 38 },
+      { backing: 0.02, rungs: 2, share: 28 },
+      { backing: 0.03, rungs: 3, share: 19 },
+      { backing: 0.05, rungs: 1, share: 10 },
+      { backing: 0.1, rungs: 1, share: 4 },
+      { backing: 0.5, rungs: 1, share: 1 },
+    ],
+    minItems: 100, mintFee: 0.001,
+    premiumBps: 200, maintBps: 100, feedBps: 400, minorShareBps: 2000,
+    entryBase: 1100, entrySlope: 2000, entryCap: 2500, entryRef: 55,
+    edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
+    minor: { target: 1, step: 0.1, listBps: 10000, decay: 0.0001, floor: 0.25 },
+    major: { target: 25, step: 0.5, listBps: 7500, decay: 0.0001, floor: 1 },
+    openingEth: 50, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
+    navCap: 100, ticketsPerDay: 500,
+    rotateInterval: 900,
+    restoreK: 8, surpriseBps: 200, bandBps: 3000, reserveBps: 1000, payInShapesBps: 1000,
+    batchMin: 20, batchMaxAge: 3600, cooldownSeconds: 0, gasPriceGwei: 1, tipWei: 2e14, decayInSettle: true,
+    shapesRedeemPct: 100, fwaCashoutPct: 90,
+  };
+}
+
+function stepFees(step, mintFee) {
+  let left = Math.round(step * 100), n = 0;
+  for (let i = LADDER.length - 1; i >= 0; i--) {
+    const u = Math.round(LADDER[i] * 100);
+    const c = Math.floor(left / u);
+    n += c; left -= c * u;
+  }
+  return n * mintFee;
+}
+
+function newHist() { return new Float64Array(NB); }
+function histAdd(h, ratio, mass) {
+  let b = Math.floor((Math.log(ratio) - LMIN) / LSPAN * NB);
+  if (b < 0) b = 0; else if (b >= NB) b = NB - 1;
+  h[b] += mass;
+}
+function histQuantile(h, total, q) {
+  const target = q * total;
+  let acc = 0;
+  for (let b = 0; b < NB; b++) {
+    if (acc + h[b] >= target && h[b] > 0) {
+      const f = (target - acc) / h[b];
+      return Math.exp(LMIN + (b + f) / NB * LSPAN);
+    }
+    acc += h[b];
+  }
+  return Math.exp(LMIN + LSPAN);
+}
+
+// Returns a result object. days: horizon in days. snapDays: ascending day numbers at which to snapshot.
+function simulate(P, seed, days, snapDays, opts) {
+  opts = opts || {};
+  const rngCount = mulberry32(seed * 2654435761 >>> 0 ^ 0x1234567);
+  const rngTime = mulberry32((seed + 101) * 40503 >>> 0);
+  const rngDraw = mulberry32((seed + 7) * 2246822519 >>> 0);
+  const rngSched = mulberry32((seed + 13) * 3266489917 >>> 0);
+  const rngRepl = mulberry32((seed + 29) * 374761393 >>> 0);
+  const rngPay = mulberry32((seed + 53) * 668265263 >>> 0);
+
+  const fees = (P.premiumBps + P.maintBps + P.feedBps) / 1e4;
+  const edge = Math.max(0, P.edgePct / 100);
+  const redeem = P.shapesRedeemPct / 100;
+  const mintFee = P.mintFee;
+  const minorShare = P.minorShareBps / 1e4;
+  const gas = P.gasPriceGwei * 1e-9, tip = P.tipWei / 1e18;
+  const capProb = P.grailProbCapBps / 1e4;
+
+  // rows and Shape units (a unit is one distinct single-Shape backing value)
+  let shareSum = 0;
+  for (const r of P.rows) shareSum += Math.max(0, r.share);
+  const R = [], units = [], unitIdx = new Map();
+  for (const r of P.rows) {
+    if (!(r.share > 0) || !(r.backing > 0)) continue;
+    const k = Math.max(1, Math.round(r.rungs)), v = r.backing / k, key = Math.round(v * 1e9);
+    if (!unitIdx.has(key)) { unitIdx.set(key, units.length); units.push({ v, hs: 0 }); }
+    const s = r.share / shareSum;
+    R.push({ b: r.backing, k, v, u: unitIdx.get(key), s, p: r.backing * (1 + fees) + mintFee * k, tgt: Math.max(1, Math.ceil(P.minItems * s - 1e-9)),
+      n: 0, queued: 0, missQ: [], missSum: 0, missN: 0 });
+  }
+  const nR = R.length;
+  const probe = R.findIndex(r => r.k === 1 && Math.abs(r.b - 0.1) < 1e-9);
+
+  const T = [
+    { ...P.minor, bucket: 0, backing: 0, notional: 0, since: 0, hits: 0, firstHitDay: -1, fee: stepFees(P.minor.step, mintFee), prizes: 0 },
+    { ...P.major, bucket: 0, backing: 0, notional: 0, since: 0, hits: 0, firstHitDay: -1, fee: stepFees(P.major.step, mintFee), prizes: 0 },
+  ];
+
+  const S = {
+    cash: 0, shares: 0, maint: 0, margin: 0, mintOwed: 0, lastRotateAt: -1e12, pauseUntil: 0,
+    rotChanged: 0, rotGrail: 0, rotDecay: 0,
+  };
+  const depositors = [];
+  const claims = [];
+  let claimsTotal = 0;
+  let Q = []; // replacement queue: { i: row, t: capture time }
+
+  const A = {
+    tickets: 0, rejected: 0, paid: 0, proceeds: 0, protocol: 0, deliveredReal: 0, deliveredExp: 0,
+    mintLineAccrued: 0, mintReplace: 0, mintGrail: 0, mintOpening: 0, mintSaved: 0, premium: 0, maintIn: 0, feedIn: 0,
+    grailPaidTicket: 0, ordinaryDelivered: 0, grailDelivered: 0,
+    entryContribution: 0, withdrawn: 0, deposited: 0, mass: 0, mGe1: 0, mLtHalf: 0, mGe2: 0, mGe10: 0,
+    hist: newHist(),
+    surprises: 0, payIns: 0, payInValue: 0, heldUses: 0,
+    settleCalls: 0, settleListed: 0, settleRefund: 0, settleDecays: 0, setBatch: 0, setAge: 0, setThin: 0,
+    rotRefund: 0, keeperCost: 0, refunds: 0, shortfall: 0, pauseSeconds: 0, waitSeconds: 0,
+    boardSum: 0, boardTicks: 0, minListed: 1e9,
+  };
+
+  // ---------- holdings
+  function heldCnt(i) { return R[i].k === 1 ? units[R[i].u].hs : 0; }
+  function count(i) { return R[i].n + R[i].queued + heldCnt(i); }
+  function sumOrd() { let s = 0; for (let i = 0; i < nR; i++) s += R[i].n / R[i].p; return s; }
+  function listedOrd() { let c = 0; for (let i = 0; i < nR; i++) c += R[i].n; return c; }
+  function backingOrd() {
+    let s = 0;
+    for (let i = 0; i < nR; i++) s += R[i].n * R[i].b;
+    for (const u of units) s += u.hs * u.v;
+    return s;
+  }
+  function nav() {
+    const v = S.cash + backingOrd() - claimsTotal;
+    return v > 0 ? v : 0;
+  }
+  function spendable() { return S.cash - claimsTotal - nav() * P.reserveBps / 1e4; }
+  function entryContribution(nv) {
+    return Math.min(P.entryCap, P.entryBase + P.entrySlope * nv / P.entryRef) / 1e4;
+  }
+  function addToBuckets(x) {
+    T[0].bucket += x * minorShare;
+    T[1].bucket += x * (1 - minorShare);
+  }
+
+  function deposit(amount) {
+    const nv = nav();
+    if (S.shares > 0 && nv <= 0) return false;
+    if (P.navCap > 0 && nv >= P.navCap) return false;
+    const c = amount * entryContribution(nv);
+    const net = amount - c;
+    const minted = S.shares === 0 ? net : net * S.shares / nv;
+    S.cash += net;
+    addToBuckets(c);
+    S.shares += minted;
+    depositors.push(minted);
+    A.entryContribution += c; A.deposited += amount;
+    return true;
+  }
+  function withdraw(bps) {
+    const len = depositors.length;
+    if (!len) return;
+    const first = Math.floor(rngSched() * len);
+    for (let i = 0; i < len; i++) {
+      const d = (first + i) % len;
+      const sh = depositors[d] * bps / 1e4;
+      if (sh <= 0) continue;
+      const nv = nav();
+      const claim = sh * nv / S.shares;
+      depositors[d] -= sh; S.shares -= sh;
+      const now = Math.min(claim, Math.max(0, S.cash));
+      S.cash -= now; A.withdrawn += claim;
+      if (claim - now > 1e-12) { claims.push(claim - now); claimsTotal += claim - now; }
+      return;
+    }
+  }
+  function payClaims() {
+    while (claims.length && S.cash > 0) {
+      const c = claims[0], p = Math.min(c, S.cash);
+      S.cash -= p; claims[0] -= p; claimsTotal -= p;
+      if (claims[0] <= 1e-12) claims.shift(); else break;
+    }
+  }
+
+  // ---------- replacement choice (SPEC 9)
+  function chooseRow() {
+    let sum = 0;
+    const w = new Array(nR);
+    for (let i = 0; i < nR; i++) {
+      const def = Math.max(R[i].tgt - count(i), 0);
+      w[i] = R[i].s * (1 + P.restoreK * def / R[i].tgt); sum += w[i];
+    }
+    let u = rngRepl() * sum, row = nR - 1;
+    for (let i = 0; i < nR; i++) { if (u < w[i]) { row = i; break; } u -= w[i]; }
+    let surprise = false;
+    if (rngRepl() < P.surpriseBps / 1e4) {
+      const c = [];
+      for (let i = 0; i < nR; i++) if (R[i].k === 1 && R[i].b >= 5 * R[row].b - 1e-12) c.push(i);
+      c.sort((a, b) => R[a].b - R[b].b);
+      const top = c.slice(0, 3), ws = [60, 30, 10].slice(0, top.length);
+      if (top.length) {
+        let x = rngRepl() * ws.reduce((a, b) => a + b, 0), pick = top[top.length - 1];
+        for (let j = 0; j < top.length; j++) { if (x < ws[j]) { pick = top[j]; break; } x -= ws[j]; }
+        row = pick; surprise = true;
+      }
+    }
+    const cap = Math.max(R[row].tgt + 1, Math.ceil(R[row].tgt * (1 + P.bandBps / 1e4) - 1e-9));
+    if (count(row) >= cap) {
+      let best = -1, bd = 0;
+      for (let i = 0; i < nR; i++) { const d = R[i].tgt - count(i); if (d > bd) { bd = d; best = i; } }
+      if (best >= 0) { row = best; surprise = false; }
+    }
+    return { row, surprise };
+  }
+
+  // ---------- GRAIL
+  function weightGrail(t) { return t.backing > 0 && t.notional > 0 ? 1 / t.notional : 0; }
+  function growable(t) { return t.backing < t.target - 1e-12 && t.bucket >= t.step + t.fee - 1e-12; }
+  function decayNext(t) { return Math.max(t.floor, t.notional - t.decay * t.since); }
+  function decayDue(t) {
+    if (!(t.backing > 0 && t.notional > 0 && t.since > 0)) return false;
+    const gap = t.notional - decayNext(t);
+    return gap > 1e-15 && gap >= t.notional * P.repriceMinBps / 1e4 - 1e-15;
+  }
+  function liftPrice(t, other) {
+    if (capProb >= 1 || !(t.backing > 0)) return t.notional;
+    const w = sumOrd() + weightGrail(other);
+    const wmax = capProb / (1 - capProb) * w;
+    if (wmax <= 0) return t.notional;
+    const minPrice = 1 / wmax, face = t.backing * t.listBps / 1e4;
+    return t.notional < minPrice ? Math.min(minPrice, face) : t.notional;
+  }
+  function applyDecay(ti) {
+    const t = T[ti], o = T[1 - ti], old = t.notional;
+    t.notional = decayNext(t);
+    const tw = sumOrd() + weightGrail(t) + weightGrail(o);
+    if (weightGrail(t) / tw > capProb + 1e-12) { t.notional = old; return false; }
+    t.since = 0; return true;
+  }
+
+  // ---------- keeper cost and refund (SPEC 10)
+  function keeperRefund(items) {
+    const cost = (GAS_BASE + GAS_ITEM * items + GAS_OVERHEAD) * gas + tip;
+    const refund = Math.min(S.maint, cost);
+    S.maint -= refund;
+    A.keeperCost += cost; A.refunds += refund; A.shortfall += cost - refund;
+    return refund;
+  }
+  function startPause(now) {
+    if (P.cooldownSeconds > 0) { S.pauseUntil = Math.max(S.pauseUntil, now + P.cooldownSeconds); A.pauseSeconds += P.cooldownSeconds; }
+  }
+
+  // ---------- settle
+  function fillPlan(i) {
+    const r = R[i], used = Math.min(r.k, units[r.u].hs);
+    return { used, cost: (r.k - used) * (r.v + mintFee) };
+  }
+  function settleDue(now) {
+    if (!Q.length) return 0;
+    let anyHeld = false;
+    for (const u of units) if (u.hs > 0) { anyHeld = true; break; }
+    if (!anyHeld && spendable() < fillPlan(Q[0].i).cost - 1e-12) return 0;
+    if (Q.length >= P.batchMin) return 1;
+    if (now - Q[0].t >= P.batchMaxAge) return 2;
+    if (listedOrd() < CONCURRENCY + THIN_MARGIN) return 3;
+    return 0;
+  }
+  function doSettle(now, trig) {
+    let listed = 0;
+    const keep = [];
+    for (const e of Q) {
+      if (listed >= MAX_LIST) { keep.push(e); continue; }
+      const r = R[e.i], pl = fillPlan(e.i);
+      if (pl.cost > 0 && spendable() < pl.cost - 1e-12) { keep.push(e); continue; }
+      units[r.u].hs -= pl.used;
+      S.cash -= pl.cost;
+      A.mintReplace += (r.k - pl.used) * mintFee; A.mintSaved += pl.used * mintFee; A.heldUses += pl.used;
+      r.queued--; r.n++; listed++;
+      if (r.missQ.length) { r.missSum += now - r.missQ.shift(); r.missN++; }
+    }
+    Q = keep;
+    if (listed === 0) return;
+    if (P.decayInSettle) {
+      for (let ti = 0; ti < 2; ti++) if (decayDue(T[ti]) && applyDecay(ti)) A.settleDecays++;
+      for (let ti = 0; ti < 2; ti++) { const t = T[ti]; if (t.backing > 0) { const nl = liftPrice(t, T[1 - ti]); if (nl !== t.notional) { t.notional = nl; t.since = 0; A.settleDecays++; } } }
+    }
+    A.settleCalls++; A.settleListed += listed;
+    if (trig === 1) A.setBatch++; else if (trig === 2) A.setAge++; else A.setThin++;
+    A.settleRefund += keeperRefund(listed);
+    startPause(now);
+  }
+
+  // ---------- rotate
+  function rotateReason(now) {
+    if (now - S.lastRotateAt < P.rotateInterval) return 0;
+    for (const t of T) if (growable(t)) return 2;
+    if (P.decayInSettle) return 0;
+    for (let ti = 0; ti < 2; ti++) {
+      const t = T[ti];
+      if (t.backing > 0 && (liftPrice(t, T[1 - ti]) !== t.notional || decayDue(t))) return 3;
+    }
+    return 0;
+  }
+  function doRotate(now, reason) {
+    let changed = false, listedN = 0;
+    payClaims();
+    for (let ti = 0; ti < 2; ti++) {
+      const t = T[ti];
+      if (growable(t)) {
+        t.bucket -= t.step + t.fee; A.mintGrail += t.fee;
+        t.backing += t.step; t.notional = t.backing * t.listBps / 1e4; t.since = 0; changed = true; listedN++;
+      } else if (!P.decayInSettle && decayDue(t)) {
+        if (applyDecay(ti)) changed = true;
+      }
+    }
+    if (!P.decayInSettle) for (let ti = 0; ti < 2; ti++) {
+      const t = T[ti];
+      if (t.backing > 0) { const nl = liftPrice(t, T[1 - ti]); if (nl !== t.notional) { t.notional = nl; t.since = 0; changed = true; } }
+    }
+    if (!changed) return;
+    S.rotChanged++; S.lastRotateAt = now;
+    if (reason === 2) S.rotGrail++; else S.rotDecay++;
+    A.rotRefund += keeperRefund(listedN);
+    if (listedN) startPause(now);
+  }
+
+  // ---------- keeper tick
+  const dayBoard = new Array(nR).fill(0);
+  let dayTicks = 0, clock = 0, nextTick = TICK;
+  function runTick(now) {
+    clock = now;
+    payClaims();
+    const tr = settleDue(now);
+    if (tr) doSettle(now, tr);
+    const rr = rotateReason(now);
+    if (rr) doRotate(now, rr);
+    let lo = 0;
+    for (let i = 0; i < nR; i++) { dayBoard[i] += R[i].n; lo += R[i].n; }
+    dayTicks++; A.boardSum += lo; A.boardTicks++; if (lo < A.minListed) A.minListed = lo;
+  }
+  function advanceTo(t) {
+    while (nextTick <= t) { runTick(nextTick); nextTick += TICK; }
+    if (t > clock) clock = t;
+  }
+
+  function settleMargin(proceeds, value, rungs) {
+    S.margin += proceeds - value;
+    S.mintOwed += mintFee * rungs; A.mintLineAccrued += mintFee * rungs;
+    if (S.margin > 0) {
+      const repay = Math.min(S.margin, S.mintOwed);
+      S.mintOwed -= repay; S.margin -= repay;
+      if (S.margin > 0) {
+        const rest = S.margin; S.margin = 0;
+        const tot = P.premiumBps + P.maintBps + P.feedBps;
+        const prem = rest * P.premiumBps / tot, mnt = rest * P.maintBps / tot, fd = rest * P.feedBps / tot;
+        A.premium += prem; A.maintIn += mnt; A.feedIn += fd;
+        S.cash -= mnt + fd; S.maint += mnt; addToBuckets(fd);
+      }
+    }
+  }
+
+  const totalHours = days * 24;
+  const series = { navPerShare: [], cash: [], backing: [], grailBacking: [], nav: [], shares: [], tickets: [], entryPrice: [],
+    board: R.map(() => []), listed: [], maintBal: [], refundCum: [], shortCum: [], costCum: [] };
+  const hourly = opts.hourly ? { nav: [], listed: [], cash: [] } : null;
+  const snaps = {};
+  const events = [];
+  let carry = 0;
+
+  // opening: every row is minted to its target depth and listed
+  const open = P.openingEth / P.openingDepositors;
+  for (let i = 0; i < P.openingDepositors; i++) deposit(open);
+  for (let i = 0; i < nR; i++) {
+    const r = R[i];
+    S.cash -= r.tgt * (r.b + mintFee * r.k); A.mintOpening += r.tgt * mintFee * r.k; r.n = r.tgt;
+  }
+  const cohortShares = S.shares, cohortEth = A.deposited;
+  const cohortBreakEven = cohortEth / cohortShares;
+  const navStart = nav() / S.shares;
+
+  function record(day) {
+    const nv = nav();
+    series.navPerShare.push(S.shares > 0 ? nv / S.shares : 0);
+    series.cash.push(S.cash); series.backing.push(backingOrd()); series.nav.push(nv); series.shares.push(S.shares);
+    series.grailBacking.push(T[0].backing + T[1].backing);
+    series.tickets.push(A.tickets);
+    series.entryPrice.push(S.shares > 0 ? (nv / S.shares) / (1 - entryContribution(nv)) : 0);
+    let tot = 0;
+    for (let i = 0; i < nR; i++) { const m = dayTicks ? dayBoard[i] / dayTicks : R[i].n; series.board[i].push(m); tot += m; dayBoard[i] = 0; }
+    dayTicks = 0; series.listed.push(tot);
+    series.maintBal.push(S.maint); series.refundCum.push(A.refunds); series.shortCum.push(A.shortfall); series.costCum.push(A.keeperCost);
+  }
+  function snapshot(day) {
+    const nv = nav(), nps = S.shares > 0 ? nv / S.shares : 0;
+    const h = A.hist;
+    let beDay = -1;
+    for (let d = 0; d < series.navPerShare.length; d++) if (series.navPerShare[d] >= cohortBreakEven) { beDay = d; break; }
+    snaps[day] = {
+      day, tickets: A.tickets, rejected: A.rejected, paid: A.paid, proceeds: A.proceeds, protocol: A.protocol,
+      deliveredReal: A.deliveredReal, deliveredExp: A.deliveredExp,
+      ticketAvg: A.tickets ? A.paid / A.tickets : 0,
+      expReturn: A.paid ? A.deliveredExp * redeem / A.paid : 0,
+      realReturn: A.paid ? A.deliveredReal * redeem / A.paid : 0,
+      median: histQuantile(h, A.mass, 0.5), p5: histQuantile(h, A.mass, 0.05), p95: histQuantile(h, A.mass, 0.95),
+      ge1: A.mGe1 / A.mass, ltHalf: A.mLtHalf / A.mass, ge2: A.mGe2 / A.mass, ge10: A.mGe10 / A.mass,
+      mintReplace: A.mintReplace, mintGrail: A.mintGrail, mintOpening: A.mintOpening, mintSaved: A.mintSaved,
+      premium: A.premium, maintIn: A.maintIn, feedIn: A.feedIn, entryContribution: A.entryContribution,
+      grailPaidTicket: A.grailPaidTicket, ordinaryDelivered: A.ordinaryDelivered, grailDelivered: A.grailDelivered,
+      deposited: A.deposited, withdrawn: A.withdrawn,
+      navPerShare: nps, nav: nv, cash: S.cash, backing: backingOrd(), shares: S.shares,
+      annualised: days > 0 && nps > 0 && navStart > 0 ? Math.pow(nps / navStart, 365 / day) - 1 : 0,
+      breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
+      minorHits: T[0].hits, majorHits: T[1].hits, minorFirst: T[0].firstHitDay, majorFirst: T[1].firstHitDay,
+      minorPrizes: T[0].prizes, majorPrizes: T[1].prizes,
+      minorBucket: T[0].bucket, majorBucket: T[1].bucket, minorBacking: T[0].backing, majorBacking: T[1].backing,
+      mintLineAccrued: A.mintLineAccrued, carry: S.margin - S.mintOwed, avgNav: series.nav.slice(0, day + 1).reduce((a, b) => a + b, 0) / (day + 1),
+      rotates: S.rotChanged, rotGrail: S.rotGrail, rotDecay: S.rotDecay, maintBucket: S.maint,
+      cohortValue: cohortShares * nps, depositors: depositors.length,
+      surprises: A.surprises, payIns: A.payIns, payInValue: A.payInValue, heldUses: A.heldUses,
+      settleCalls: A.settleCalls, settleListed: A.settleListed, settleRefund: A.settleRefund, settleDecays: A.settleDecays,
+      setBatch: A.setBatch, setAge: A.setAge, setThin: A.setThin, rotRefund: A.rotRefund,
+      keeperCost: A.keeperCost, refunds: A.refunds, shortfall: A.shortfall, shortShare: A.keeperCost ? A.shortfall / A.keeperCost : 0,
+      pauseSeconds: A.pauseSeconds, waitSeconds: A.waitSeconds,
+      missSec: probe >= 0 && R[probe].missN ? R[probe].missSum / R[probe].missN : NaN, missN: probe >= 0 ? R[probe].missN : 0,
+      avgListed: A.boardTicks ? A.boardSum / A.boardTicks : 0, minListed: A.minListed, queueLen: Q.length,
+    };
+  }
+
+  record(0);
+  if (snapDays.indexOf(0) >= 0) snapshot(0);
+  const depHour = [], wdHour = [];
+  function ticket(t) {
+    let Sd = 0, Nd = 0, Eb = 0;
+    for (let j = 0; j < nR; j++) { const r = R[j]; const w = r.n / r.p; Sd += w; Nd += r.n; Eb += w * r.b; }
+    if (Nd < CONCURRENCY) { A.rejected++; return; }
+    let Sg = 0, Ng = 0, Ebg = 0;
+    for (let ti = 0; ti < 2; ti++) {
+      const g = T[ti];
+      if (g.backing > 0 && g.notional > 0) { const w = 1 / g.notional; Sg += w; Ng++; Ebg += w * g.backing; }
+    }
+    const Sall = Sd + Sg, N = Nd + Ng;
+    const hm = N / Sall, tk = hm * (1 + edge);
+    const proceeds = tk - (tk - hm) / 2;
+    A.tickets++; A.paid += tk; A.proceeds += proceeds; A.protocol += tk - proceeds;
+    A.deliveredExp += (Eb + Ebg) / Sall;
+    // part of the tickets is paid with a held-able Shape no larger than the ticket, drawn from the capture value distribution
+    if (P.payInShapesBps > 0 && rngPay() < P.payInShapesBps / 1e4) {
+      let tot = 0;
+      for (let j = 0; j < nR; j++) if (R[j].n > 0 && R[j].v <= tk) tot += R[j].n / R[j].p;
+      if (tot > 0) {
+        let x = rngPay() * tot, u = -1;
+        for (let j = 0; j < nR; j++) if (R[j].n > 0 && R[j].v <= tk) { const w = R[j].n / R[j].p; if (x < w) { u = R[j].u; break; } x -= w; u = R[j].u; }
+        if (u >= 0 && spendable() >= units[u].v) { S.cash -= units[u].v; units[u].hs++; A.payIns++; A.payInValue += units[u].v; }
+      }
+    }
+    A.mass += 1;
+    for (let j = 0; j < nR; j++) {
+      const r = R[j]; if (r.n <= 0) continue;
+      const m = (r.n / r.p) / Sall, ratio = r.b * redeem / tk;
+      histAdd(A.hist, ratio, m);
+      if (ratio >= 1) A.mGe1 += m; if (ratio < 0.5) A.mLtHalf += m; if (ratio >= 2) A.mGe2 += m; if (ratio >= 10) A.mGe10 += m;
+    }
+    for (let ti = 0; ti < 2; ti++) {
+      const g = T[ti];
+      if (g.backing > 0 && g.notional > 0) {
+        const m = (1 / g.notional) / Sall, ratio = g.backing * redeem / tk;
+        histAdd(A.hist, ratio, m);
+        if (ratio >= 1) A.mGe1 += m; if (ratio < 0.5) A.mLtHalf += m; if (ratio >= 2) A.mGe2 += m; if (ratio >= 10) A.mGe10 += m;
+      }
+    }
+    let u = rngDraw() * Sall, pick = -1, pickT = -1;
+    for (let j = 0; j < nR; j++) { const w = R[j].n / R[j].p; if (u < w) { pick = j; break; } u -= w; }
+    if (pick < 0) {
+      for (let ti = 0; ti < 2; ti++) { const g = T[ti]; if (g.backing > 0 && g.notional > 0) { const w = 1 / g.notional; if (u < w) { pickT = ti; break; } u -= w; } }
+      if (pickT < 0) { pick = nR - 1; while (pick > 0 && R[pick].n <= 0) pick--; }
+    }
+    for (let ti = 0; ti < 2; ti++) if (T[ti].backing > 0) T[ti].since++;
+    if (pickT >= 0) {
+      const g = T[pickT];
+      A.deliveredReal += g.backing; A.grailDelivered += g.backing; g.prizes += g.backing;
+      A.grailPaidTicket += proceeds;
+      g.bucket += proceeds; g.hits++; if (g.firstHitDay < 0) g.firstHitDay = (t / 86400);
+      events.push({ t: t / 86400, track: pickT, prize: g.backing });
+      g.backing = 0; g.notional = 0; g.since = 0;
+    } else {
+      const r = R[pick];
+      r.n--; r.missQ.push(t);
+      A.deliveredReal += r.b; A.ordinaryDelivered += r.b;
+      S.cash += proceeds;
+      settleMargin(proceeds, r.b, r.k);
+      const ch = chooseRow();
+      R[ch.row].queued++; Q.push({ i: ch.row, t });
+      if (ch.surprise) A.surprises++;
+    }
+    payClaims();
+  }
+
+  for (let h = 0; h < totalHours; h++) {
+    const day = Math.floor(h / 24), hod = h % 24;
+    if (hod === 0) { depHour[day] = Math.floor(rngSched() * 24); wdHour[day] = Math.floor(rngSched() * 24); }
+    const t0 = h * 3600;
+    if (hod === depHour[day] && P.depositPerDay > 0) deposit(P.depositPerDay);
+    if (day % 2 === 1 && hod === wdHour[day] && P.withdrawBpsPerDay > 0) withdraw(P.withdrawBpsPerDay);
+    payClaims();
+
+    const acc = carry + P.ticketsPerDay * (0.5 + rngCount()) / 24;
+    const n = Math.floor(acc); carry = acc - n;
+    // arrivals come in groups of 1 to 5 tickets at one instant
+    const sizes = [];
+    for (let left = n; left > 0;) { const c = Math.min(left, 1 + Math.floor(rngTime() * 5)); sizes.push(c); left -= c; }
+    const groups = sizes.map(c => ({ c, at: rngTime() * 3600 })).sort((a, b) => a.at - b.at);
+    for (const g of groups) {
+      let t = t0 + g.at;
+      if (t < S.pauseUntil) { A.waitSeconds += (S.pauseUntil - t) * g.c; t = S.pauseUntil; }
+      if (t < clock) t = clock;
+      advanceTo(t);
+      for (let i = 0; i < g.c; i++) ticket(t);
+    }
+    advanceTo(t0 + 3599.999);
+    if (hourly) { hourly.nav.push(nav() / S.shares); hourly.listed.push(listedOrd()); hourly.cash.push(S.cash); }
+    if ((h + 1) % 24 === 0) {
+      record(day + 1);
+      if (snapDays.indexOf(day + 1) >= 0) snapshot(day + 1);
+    }
+  }
+  const labels = R.map(r => (r.k > 1 ? r.b + ' pack of ' + r.k : r.b + ' Shape'));
+  return { snaps, series, hourly, events, cohortBreakEven, navStart, cohortShares, cohortEth, params: P, labels, targets: R.map(r => r.tgt),
+    check: { deposits: A.deposited, proceeds: A.proceeds - A.grailPaidTicket, cash: S.cash, backing: backingOrd(), buckets: T[0].bucket + T[1].bucket + T[0].backing + T[1].backing,
+      grailTicket: A.grailPaidTicket, withdrawn: A.withdrawn, delivered: A.deliveredReal, mintFees: A.mintReplace + A.mintGrail + A.mintOpening, refunds: A.refunds, maint: S.maint, claims: claimsTotal, grailDelivered: A.grailDelivered,
+      grailBacking: T[0].backing + T[1].backing, feedIn: A.feedIn, entry: A.entryContribution, maintIn: A.maintIn } };
+}
+
+const SENS = [
+  { id: 'premiumBps', label: 'Premium (bps)', lo: 100, hi: 300, get: P => P.premiumBps, set: (P, v) => { P.premiumBps = v; } },
+  { id: 'maintBps', label: 'Maintenance (bps)', lo: 50, hi: 200, get: P => P.maintBps, set: (P, v) => { P.maintBps = v; } },
+  { id: 'feedBps', label: 'GRAIL feed (bps)', lo: 200, hi: 600, get: P => P.feedBps, set: (P, v) => { P.feedBps = v; } },
+  { id: 'minorShareBps', label: 'Minor share of feed (bps)', lo: 1000, hi: 4000, get: P => P.minorShareBps, set: (P, v) => { P.minorShareBps = v; } },
+  { id: 'entryBase', label: 'Entry base (bps)', lo: 500, hi: 1500, get: P => P.entryBase, set: (P, v) => { P.entryBase = v; } },
+  { id: 'entryCap', label: 'Entry cap (bps)', lo: 1500, hi: 2500, get: P => P.entryCap, set: (P, v) => { P.entryCap = v; } },
+  { id: 'mintFee', label: 'Mint fee per Shape (ETH)', lo: 0.0005, hi: 0.002, get: P => P.mintFee, set: (P, v) => { P.mintFee = v; } },
+  { id: 'minItems', label: 'Minimum board depth (items)', lo: 50, hi: 200, get: P => P.minItems, set: (P, v) => { P.minItems = v; } },
+  { id: 'edgePct', label: 'FWA edge (percent)', lo: 2, hi: 10, get: P => P.edgePct, set: (P, v) => { P.edgePct = v; } },
+  { id: 'row0', label: 'Share of 0.01 Shape row (percent)', lo: 28, hi: 48, get: P => P.rows[0].share, set: (P, v) => { P.rows[0].share = v; } },
+  { id: 'row5', label: 'Share of 0.5 Shape row (percent)', lo: 0, hi: 3, get: P => P.rows[5] ? P.rows[5].share : 0, set: (P, v) => { if (P.rows[5]) P.rows[5].share = v; } },
+  { id: 'minorTarget', label: 'Minor GRAIL target (ETH)', lo: 0.5, hi: 2, get: P => P.minor.target, set: (P, v) => { P.minor.target = v; } },
+  { id: 'majorTarget', label: 'Major GRAIL target (ETH)', lo: 10, hi: 50, get: P => P.major.target, set: (P, v) => { P.major.target = v; } },
+  { id: 'majorList', label: 'Major list price (bps of backing)', lo: 5000, hi: 9000, get: P => P.major.listBps, set: (P, v) => { P.major.listBps = v; } },
+  { id: 'majorDecay', label: 'Major decay (ETH per pull)', lo: 0.00005, hi: 0.001, get: P => P.major.decay, set: (P, v) => { P.major.decay = v; } },
+  { id: 'minorDecay', label: 'Minor decay (ETH per pull)', lo: 0.00005, hi: 0.001, get: P => P.minor.decay, set: (P, v) => { P.minor.decay = v; } },
+  { id: 'majorFloor', label: 'Major floor (ETH)', lo: 0.5, hi: 2, get: P => P.major.floor, set: (P, v) => { P.major.floor = v; } },
+  { id: 'minorFloor', label: 'Minor floor (ETH)', lo: 0.1, hi: 0.5, get: P => P.minor.floor, set: (P, v) => { P.minor.floor = v; } },
+  { id: 'ticketsPerDay', label: 'Tickets per day', lo: 250, hi: 1000, get: P => P.ticketsPerDay, set: (P, v) => { P.ticketsPerDay = v; } },
+  { id: 'openingEth', label: 'Opening cohort (ETH)', lo: 25, hi: 100, get: P => P.openingEth, set: (P, v) => { P.openingEth = v; } },
+  { id: 'depositPerDay', label: 'Deposits per day (ETH)', lo: 0, hi: 5, get: P => P.depositPerDay, set: (P, v) => { P.depositPerDay = v; } },
+  { id: 'withdrawBpsPerDay', label: 'Withdrawal on odd days (bps of a depositor)', lo: 0, hi: 1000, get: P => P.withdrawBpsPerDay, set: (P, v) => { P.withdrawBpsPerDay = v; } },
+  { id: 'navCap', label: 'NAV cap (ETH)', lo: 50, hi: 200, get: P => P.navCap, set: (P, v) => { P.navCap = v; } },
+  { id: 'rotateInterval', label: 'Rotate interval (seconds)', lo: 300, hi: 3600, get: P => P.rotateInterval, set: (P, v) => { P.rotateInterval = v; } },
+  { id: 'restoreK', label: 'Deficit weight restoreK', lo: 2, hi: 16, get: P => P.restoreK, set: (P, v) => { P.restoreK = v; } },
+  { id: 'surpriseBps', label: 'Surprise chance (bps)', lo: 0, hi: 600, get: P => P.surpriseBps, set: (P, v) => { P.surpriseBps = v; } },
+  { id: 'bandBps', label: 'Band above target (bps)', lo: 1000, hi: 6000, get: P => P.bandBps, set: (P, v) => { P.bandBps = v; } },
+  { id: 'batchMin', label: 'Settle batch size', lo: 5, hi: 40, get: P => P.batchMin, set: (P, v) => { P.batchMin = v; } },
+  { id: 'reserveBps', label: 'Cash reserve (bps of NAV)', lo: 0, hi: 2500, get: P => P.reserveBps, set: (P, v) => { P.reserveBps = v; } },
+  { id: 'payInShapesBps', label: 'Tickets paid with a Shape (bps)', lo: 0, hi: 3000, get: P => P.payInShapesBps, set: (P, v) => { P.payInShapesBps = v; } },
+  { id: 'tipWei', label: 'Keeper tip (wei)', lo: 1e14, hi: 5e14, get: P => P.tipWei, set: (P, v) => { P.tipWei = v; } },
+  { id: 'gasPriceGwei', label: 'Gas price (gwei)', lo: 0.3, hi: 5, get: P => P.gasPriceGwei, set: (P, v) => { P.gasPriceGwei = v; } },
+];
+function cloneParams(P) { return JSON.parse(JSON.stringify(P)); }
+function avgMetrics(P, H, seeds) {
+  const acc = { ticket: 0, exp: 0, median: 0, ge1: 0, nps: 0, ann: 0, be: 0, bePart: 0, premium: 0, cohort: 0 };
+  for (const sd of seeds) {
+    const s = simulate(P, sd, H, [H]).snaps[H];
+    acc.ticket += s.ticketAvg; acc.exp += s.expReturn; acc.median += s.median; acc.ge1 += s.ge1;
+    acc.nps += s.navPerShare; acc.ann += s.annualised; acc.premium += s.premium; acc.cohort += s.cohortValue;
+    if (s.breakEvenDay >= 0) { acc.be += s.breakEvenDay; acc.bePart++; }
+  }
+  const n = seeds.length;
+  for (const k of ['ticket', 'exp', 'median', 'ge1', 'nps', 'ann', 'premium', 'cohort']) acc[k] /= n;
+  acc.be = acc.bePart === n ? acc.be / n : -1;
+  return acc;
+}
+// MODEL END
+const FWA_H = [[0.025,104],[0.02505,1],[0.025123456789,1],[0.025226,1],[0.0255,1],[0.0258,1],[0.026,27],[0.0265,2],[0.027,66],[0.027392,4],[0.027487016,18],[0.0275,506],[0.028,23],[0.028141,3],[0.028355,54],[0.0285,1],[0.028569,1],[0.028783,1],[0.02889,1],[0.02899593,20],[0.028997,31],[0.029,8],[0.02910293,1],[0.029104,1],[0.02920993,1],[0.029211,5],[0.0293,31],[0.0294,27],[0.029425,1],[0.02996,3],[0.03,5],[0.030174,1],[0.0303773,14],[0.03038586,2],[0.03038693,20],[0.030388,31],[0.0304843,20],[0.030495,58],[0.031,1],[0.0319,6],[0.0319,380],[0.03285,1],[0.0333333,1],[0.035,2],[0.0355,1],[0.037098765432,1],[0.0375,2],[0.039,6],[0.04,1],[0.041,2],[0.042,23],[0.04258,1],[0.04262,1],[0.04325,1],[0.044,24],[0.04477,1],[0.046,2],[0.047,12],[0.04765,1],[0.048,15],[0.049,18],[0.04929,1],[0.0495,6],[0.04959,1],[0.0499,2],[0.05,40],[0.05034,1],[0.050676591,1],[0.051,28],[0.0511,1],[0.05123,1],[0.0513,1],[0.05155,1],[0.05169,1],[0.0517,13],[0.052,33],[0.0522,1],[0.05229,3],[0.052658766,1],[0.052678989,1],[0.052731633,1],[0.052762127999,1],[0.0527831,1],[0.052786631,1],[0.052789841,1],[0.052796046999,1],[0.052805569999,1],[0.052817126,1],[0.052916528999,1],[0.052931722999,1],[0.052933755999,2],[0.053,10],[0.053043109999,1],[0.053057234,1],[0.053256253999,1],[0.0533,1],[0.053387543,1],[0.05338765,1],[0.05349893,1],[0.053732404,1],[0.05398899,1],[0.054,38],[0.054235946,2],[0.054452193,1],[0.054465782,1],[0.05454,1],[0.054569786,1],[0.05457,3],[0.054676786,1],[0.054732426,1],[0.054951562,2],[0.05499,2],[0.055,365],[0.055034701,1],[0.0551,1],[0.055269245,1],[0.055533,1],[0.05564,10],[0.05574,1],[0.05662,1],[0.057,12],[0.0572,214],[0.05745,2],[0.05772,1],[0.06,12],[0.062,1],[0.0625,1],[0.064,3],[0.065,6],[0.066,7],[0.067,12],[0.068,3],[0.06804,1],[0.06815,1],[0.068796,1],[0.069,3],[0.07,20],[0.0702,1],[0.07128,1],[0.072,1],[0.072224999893,1],[0.072224999893,7],[0.074,6],[0.07441957,1],[0.074519784,1],[0.0747,1],[0.07489893,1],[0.075,10],[0.075599999892,2],[0.076,1],[0.07699,1],[0.077,43],[0.078,8],[0.07804,1],[0.079,21],[0.08,15],[0.080249893,3],[0.081,1],[0.081104823,1],[0.082,18],[0.083,14],[0.083215825893,1],[0.083845093,1],[0.084,9],[0.084185139,1],[0.084785409,2],[0.085,21],[0.085183556,1],[0.085324582,1],[0.086,3],[0.087,14],[0.08720393,1],[0.087230844,1],[0.087633,2],[0.088,189],[0.08933,5],[0.09,4],[0.091,1],[0.092,1],[0.093,1],[0.093740988,1],[0.094,1],[0.094052251,2],[0.094052786,1],[0.094052893,2],[0.094480786,1],[0.094480893,1],[0.095,3],[0.095229893,3],[0.095569092,2],[0.095687784,1],[0.096,3],[0.096012,2],[0.0968,6],[0.09701,1],[0.09879,1],[0.099,229],[0.1,17],[0.101,39],[0.102,6],[0.109,1],[0.11,9],[0.111,1],[0.113,1],[0.119838823,3],[0.119839893,1],[0.11984,1],[0.12,52],[0.121,1],[0.122,6],[0.123,3],[0.124564906,1],[0.124624612,1],[0.124935875,1],[0.125,8],[0.125116491,1],[0.125189893,1],[0.125631054,1],[0.126,2],[0.128,1],[0.128064234,1],[0.12814106,1],[0.12830477,1],[0.1284305913,1],[0.12851021,1],[0.128935,2],[0.128942062,1],[0.129,1],[0.129125032,1],[0.129218978,1],[0.129316669,1],[0.129883555,1],[0.129926783,1],[0.13,7],[0.130356816,1],[0.13055498,1],[0.131,1],[0.13105146,1],[0.131075,1],[0.13149123,11],[0.132,295],[0.135,2],[0.1375,108],[0.138,1],[0.139,3],[0.14,1],[0.15,2],[0.154,31],[0.165,73],[0.176,1],[0.18,1],[0.187,6],[0.2,1],[0.22,3],[0.24,2],[0.242,16],[0.25,2],[0.252,1],[0.286,12],[0.308,3],[0.315,1],[0.32,8],[0.325,6],[0.3296,6],[0.33,19],[0.331,3],[0.3313,1],[0.3319,1],[0.3327,1],[0.3331,1],[0.3334,3],[0.3341,2],[0.335,1],[0.34,1],[0.35,2],[0.352,1],[0.363,3],[0.374,2],[0.396,10],[0.48,1],[0.49,1],[0.495,5],[0.51,1],[0.56,1],[0.594,22],[0.61,1],[0.616,5],[0.625,1],[0.69,1],[0.708,2],[0.781,3],[0.87,2],[0.88,9],[0.935,2],[0.966,1],[0.968,1],[1.0,1],[1.011,1],[1.012,3],[1.05,3],[1.1,1],[1.2,1],[1.65,1],[3.707,1],[3.839,5],[5.0,1],[16.201943035537,1],[85.0,1]]; // [backing ETH, listing count] at block 26,088,128
+const FORK_NAV_PRE = [0.99599,0.99648,0.99752,0.99779,0.99836,0.99863,0.99768,0.99924,0.99731,0.99668,0.9988,0.99811,0.99927,0.99758,0.99904,0.99885,1.00029,0.99778,0.99894,1.00055,1.00141,1.00137,1.00131,1.0021,1.00133,1.00255,1.00286,1.00345,1.0035,1.00305,1.00391,1.00546,1.00642,1.00678,1.00703,1.00789,1.00893,1.00889,1.00771,1.00761,1.0097,1.01016,1.01054,1.01059,1.01131,1.0117,1.0123,1.01272,1.01323,1.0136,1.01378,1.01434,1.01476,1.01524,1.01523,1.0156,1.01601,1.0142,1.01423,1.01706,1.01737,1.01736,1.01716,1.01634,1.01831,1.01838,1.01871,1.01878,1.01962,1.01915,1.01882,1.01994,1.02038,1.02076,1.02078,1.02105,1.02009,1.0217,1.02168,1.02255,1.02303,1.0228,1.02174,1.02307,1.02406,1.02396,1.02449,1.02255,1.02231,1.02427,1.02561,1.026,1.02629,1.02672,1.02682,1.02678,1.02701,1.02769,1.02754,1.02834,1.02852,1.02722,1.02804,1.02845,1.02914,1.02827,1.03001,1.02994,1.03038,1.03057,1.03175,1.0315,1.0313,1.03179,1.0323,1.03287,1.03312,1.03371,1.03453,1.03454,1.03551,1.03619,1.0358,1.03608,1.03655,1.03691,1.03693,1.03753,1.03605,1.03579,1.03801,1.03828,1.0381,1.03766,1.03694,1.02788,1.019,1.0209,1.02199,1.02347,1.0245,1.02394,1.02499,1.02715,1.02827,1.02954,1.0285,1.02787,1.02743,1.02859,1.03022,1.02841,1.02608,1.0272,1.02892,1.03061,1.03172,1.0335,1.0332,1.03393,1.03619,1.02888,1.03076,1.03061,1.03004,1.0322,1.0328,1.03536,1.03454]; // NAV per share by hour, fork run, pre-sampling design
+const FORK_NAV9 = [0.99599,0.99619,0.99729,0.99758,0.99792,0.99693,0.99838,0.99755,0.99864,0.9937,0.99528,0.99954,0.99894,0.99937,0.99908,1.00035,1.00138,1.00218,1.00241,1.00321,1.00364,0.99181,0.99584,0.9971,0.99832,0.98843,0.98705,0.98813,0.99067,0.99136,0.99262,0.99577,0.99856,0.99827,1.0024,1.00228,1.0041,1.00388,1.00404,1.00502,1.00527,1.00471,1.00524,1.00582,1.00641,1.00699,1.00701,1.0077,1.00824,1.00798,1.00806,1.00816,1.00858,1.00866,1.00957,1.01026,1.01133,1.01075,1.01219,1.01225,1.01282,1.01239,1.01382,1.01392,1.01552,1.01589,1.01641,1.01747,1.01787,1.01771,1.01886,1.01906,1.02012,1.01956,1.02047,1.0209,1.02158,1.01971,1.02093,1.02231,1.02259,1.02278,1.02302,1.02335,1.02284,1.02431,1.02445,1.02288,1.0238,1.02537,1.02665,1.02643,1.02627,1.02476,1.02576,1.02763,1.02781,1.02842,1.02796,1.028,1.02814,1.02859,1.0286,1.02997,1.03042,1.03145,1.03059,1.03083,1.03069,1.03069,1.03144,1.03075,1.03237,1.03164,1.03155,1.03307,1.03326,1.0331,1.0335,1.03367,1.03374,1.03471,1.03569,1.03617,1.03618,1.03655,1.03613,1.03521,1.03659,1.03727,1.03748,1.0368,1.03721,1.03803,1.03919,1.03975,1.04017,1.03936,1.03877,1.04026,1.04065,1.04075,1.04142,1.04218,1.04212,1.04199,1.04253,1.04331,1.04373,1.04373,1.04453,1.0445,1.04454,1.04514,1.04512,1.04352,1.04437,1.04586,1.03753,1.03731,1.0406,1.04391,1.0431,1.04456,1.04526,1.04476,1.045,1.04703,1.04724]; // NAV per share by hour, fork run, decision 9
+// UI
+const $ = id => document.getElementById(id);
+const D = defaultParams();
+let P = cloneParams(D);
+let seed = 1, horizon = 365, R = null, RA = null, FW = null, sensStale = true, chartRefs = {};
+const HZ = [7, 30, 90, 180, 365], TBL = [90, 180, 365];
+const FWA_EDGE = 5, FWA_OBS = [2848, 3646];
+
+const fmt = {
+  eth: (v, d = 4) => Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }),
+  n0: v => Math.round(v).toLocaleString('en-US'),
+  x: (v, d = 3) => v.toFixed(d) + 'x',
+  pct: (v, d = 1) => (v * 100).toFixed(d) + '%',
+  sgn: (v, d = 1) => (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(d) + '%',
+};
+const getv = (o, p) => p.reduce((a, k) => a[k], o);
+const setv = (o, p, v) => { let a = o; for (let i = 0; i < p.length - 1; i++) a = a[p[i]]; a[p[p.length - 1]] = v; };
+const F = (path, label, unit, step, min, max, hint) => ({ path: path.split('.'), label, unit, step, min, max, hint: hint || '' });
+
+const GROUPS = [
+  { id: 'contract', title: 'Contract settings', fields: [
+    F('mintFee', 'Mint fee per Shape', 'ETH', 0.0001, 0, 0.1, 'Paid on every replacement and every GRAIL step.'),
+    F('premiumBps', 'Premium', 'bps', 10, 0, 1000, 'Stays in ordinary NAV.'),
+    F('maintBps', 'Maintenance', 'bps', 10, 0, 1000, 'Funds rotate refunds.'),
+    F('feedBps', 'GRAIL feed', 'bps', 10, 0, 1000, 'Split between the two tracks.'),
+    F('minorShareBps', 'Minor share', 'bps', 100, 0, 10000, 'Of the feed and of entry contributions.'),
+    F('entryBase', 'Entry base', 'bps', 50, 0, 10000, 'Entry contribution at zero NAV.'),
+    F('entrySlope', 'Entry slope', 'bps', 50, 0, 10000, 'Added per reference NAV.'),
+    F('entryCap', 'Entry cap', 'bps', 50, 0, 2500, 'Contract maximum 2,500.'),
+    F('entryRef', 'Entry reference NAV', 'ETH', 1, 1, 100000, ''),
+    F('minItems', 'Minimum board depth', 'items', 5, 1, 5000, 'Scaled by row share.'),
+    F('edgePct', 'FWA edge', 'percent', 0.5, 0, 50, 'Ticket = harmonic mean price x (1 + edge).'),
+    F('grailProbCapBps', 'GRAIL probability cap', 'bps', 50, 1, 10000, 'Share of selection weight.'),
+    F('rotateInterval', 'Rotate interval', 'seconds', 60, 60, 86400, 'Minimum spacing of rotate calls and of their refunds.'),
+    F('navCap', 'NAV cap', 'ETH', 10, 0, 100000, 'Deposits close at this NAV. 0 means no cap.'),
+  ] },
+  { id: 'board', title: 'Board', mix: true, fields: [] },
+  { id: 'replace', title: 'Replacement and cash', fields: [
+    F('restoreK', 'Deficit weight restoreK', 'factor', 1, 0, 100, 'Row weight = share x (1 + restoreK x deficit / target).'),
+    F('surpriseBps', 'Surprise chance', 'bps', 50, 0, 10000, 'Upgrade to a single Shape worth 5x or more the drawn row.'),
+    F('bandBps', 'Band above target', 'bps', 500, 0, 100000, 'A row at target x (1 + band) or more falls to the largest deficit.'),
+    F('reserveBps', 'Cash reserve', 'bps', 50, 0, 10000, 'Share of NAV kept out of replacement mints.'),
+    F('payInShapesBps', 'Tickets paid with a Shape', 'bps', 100, 0, 10000, 'Shape of at most the ticket value, kept and reused with no mint fee.'),
+  ] },
+  { id: 'keeper', title: 'Settle, rotate and refunds', fields: [
+    F('batchMin', 'Settle batch size', 'items', 1, 1, 10, 'Queued replacements that make a settle due.'),
+    F('batchMaxAge', 'Settle maximum age', 'seconds', 300, 300, 86400, 'Age of the oldest queued replacement that makes a settle due.'),
+    F('cooldownSeconds', 'Purchase pause after a listing batch', 'seconds', 30, 0, 3600, 'FWA inventoryChangeCooldown. 0 at launch.'),
+    F('gasPriceGwei', 'Gas price for keeper refunds', 'gwei', 0.5, 0, 500, 'Refund = (100k + 150k per item + 30k) gas x price + tip.'),
+    F('tipWei', 'Keeper tip', 'wei', 1e13, 0, 1e17, 'Added to every settle and rotate refund. 2e14 wei is 0.0002 ETH.'),
+    { chk: true, path: ['decayInSettle'], label: 'Decay reprice inside settle instead of rotate', hint: 'Settle reprices GRAIL tracks and lifts them to the probability cap in its batch, and rotate keeps GRAIL growth. Off gives rotate the Decay reason.' },
+  ] },
+  { id: 'demand', title: 'Demand and depositors', fields: [
+    F('openingEth', 'Opening cohort', 'ETH', 5, 1, 10000, 'Deposited before the board opens.'),
+    F('openingDepositors', 'Opening depositors', 'count', 1, 1, 50, 'Equal deposits, in sequence.'),
+    F('depositPerDay', 'Deposits per day', 'ETH', 0.5, 0, 1000, 'One new depositor a day.'),
+    F('withdrawBpsPerDay', 'Withdrawal on odd days', 'bps', 50, 0, 10000, 'Share of one depositor\'s shares.'),
+  ] },
+  { id: 'grail', title: 'GRAIL tracks', fields: [
+    { sub: 'Minor track' },
+    F('minor.target', 'Target', 'ETH', 0.5, 0.02, 1000, ''), F('minor.step', 'Step', 'ETH', 0.01, 0.02, 100, 'Multiple of 0.01, at least 0.02.'),
+    F('minor.listBps', 'List price', 'bps', 100, 1, 10000, 'Of track backing.'), F('minor.decay', 'Decay per pull', 'ETH', 0.00005, 0, 1, 'Repriced when 1 percent or more below the list price.'),
+    F('minor.floor', 'Floor', 'ETH', 0.05, 0.01, 1000, 'At most target x list price.'),
+    { sub: 'Major track' },
+    F('major.target', 'Target', 'ETH', 5, 0.02, 1000, ''), F('major.step', 'Step', 'ETH', 0.1, 0.02, 100, 'Multiple of 0.01, at least 0.02.'),
+    F('major.listBps', 'List price', 'bps', 100, 1, 10000, 'Of track backing.'), F('major.decay', 'Decay per pull', 'ETH', 0.00005, 0, 1, 'Repriced when 1 percent or more below the list price.'),
+    F('major.floor', 'Floor', 'ETH', 0.1, 0.01, 1000, 'At most target x list price.'),
+  ] },
+  { id: 'basis', title: 'Value received basis', fields: [
+    F('shapesRedeemPct', 'Shapes redeem value', 'percent', 1, 1, 100, 'Share of backing a player receives.'),
+    F('fwaCashoutPct', 'FWA V2 cash-out', 'percent', 1, 1, 100, 'ETH settlement of a delivered item.'),
+  ] },
+];
+
+// ---------- parameter form
+function buildForm() {
+  const host = $('groups'); host.innerHTML = '';
+  const wide = window.matchMedia('(min-width:1020px)').matches;
+  for (const g of GROUPS) {
+    const det = document.createElement('details'); det.className = 'pg'; det.open = wide || g.id === 'demand';
+    const sm = document.createElement('summary'); sm.textContent = g.title; det.appendChild(sm);
+    const box = document.createElement('div'); box.className = 'fields';
+    for (const f of g.fields) {
+      if (f.sub) { const s = document.createElement('div'); s.className = 'sub'; s.textContent = f.sub; box.appendChild(s); continue; }
+      const id = 'p_' + f.path.join('_');
+      const lab = document.createElement('label'); lab.className = 'fld'; lab.id = 'w_' + id;
+      if (f.chk) {
+        lab.style.gridColumn = '1/-1';
+        lab.innerHTML = '<span class="fl" style="justify-content:flex-start;gap:8px"><input type="checkbox" id="' + id + '" style="width:auto"><span>' + f.label + '</span><i>changed</i></span><span class="hint">Launch ' + (getv(D, f.path) ? 'on' : 'off') + '. ' + f.hint + '</span>';
+        box.appendChild(lab); f.id = id; continue;
+      }
+      lab.innerHTML = '<span class="fl"><span>' + f.label + ' (' + f.unit + ')</span><i>changed</i></span>' +
+        '<input type="number" id="' + id + '" step="' + f.step + '" min="' + f.min + '" max="' + f.max + '" inputmode="decimal">' +
+        '<span class="hint">Launch ' + getv(D, f.path) + (f.hint ? '. ' + f.hint : '') + '</span>';
+      box.appendChild(lab);
+      f.id = id;
+    }
+    if (g.mix) {
+      const t = document.createElement('div'); t.style.gridColumn = '1/-1';
+      let h = '<table class="mix"><tr><th>Backing (ETH)</th><th>Shapes minted</th><th>Share (%)</th></tr>';
+      P.rows.forEach((r, i) => { h += '<tr><td><input type="number" step="0.01" min="0" id="m_b' + i + '" inputmode="decimal"></td><td><input type="number" step="1" min="1" max="20" id="m_k' + i + '" inputmode="numeric"></td><td><input type="number" step="1" min="0" max="100" id="m_s' + i + '" inputmode="decimal"></td></tr>'; });
+      h += '</table><p class="hint" style="font-size:11.5px;color:var(--ink3);margin-top:6px">Rows of two or more Shapes minted are Draw Packs. Listing price = backing x (1 + premium + maintenance + feed) + mint fee x Shapes minted. Shares normalise to 100. Target depth of a row = ceil(board depth x share).</p>';
+      t.innerHTML = h; box.appendChild(t);
+    }
+    det.appendChild(box); host.appendChild(det);
+  }
+  for (const g of GROUPS) for (const f of g.fields) if (f.id) {
+    if (f.chk) $(f.id).addEventListener('change', e => { setv(P, f.path, e.target.checked); changed(); });
+    else $(f.id).addEventListener('input', e => onField(f, e.target));
+  }
+  P.rows.forEach((r, i) => {
+    $('m_b' + i).addEventListener('input', e => onMix(i, 'backing', e.target));
+    $('m_k' + i).addEventListener('input', e => onMix(i, 'rungs', e.target));
+    $('m_s' + i).addEventListener('input', e => onMix(i, 'share', e.target));
+  });
+  syncForm();
+}
+function syncForm() {
+  for (const g of GROUPS) for (const f of g.fields) if (f.id) { if (f.chk) $(f.id).checked = getv(P, f.path); else $(f.id).value = getv(P, f.path); }
+  P.rows.forEach((r, i) => { $('m_b' + i).value = r.backing; $('m_k' + i).value = r.rungs; $('m_s' + i).value = r.share; });
+  $('tpd').value = P.ticketsPerDay; $('seed').value = seed;
+  markChanged();
+}
+function parse(el, min, max) {
+  const v = parseFloat(el.value);
+  const ok = isFinite(v) && v >= min && v <= max;
+  el.parentElement.classList.toggle('bad', !ok);
+  if (el.closest('td')) el.style.borderColor = ok ? '' : 'var(--bad)';
+  return ok ? v : null;
+}
+function onField(f, el) { const v = parse(el, f.min, f.max); if (v === null) return; setv(P, f.path, v); changed(); }
+function onMix(i, k, el) { const v = parse(el, k === 'rungs' ? 1 : 0, k === 'share' ? 100 : 100); if (v === null) return; P.rows[i][k] = v; changed(); }
+function markChanged() {
+  let n = 0;
+  for (const g of GROUPS) for (const f of g.fields) if (f.id) {
+    const c = getv(P, f.path) !== getv(D, f.path); n += c ? 1 : 0;
+    $('w_' + f.id).classList.toggle('chg', c);
+  }
+  P.rows.forEach((r, i) => { const d = D.rows[i]; if (r.backing !== d.backing || r.rungs !== d.rungs || r.share !== d.share) n++; });
+  if (P.ticketsPerDay !== D.ticketsPerDay) n++;
+  if (seed !== 1) n++;
+  [...$('tpdchips').children].forEach((b, i) => b.setAttribute('aria-pressed', String([500, FWA_OBS[0], FWA_OBS[1]][i] === P.ticketsPerDay)));
+  $('chgcount').textContent = n ? '(' + n + ' changed)' : '';
+}
+function warnings() {
+  const w = [];
+  if (P.premiumBps + P.maintBps + P.feedBps > 1000) w.push('Premium + maintenance + feed is above the contract maximum of 1,000 bps.');
+  if (P.entryCap > 2500) w.push('Entry cap is above the contract maximum of 2,500 bps.');
+  for (const [n, t] of [['Minor', P.minor], ['Major', P.major]]) {
+    if (t.floor > t.target * t.listBps / 1e4 + 1e-9) w.push(n + ' floor is above target x list price, which the pool rejects.');
+    const u = Math.round(t.step * 100);
+    if (Math.abs(t.step * 100 - u) > 1e-6 || u < 2) w.push(n + ' step has to be a multiple of 0.01 ETH and at least 0.02 ETH.');
+  }
+  if (P.batchMin < 1) w.push('Settle batch size is at least 1.');
+  if (P.batchMin > 10) w.push('Settle lists at most 10 items per call, so with a batch size above 10 the queue holds at least ' + (P.batchMin - 10) + ' entries between calls and the board runs thinner by that amount.');
+  if (P.cooldownSeconds > 0) w.push('A purchase pause above zero delays tickets after every listing batch, so tickets arrive later than the schedule.');
+  const sh = P.rows.reduce((a, r) => a + r.share, 0);
+  if (sh <= 0) w.push('Row shares sum to zero. Set at least one share above zero.');
+  else if (Math.abs(sh - 100) > 1e-9) w.push('Row shares sum to ' + sh + '. The model normalises them to 100.');
+  const live = P.rows.filter(r => r.share > 0);
+  if (live.length && P.minItems * Math.min(...live.map(r => r.share)) / sh < 0.001) w.push('A row with a very small share rounds up to one item.');
+  return w;
+}
+
+// ---------- FWA V2 board
+function fwaStats(cashoutPct) {
+  const co = cashoutPct / 100;
+  let N = 0, S = 0, back = 0;
+  for (const [b, c] of FWA_H) { N += c; S += c / b; back += b * c; }
+  const hm = N / S, ticket = hm * (1 + FWA_EDGE / 100);
+  const it = FWA_H.map(([b, c]) => ({ r: co * b / ticket, m: (c / b) / S, b })).sort((a, b) => a.r - b.r);
+  const q = {}; let cum = 0, exp = 0, ge1 = 0, lt = 0, ge2 = 0, ge10 = 0, eb = 0;
+  for (const x of it) {
+    cum += x.m; exp += x.r * x.m; eb += x.b * x.m;
+    for (const k of [0.05, 0.5, 0.95]) if (q[k] === undefined && cum >= k) q[k] = x.r;
+    if (x.r >= 1) ge1 += x.m; if (x.r < 0.5) lt += x.m; if (x.r >= 2) ge2 += x.m; if (x.r >= 10) ge10 += x.m;
+  }
+  const edge = FWA_EDGE / 100;
+  return { ticket, hm, exp, median: q[0.5], p5: q[0.05], p95: q[0.95], ge1, ltHalf: lt, ge2, ge10, house: 1 - eb / ticket,
+    listings: N, backing: back, ownerMargin: hm * edge / 2, ownerShare: (edge / 2) / (1 + edge), protocolShare: (edge / 2) / (1 + edge), faceShare: eb / ticket };
+}
+
+// ---------- compute
+let timer = null;
+function changed() { markChanged(); sensStale = true; updateSensNote(); renderWarns(); clearTimeout(timer); timer = setTimeout(compute, 150); }
+function renderWarns() {
+  const w = warnings();
+  $('warns').innerHTML = w.length ? '<div class="warnbox"><b>Check these values</b><ul>' + w.map(x => '<li>' + x + '</li>').join('') + '</ul></div>' : '';
+}
+function compute() {
+  const t0 = performance.now();
+  if (P.rows.reduce((a, r) => a + (r.share > 0 ? r.share : 0), 0) <= 0) { $('timing').textContent = 'Add a board row'; return; }
+  const Pn = cloneParams(P);
+  Pn.openingDepositors = Math.max(1, Math.round(Pn.openingDepositors));
+  R = simulate(Pn, seed, 365, HZ);
+  const alt = cloneParams(Pn); alt.decayInSettle = !Pn.decayInSettle;
+  RA = simulate(alt, seed, 365, HZ);
+  FW = fwaStats(P.fwaCashoutPct);
+  $('timing').textContent = 'Computed in ' + Math.round(performance.now() - t0) + ' ms';
+  renderAll();
+}
+
+// ---------- rendering
+function shapesVals(s) {
+  return { ticket: s.ticketAvg, exp: s.expReturn, median: s.median, p5: s.p5, p95: s.p95, ge1: s.ge1, ltHalf: s.ltHalf, ge2: s.ge2, ge10: s.ge10, house: s.paid ? 1 - s.deliveredExp / s.paid : 0 };
+}
+function renderAll() {
+  renderStrip(); renderTable(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); basisText();
+}
+function chips(hostId, list, cur, onPick, label) {
+  const h = $(hostId); h.innerHTML = '';
+  for (const v of list) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label(v);
+    b.setAttribute('aria-pressed', String(v === cur)); b.addEventListener('click', () => onPick(v)); h.appendChild(b);
+  }
+  h.style.display = 'inline-flex'; h.style.gap = '6px'; h.style.flexWrap = 'wrap';
+}
+function renderStrip() {
+  const s = R.snaps[horizon], sv = shapesVals(s);
+  const be = s.breakEvenDay >= 0 ? 'day ' + s.breakEvenDay : 'not reached';
+  const items = [
+    ['Expected return, Shapes', fmt.x(sv.exp), 'FWA V2 ' + fmt.x(FW.exp)],
+    ['Median return, Shapes', fmt.x(sv.median), 'FWA V2 ' + fmt.x(FW.median)],
+    ['NAV per share, day ' + horizon, fmt.eth(s.navPerShare, 3), fmt.sgn(s.annualised * 100, 0) + ' a year'],
+    ['Cohort break-even', be, 'needs ' + fmt.eth(R.cohortBreakEven, 3)],
+    ['GRAIL hits', s.minorHits + ' / ' + s.majorHits, 'minor / major'],
+    ['Keeper cost not covered', fmt.pct(s.shortShare, 1), fmt.eth(s.shortfall, 2) + ' of ' + fmt.eth(s.keeperCost, 2) + ' ETH'],
+  ];
+  $('strip').innerHTML = items.map(i => '<div><div class="k">' + i[0] + '</div><div class="v">' + i[1] + ' <small>' + i[2] + '</small></div></div>').join('');
+}
+function renderTable() {
+  const cols = TBL.map(d => shapesVals(R.snaps[d]));
+  const defs = [
+    { l: 'Ticket (ETH)', k: 'ticket', f: v => fmt.eth(v, 5), dir: 0 },
+    { l: 'Value received', txt: true },
+    { l: 'Expected return over ticket', k: 'exp', f: v => fmt.x(v), dir: 1 },
+    { l: 'Median return', k: 'median', f: v => fmt.x(v), dir: 1 },
+    { l: 'p5 return', k: 'p5', f: v => fmt.x(v), dir: 1 },
+    { l: 'p95 return', k: 'p95', f: v => fmt.x(v), dir: 1 },
+    { l: 'At or above ticket', k: 'ge1', f: v => fmt.pct(v), dir: 1 },
+    { l: 'Below half the ticket', k: 'ltHalf', f: v => fmt.pct(v), dir: -1 },
+    { l: '2x or more', k: 'ge2', f: v => fmt.pct(v, 2), dir: 1 },
+    { l: '10x or more', k: 'ge10', f: v => fmt.pct(v, 2), dir: 1 },
+    { l: 'House take, backing at face', k: 'house', f: v => fmt.pct(v), dir: -1 },
+  ];
+  let h = '<tr><th>Per ticket</th><th class="f">FWA V2<br>board</th>' + TBL.map(d => '<th class="s">Shapes<br>' + d + ' days</th>').join('') + '</tr>';
+  for (const d of defs) {
+    if (d.txt) {
+      h += '<tr><td>' + d.l + '</td><td class="txt">Backing at ' + P.fwaCashoutPct + '% ETH settlement</td>' + TBL.map(() => '<td class="txt">Backing redeemed at ' + P.shapesRedeemPct + '%</td>').join('') + '</tr>';
+      continue;
+    }
+    const fv = FW[d.k], vals = cols.map(c => c[d.k]);
+    const better = (a, b) => d.dir !== 0 && (d.dir > 0 ? a > b * 1.0005 + 1e-12 : a < b * 0.9995 - 1e-12);
+    const fwinAll = vals.every(v => better(fv, v));
+    h += '<tr><td>' + d.l + '</td><td class="' + (fwinAll ? 'win' : '') + '">' + d.f(fv) + '</td>' +
+      vals.map(v => '<td class="' + (better(v, fv) ? 'win' : '') + '">' + d.f(v) + '</td>').join('') + '</tr>';
+  }
+  h += '<tr><td>Tickets served</td><td class="txt">1 ticket, board snapshot</td>' + TBL.map(d => '<td>' + fmt.n0(R.snaps[d].tickets) + '</td>').join('') + '</tr>';
+  $('cmp').innerHTML = h;
+  $('cmpnote').innerHTML = '<b>Shaded cells are better for the player.</b> Shapes figures are the expected distribution of one ticket over all tickets up to the column\'s day, drawn from the simulated board at each ticket, so p5 and p95 are exact expectations over the draw. FWA V2 figures come from the board at block 26,088,128 (' + fmt.n0(FW.listings) + ' listings, ' + fmt.eth(FW.backing, 2) + ' ETH backing, ticket ' + fmt.eth(FW.ticket, 5) + ' ETH). That board is a snapshot, so changing tickets per day leaves the FWA V2 column as it is. House take is the share of the ticket that stays with the pool, the operator and FWA, and for FWA V2 it is the 5 percent edge.';
+}
+function lineHtmlLegend(items) { return items.map(i => '<span><i style="background:' + i.c + (i.dash ? ';background:repeating-linear-gradient(90deg,' + i.c + ' 0 4px,transparent 4px 7px)' : '') + '"></i>' + i.n + '</span>').join(''); }
+function renderDeps() {
+  const s = R.snaps[horizon];
+  const be = s.breakEvenDay >= 0 ? 'Day ' + s.breakEvenDay : 'Not reached';
+  const first = (d, n) => n ? 'first at day ' + d.toFixed(1) : '0 hits in this run';
+  const mintAll = s.mintReplace + s.mintGrail + s.mintOpening;
+  const M = [
+    ['NAV per share, start', fmt.eth(R.navStart, 4), 'after the opening board mints'],
+    ['NAV per share, day ' + horizon, fmt.eth(s.navPerShare, 4), fmt.sgn(s.annualised * 100, 0) + ' a year, compounded' + (horizon < 30 ? ' (extrapolated)' : '')],
+    ['Cohort break-even', fmt.eth(R.cohortBreakEven, 4), fmt.eth(R.cohortEth, 0) + ' ETH in, ' + fmt.eth(R.cohortShares, 2) + ' shares out'],
+    ['Break-even day', be, 'NAV per share reaches break-even'],
+    ['Opening cohort value', fmt.eth(s.cohortValue, 2) + ' ETH', 'against ' + fmt.eth(R.cohortEth, 0) + ' ETH deposited'],
+    ['Premium to depositors', fmt.eth(s.premium, 2) + ' ETH', 'stays in ordinary NAV'],
+    ['Minor GRAIL hits', String(s.minorHits), first(s.minorFirst, s.minorHits)],
+    ['Major GRAIL hits', String(s.majorHits), first(s.majorFirst, s.majorHits)],
+    ['Operator mint fees', fmt.eth(mintAll, 2) + ' ETH', fmt.eth(s.mintReplace, 2) + ' replacements, ' + fmt.eth(s.mintGrail + s.mintOpening, 2) + ' GRAIL and opening; ' + fmt.eth(s.mintSaved, 2) + ' saved by held Shapes'],
+    ['FWA protocol fees', fmt.eth(s.protocol, 2) + ' ETH', 'half of the edge on every ticket'],
+    ['Maintenance collected', fmt.eth(s.maintIn, 2) + ' ETH', fmt.eth(s.refunds, 2) + ' ETH paid out as keeper refunds'],
+    ['Pool NAV', fmt.eth(s.nav, 1) + ' ETH', fmt.pct(s.nav ? s.cash / (s.nav + 0) : 0, 0) + ' of assets are cash; ' + s.depositors + ' depositors'],
+  ];
+  $('metrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
+  const xs = R.series.navPerShare.map((_, i) => i);
+  const be1 = xs.map(() => R.cohortBreakEven);
+  $('navlegend').innerHTML = lineHtmlLegend([{ n: 'NAV per share', c: 'var(--shapes)' }, { n: 'Cohort break-even', c: 'var(--c5)', dash: 1 }, { n: 'Entry price per share', c: 'var(--c7)', dash: 1 }, { n: 'Major GRAIL hit', c: 'var(--c6)' }]);
+  const ticks = R.events.filter(e => e.track === 1).map(e => ({ x: e.t, c: 'var(--c6)' }));
+  drawChart('navchart', { xs, xmax: 365, series: [
+    { n: 'NAV per share', ys: R.series.navPerShare, c: 'var(--shapes)', w: 2 },
+    { n: 'Cohort break-even', ys: be1, c: 'var(--c5)', dash: '5 4' },
+    { n: 'Entry price per share', ys: R.series.entryPrice, c: 'var(--c7)', dash: '2 4' }],
+    ticks, vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => v.toFixed(2), tipx: v => 'Day ' + v });
+  $('depnote').innerHTML = 'NAV per share is ordinary NAV (cash plus Shape backing) over shares. GRAIL buckets and GRAIL backing sit outside it. The entry price is NAV divided by one minus the entry contribution, which is what a new deposit pays per share. The cohort break-even is the 50 ETH the opening depositors put in divided by the shares they received after their entry contributions. The vertical line marks the chosen horizon.';
+  const tpd = P.ticketsPerDay, fwaPerDay = tpd * FW.ownerMargin;
+  const avgNav = s.avgNav, shAnn = avgNav > 0 ? s.premium / avgNav * 365 / horizon : 0;
+  $('owner').innerHTML =
+    '<div class="card"><h3 style="color:var(--shapes)">Draw Shapes depositors, day ' + horizon + '</h3><table class="kv">' +
+    kv('Premium per day', fmt.eth(s.premium / horizon, 3) + ' ETH') + kv('Average NAV', fmt.eth(avgNav, 1) + ' ETH') + kv('Premium on average NAV, simple a year', fmt.pct(shAnn, 0)) +
+    kv('Entry contribution paid in', fmt.eth(s.entryContribution, 1) + ' ETH') + '</table></div>' +
+    '<div class="card"><h3 style="color:var(--fwa)">FWA V2 main pool owner, reference</h3><table class="kv">' +
+    kv('Margin per ticket', fmt.eth(FW.ownerMargin, 5) + ' ETH (' + fmt.pct(FW.ownerShare, 2) + ')') +
+    kv('Margin per day at ' + fmt.n0(tpd) + ' tickets', fmt.eth(fwaPerDay, 3) + ' ETH') +
+    kv('Margin on the ' + fmt.eth(FW.backing, 0) + ' ETH board, simple a year', fmt.pct(fwaPerDay * 365 / FW.backing, 0)) +
+    kv('Margin per day at ' + fmt.n0(FWA_OBS[0]) + ' tickets', fmt.eth(FWA_OBS[0] * FW.ownerMargin, 3) + ' ETH') + '</table>' +
+    '<p class="note" style="margin-top:8px">Owner proceeds minus the delivered item at face value, per ticket. The board is a fixed snapshot, so the rate is simple and the board stays at its snapshot size.</p></div>';
+}
+function kv(a, b) { return '<tr><td>' + a + '</td><td class="n">' + b + '</td></tr>'; }
+
+const COL = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c6)', 'var(--c7)', 'var(--c9)', 'var(--c8)'];
+function renderKeeper() {
+  const s = R.snaps[horizon], ser = R.series;
+  const perSettle = s.settleCalls ? s.settleListed / s.settleCalls : 0;
+  const miss = isNaN(s.missSec) ? 'no 0.1 Shape row captured' : fmt.n0(s.missSec / 60) + ' minutes';
+  const M = [
+    ['Settle calls', fmt.n0(s.settleCalls), fmt.n0(s.settleListed) + ' items, ' + perSettle.toFixed(1) + ' per call; Batch ' + fmt.n0(s.setBatch) + ', Age ' + fmt.n0(s.setAge) + ', Thin ' + fmt.n0(s.setThin)],
+    ['Rotate calls', fmt.n0(s.rotates), 'GrailStep ' + fmt.n0(s.rotGrail) + ', Decay ' + fmt.n0(s.rotDecay) + '; each one changed inventory'],
+    ['Surprises', fmt.n0(s.surprises), fmt.pct(s.tickets ? s.surprises / s.tickets : 0, 2) + ' of replacements upgraded'],
+    ['Mint fees saved', fmt.eth(s.mintSaved, 2) + ' ETH', fmt.n0(s.payIns) + ' tickets paid with a Shape, ' + fmt.n0(s.heldUses) + ' held Shapes reused'],
+    ['A captured 0.1 row stays missing', miss, 'until a 0.1 Shape is listed again, ' + fmt.n0(s.missN) + ' matched'],
+    ['Listed ordinary items', s.avgListed.toFixed(1), 'mean at keeper ticks; lowest ' + fmt.n0(s.minListed)],
+    ['Keeper cost', fmt.eth(s.keeperCost, 2) + ' ETH', 'settle refunds ' + fmt.eth(s.settleRefund, 2) + ', rotate refunds ' + fmt.eth(s.rotRefund, 2) + ' ETH, at ' + P.gasPriceGwei + ' gwei'],
+    ['Cost the bucket could not cover', fmt.pct(s.shortShare, 2), fmt.eth(s.shortfall, 3) + ' ETH unpaid'],
+    ['Maintenance balance', fmt.eth(s.maintBucket, 2) + ' ETH', 'collected ' + fmt.eth(s.maintIn, 2) + ' ETH, paid out ' + fmt.eth(s.refunds, 2) + ' ETH'],
+  ];
+  if (P.cooldownSeconds > 0) M.push(['Purchase pause', fmt.n0(s.pauseSeconds / 3600) + ' hours', 'tickets waited ' + fmt.n0(s.waitSeconds / 3600) + ' ticket-hours']);
+  $('kmetrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
+  const xs = ser.listed.map((_, i) => i);
+  $('blegend').innerHTML = R.labels.map((n, i) => '<span><i class="sq" style="background:' + COL[i % COL.length] + '"></i>' + n + '</span>').join('');
+  drawStack('bchart', { xs, xmax: 365, layers: R.labels.map((n, i) => ({ n, ys: ser.board[i], c: COL[i % COL.length] })), xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: v => 'Day ' + v });
+  const mean = a => { let t = 0; for (let d = 1; d <= horizon; d++) t += a[d]; return t / horizon; };
+  let h = '<tr><th>Row</th><th>Target depth</th><th>Mean listed, ' + horizon + ' days</th><th>Mean over target</th></tr>';
+  R.labels.forEach((n, i) => { const m = mean(ser.board[i]); h += '<tr><td>' + n + '</td><td>' + R.targets[i] + '</td><td>' + m.toFixed(2) + '</td><td>' + fmt.sgn((m / R.targets[i] - 1) * 100, 0) + '</td></tr>'; });
+  $('btbl').innerHTML = h;
+  $('bnote').innerHTML = 'Each captured item joins the replacement queue and is listed when the queue reaches ' + P.batchMin + ' entries, the oldest entry is ' + fmt.n0(P.batchMaxAge) + ' seconds old, or listed ordinary items fall below ' + (CONCURRENCY + THIN_MARGIN) + '. Between listings the board is thinner by the queue length. Rows above target come from surprise upgrades, which add single Shapes of 5 times the drawn backing or more, while the band cap and the deficit weight pull a full row back. Means come from the keeper ticks every 300 seconds.';
+  const mx = xs;
+  $('mlegend').innerHTML = lineHtmlLegend([{ n: 'Maintenance balance', c: 'var(--shapes)' }, { n: 'Cumulative keeper cost', c: 'var(--c5)', dash: 1 }, { n: 'Cumulative refunds paid', c: 'var(--c3)' }, { n: 'Cumulative cost not covered', c: 'var(--c6)' }]);
+  drawChart('mchart', { xs: mx, xmax: 365, series: [
+    { n: 'Maintenance balance', ys: ser.maintBal, c: 'var(--shapes)', w: 2 },
+    { n: 'Cumulative keeper cost', ys: ser.costCum, c: 'var(--c5)', dash: '5 4' },
+    { n: 'Cumulative refunds paid', ys: ser.refundCum, c: 'var(--c3)' },
+    { n: 'Cumulative cost not covered', ys: ser.shortCum, c: 'var(--c6)' }],
+    vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => v.toFixed(1), tipx: v => 'Day ' + v });
+  $('mnote').innerHTML = 'The maintenance bucket takes ' + P.maintBps + ' of ' + (P.premiumBps + P.maintBps + P.feedBps) + ' parts of the margin left after the mint line. A settle that lists items and a rotate that changes inventory each draw a refund of (' + fmt.n0(GAS_BASE / 1000) + 'k + ' + fmt.n0(GAS_ITEM / 1000) + 'k per listed item + ' + fmt.n0(GAS_OVERHEAD / 1000) + 'k) gas at ' + P.gasPriceGwei + ' gwei plus ' + P.tipWei / 1e18 + ' ETH from the bucket, capped at its balance. Cost above the balance goes unpaid and is the share shown as not covered. Rotate refunds follow the same formula with no listed items.';
+  const on = P.decayInSettle ? R : RA, off = P.decayInSettle ? RA : R, a = off.snaps[horizon], b = on.snaps[horizon];
+  const dr = (l, f, fm, better) => { const x = f(a), y = f(b), d = y - x; return '<tr><td>' + l + '</td><td>' + fm(x) + '</td><td>' + fm(y) + '</td><td class="' + (better && d < -1e-9 ? 'win' : '') + '">' + (d > 0 ? '+' : d < 0 ? '-' : '') + fm(Math.abs(d)) + '</td></tr>'; };
+  const sg = v => v >= 1000 ? fmt.n0(v) : v >= 10 ? v.toFixed(1) : v.toFixed(4);
+  $('dtbl').innerHTML = '<tr><th>Day ' + horizon + '</th><th>Decay in rotate</th><th>Decay inside settle</th><th>Change</th></tr>' +
+    dr('Rotate calls', x => x.rotates, fmt.n0, true) + dr('Settle calls', x => x.settleCalls, fmt.n0, false) + dr('Keeper cost (ETH)', x => x.keeperCost, sg, true) +
+    dr('Refunds paid (ETH)', x => x.refunds, sg, true) + dr('Cost not covered (ETH)', x => x.shortfall, sg, true) + dr('Maintenance balance (ETH)', x => x.maintBucket, sg, false) +
+    dr('NAV per share', x => x.navPerShare, sg, false) + dr('Minor GRAIL hits', x => x.minorHits, fmt.n0, false);
+  $('dnote').innerHTML = 'Both columns run the current parameters on the same seed, with the toggle off and on. Inside settle, the decay reprice happens in the batch of a settle call that lists items, so rotate calls remain for GRAIL growth. The probability cap lift moves into settle with the reprice. A reprice costs no gas in this model. The change column shows the saving in keeper cost, which depositors keep as maintenance balance.';
+}
+function renderRevenue() {
+  const s = R.snaps[horizon], p = s.paid || 1;
+  const redeem = P.shapesRedeemPct / 100;
+  const sh = [
+    ['Backing to the player', s.ordinaryDelivered / p, 'var(--c1)'],
+    ['GRAIL track receipts', s.grailPaidTicket / p, 'var(--c9)'],
+    ['Mint fees (operator)', s.mintLineAccrued / p, 'var(--c2)'],
+    ['Premium (depositors)', s.premium / p, 'var(--c3)'],
+    ['Maintenance', s.maintIn / p, 'var(--c4)'],
+    ['GRAIL feed', s.feedIn / p, 'var(--c5)'],
+    ['FWA protocol', s.protocol / p, 'var(--c6)'],
+  ];
+  const carry = s.carry / p; if (Math.abs(carry) > 0.0005) sh.push(['Margin carried', carry, 'var(--c8)']);
+  const co = P.fwaCashoutPct / 100;
+  const fw = [
+    ['Item value to the player at ' + P.fwaCashoutPct + '%', co * FW.faceShare, 'var(--c1)'],
+    ['Cash-out discount', (1 - co) * FW.faceShare, 'var(--c8)'],
+    ['Pool owner margin', FW.ownerShare, 'var(--c3)'],
+    ['FWA protocol', FW.protocolShare, 'var(--c6)'],
+  ];
+  const bar = (name, arr, sub) => {
+    const tot = arr.reduce((a, x) => a + x[1], 0);
+    return '<div><div class="sname"><b>' + name + '</b> ' + sub + '</div><div class="sbar">' + arr.map(x => '<div style="width:' + Math.max(0, x[1] / tot * 100) + '%;background:' + x[2] + '">' + (x[1] > 0.06 ? (x[1] * 100).toFixed(0) + '%' : '') + '</div>').join('') + '</div>' +
+      '<table class="kv">' + arr.map(x => '<tr><td><i class="sw" style="background:' + x[2] + '"></i>' + x[0] + '</td><td class="n">' + x[1].toFixed(4) + ' ETH</td><td class="n">' + (x[1] * 100).toFixed(2) + '%</td></tr>').join('') + '</table></div>';
+  };
+  $('split').innerHTML = '<div class="two">' + bar('Draw Shapes', sh, 'day ' + horizon + ', all tickets served') + bar('FWA V2 main pool', fw, 'board snapshot') + '</div>';
+  const prizes = s.grailDelivered / p;
+  $('revnote').innerHTML = 'Each bar sums to the ticket. Shapes receipts are settled proceeds after the FWA protocol share. GRAIL prizes of <b>' + prizes.toFixed(4) + ' ETH</b> per ETH of tickets are paid from the GRAIL buckets, which the feed, the entry contributions and the receipts from GRAIL tickets fund. Ordinary backing to the player is ' + (s.ordinaryDelivered / p * 100).toFixed(1) + '% and GRAIL prizes add ' + (prizes * 100).toFixed(1) + '%, at ' + P.shapesRedeemPct + '% redeem value. The cash-out discount of FWA V2 goes to a recipient this model leaves open.';
+}
+
+function exampleOptions() {
+  const o = [];
+  P.rows.forEach((r, i) => { if (r.share > 0) o.push({ v: 'r' + i, l: (r.rungs > 1 ? r.backing + ' ETH pack of ' + r.rungs : r.backing + ' ETH Shape') }); });
+  o.push({ v: 't0', l: 'Minor GRAIL at target' }, { v: 't1', l: 'Major GRAIL at target' });
+  return o;
+}
+function renderExample() {
+  const sel = $('exsel'), keep = sel.value;
+  sel.innerHTML = exampleOptions().map(o => '<option value="' + o.v + '">' + o.l + '</option>').join('');
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep; else sel.selectedIndex = Math.min(0, sel.options.length - 1);
+  const s = R.snaps[horizon], tk = s.ticketAvg, edge = P.edgePct / 100;
+  const hm = tk / (1 + edge), proceeds = hm * (1 + edge / 2), prot = tk - proceeds;
+  const redeem = P.shapesRedeemPct / 100, fees = (P.premiumBps + P.maintBps + P.feedBps) / 1e4;
+  let card1;
+  const v = sel.value || 'r0';
+  const row = (a, b, c) => '<tr><td>' + a + '</td><td class="n">' + b + '</td><td class="n">' + c + '</td></tr>';
+  const pc = x => (x / tk * 100).toFixed(1) + '%';
+  if (v[0] === 'r') {
+    const r = P.rows[+v.slice(1)], mf = P.mintFee * r.rungs, margin = proceeds - r.backing;
+    const rep = Math.min(Math.max(margin, 0), mf), rest = Math.max(margin - rep, 0);
+    const tot = P.premiumBps + P.maintBps + P.feedBps;
+    const prem = rest * P.premiumBps / tot, mnt = rest * P.maintBps / tot, fd = rest * P.feedBps / tot;
+    card1 = '<table class="kv">' + row('Ticket paid', fmt.eth(tk, 5), '100%') + row('FWA protocol', fmt.eth(prot, 5), pc(prot)) +
+      row('Backing to the player', fmt.eth(r.backing, 5), pc(r.backing)) + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(r.backing * redeem, 5), (r.backing * redeem / tk).toFixed(3) + 'x') +
+      row('Mint fee repaid to operator', fmt.eth(rep, 5), pc(rep)) + row('Premium to depositors', fmt.eth(prem, 5), pc(prem)) + row('Maintenance', fmt.eth(mnt, 5), pc(mnt)) +
+      row('GRAIL feed, minor', fmt.eth(fd * P.minorShareBps / 1e4, 5), pc(fd * P.minorShareBps / 1e4)) + row('GRAIL feed, major', fmt.eth(fd * (1 - P.minorShareBps / 1e4), 5), pc(fd * (1 - P.minorShareBps / 1e4))) +
+      (margin < mf ? row('Mint fee carried as owed', fmt.eth(mf - rep, 5), pc(mf - rep)) : '') + '</table>';
+  } else {
+    const t = P[v === 't0' ? 'minor' : 'major'];
+    card1 = '<table class="kv">' + row('Ticket paid', fmt.eth(tk, 5), '100%') + row('FWA protocol', fmt.eth(prot, 5), pc(prot)) +
+      row('Backing to the player', fmt.eth(t.target, 3), (t.target / tk).toFixed(1) + 'x') + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(t.target * redeem, 3), (t.target * redeem / tk).toFixed(1) + 'x') +
+      row('Receipt to the track bucket', fmt.eth(proceeds, 5), pc(proceeds)) + '</table>';
+  }
+  const med = FW.median * FW.ticket / (P.fwaCashoutPct / 100);
+  const fwCard = '<table class="kv">' + row('Ticket paid', fmt.eth(FW.ticket, 5), '100%') + row('FWA protocol', fmt.eth(FW.ticket - FW.hm * (1 + FWA_EDGE / 200), 5), (FW.protocolShare * 100).toFixed(1) + '%') +
+    row('Item backing (median draw)', fmt.eth(med, 5), (med / FW.ticket * 100).toFixed(1) + '%') + row('Value received at ' + P.fwaCashoutPct + '%', fmt.eth(med * P.fwaCashoutPct / 100, 5), FW.median.toFixed(3) + 'x') +
+    row('Cash-out discount', fmt.eth(med * (1 - P.fwaCashoutPct / 100), 5), (med * (1 - P.fwaCashoutPct / 100) / FW.ticket * 100).toFixed(1) + '%') +
+    row('Owner proceeds', fmt.eth(FW.hm * (1 + FWA_EDGE / 200), 5), ((FW.hm * (1 + FWA_EDGE / 200)) / FW.ticket * 100).toFixed(1) + '%') + '</table>';
+  $('excards').innerHTML = '<div class="card"><h3 style="color:var(--shapes)">Draw Shapes, ticket ' + fmt.eth(tk, 5) + ' ETH</h3>' + card1 + '</div>' +
+    '<div class="card"><h3 style="color:var(--fwa)">FWA V2 main pool, ticket ' + fmt.eth(FW.ticket, 5) + ' ETH</h3>' + fwCard + '</div>';
+  $('exnote').textContent = 'The Draw Shapes ticket is the average over the first ' + horizon + ' days. Margin is proceeds minus backing; the mint fee is repaid first and the rest divides 200:100:400 between premium, maintenance and feed in the default split. A single ticket can leave a shortfall that later margin repays.';
+}
+$('exsel').addEventListener('change', () => { if (R) renderExample(); });
+
+function basisText() {
+  $('basisnote').innerHTML =
+    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split, entry contribution curve and share minting at NAV, deposits at the NAV cap, withdrawals from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 10 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL growth. The decay reprice (a decayed price at least 1 percent below the list price) and the probability cap lift ride on a settle call that lists items; with the toggle off they move to rotate. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL growth by step, decay by pull, capture and reset follow SPEC 11.</p>' +
+    '<p style="margin-top:8px"><b>Left out of the model.</b> VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs and refunds, claim liquidation of listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing (each ticket is priced alone), migration and exit, gas for GRAIL reprices and growth inside a refund, and the compose step when a GRAIL pack reaches a native rung. Captures are booked at the moment of the ticket.</p>' +
+    '<p style="margin-top:8px"><b>Basis of every figure.</b> Returns are backing delivered divided by the ticket. Draw Shapes redeems backing at the value set under Value received basis, and FWA V2 settles delivered items at its cash-out value. Gas for players, VRF, FWA token and epoch rewards and resale value are excluded on both sides. FWA V2 is the board snapshot at block 26,088,128 with its observed ticket of 1.05 times the harmonic mean backing. FWA V2 observed 2,848 tickets a day (week to 2026-09-30) and 3,646 (week before). A ticket paid with a Shape uses a Shape no larger than the ticket, drawn from the capture value distribution, and leaves NAV unchanged.</p>';
+}
+
+// ---------- charts
+function niceTicks(lo, hi, n) {
+  const span = hi - lo || 1, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
+  const st = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag, out = [];
+  for (let v = Math.ceil(lo / st) * st; v <= hi + 1e-9; v += st) out.push(+v.toFixed(10));
+  return out;
+}
+function drawChart(hostId, o) {
+  chartRefs[hostId] = o;
+  const host = $(hostId); const W = Math.max(280, host.clientWidth || 320), H = 250, m = { l: 40, r: 10, t: 10, b: 26 };
+  let lo = Infinity, hi = -Infinity;
+  for (const s of o.series) for (const y of s.ys) { if (y < lo) lo = y; if (y > hi) hi = y; }
+  const pad = (hi - lo) * 0.06 || 0.05; lo = Math.max(0, lo - pad); hi += pad;
+  const xmax = o.xmax, X = x => m.l + x / xmax * (W - m.l - m.r), Y = y => H - m.b - (y - lo) / (hi - lo) * (H - m.t - m.b);
+  let g = '';
+  for (const t of niceTicks(lo, hi, 5)) g += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(t) + '" y2="' + Y(t) + '" stroke="var(--line)"/><text x="' + (m.l - 5) + '" y="' + (Y(t) + 3.5) + '" text-anchor="end">' + o.yfmt(t) + '</text>';
+  for (const t of niceTicks(0, xmax, 6)) g += '<text x="' + X(t) + '" y="' + (H - 8) + '" text-anchor="middle">' + o.xfmt(t) + '</text>';
+  if (o.vline !== undefined) g += '<line x1="' + X(o.vline) + '" x2="' + X(o.vline) + '" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink3)" stroke-dasharray="3 3"/>';
+  for (const t of o.ticks || []) g += '<path d="M' + X(t.x) + ' ' + (H - m.b) + 'l-3.5 -7h7z" fill="' + t.c + '"/>';
+  for (const s of o.series) {
+    let d = ''; s.ys.forEach((y, i) => { d += (i ? 'L' : 'M') + X(o.xs[i]).toFixed(1) + ' ' + Y(y).toFixed(1); });
+    g += '<path d="' + d + '" fill="none" stroke="' + s.c + '" stroke-width="' + (s.w || 1.5) + '"' + (s.dash ? ' stroke-dasharray="' + s.dash + '"' : '') + ' stroke-linejoin="round"/>';
+  }
+  g += '<line id="' + hostId + '_x" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink2)" style="display:none"/>';
+  host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Line chart">' + g + '</svg><div class="tip" id="' + hostId + '_t"></div>';
+  const svg = host.firstChild, tip = $(hostId + '_t'), cur = $(hostId + '_x');
+  const move = e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const x = Math.min(xmax, Math.max(0, (px - m.l) / (W - m.l - m.r) * xmax));
+    let idx = 0, best = Infinity; for (let i = 0; i < o.xs.length; i++) { const dd = Math.abs(o.xs[i] - x); if (dd < best) { best = dd; idx = i; } }
+    cur.setAttribute('x1', X(o.xs[idx])); cur.setAttribute('x2', X(o.xs[idx])); cur.style.display = '';
+    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.series.map(s => '<span style="color:' + s.c + '">' + s.n + '</span> <b>' + s.ys[idx].toFixed(4) + '</b>').join('<br>');
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth, left = X(o.xs[idx]) / W * r.width + 10;
+    tip.style.left = Math.min(left, r.width - tw - 4) + 'px'; tip.style.top = '8px';
+  };
+  svg.addEventListener('pointermove', move); svg.addEventListener('pointerdown', move);
+  svg.addEventListener('pointerleave', () => { tip.style.display = 'none'; cur.style.display = 'none'; });
+}
+function drawStack(hostId, o) {
+  chartRefs[hostId] = Object.assign({ stack: true }, o);
+  const host = $(hostId); const W = Math.max(280, host.clientWidth || 320), H = 250, m = { l: 40, r: 10, t: 10, b: 26 };
+  const n = o.xs.length, tot = o.xs.map((_, i) => o.layers.reduce((a, l) => a + l.ys[i], 0));
+  const hi = (Math.max(...tot) || 1) * 1.05;
+  const X = x => m.l + x / o.xmax * (W - m.l - m.r), Y = y => H - m.b - y / hi * (H - m.t - m.b);
+  let g = '';
+  for (const t of niceTicks(0, hi, 5)) g += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(t) + '" y2="' + Y(t) + '" stroke="var(--line)"/><text x="' + (m.l - 5) + '" y="' + (Y(t) + 3.5) + '" text-anchor="end">' + o.yfmt(t) + '</text>';
+  for (const t of niceTicks(0, o.xmax, 6)) g += '<text x="' + X(t) + '" y="' + (H - 8) + '" text-anchor="middle">' + o.xfmt(t) + '</text>';
+  const cum = new Array(n).fill(0);
+  for (const l of o.layers) {
+    let top = '', bot = '';
+    for (let i = 0; i < n; i++) top += (i ? 'L' : 'M') + X(o.xs[i]).toFixed(1) + ' ' + Y(cum[i] + l.ys[i]).toFixed(1);
+    for (let i = n - 1; i >= 0; i--) bot += 'L' + X(o.xs[i]).toFixed(1) + ' ' + Y(cum[i]).toFixed(1);
+    g += '<path d="' + top + bot + 'Z" fill="' + l.c + '" fill-opacity=".85" stroke="var(--surface)" stroke-width=".6"/>';
+    for (let i = 0; i < n; i++) cum[i] += l.ys[i];
+  }
+  g += '<line id="' + hostId + '_x" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink2)" style="display:none"/>';
+  host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Stacked area chart">' + g + '</svg><div class="tip" id="' + hostId + '_t"></div>';
+  const svg = host.firstChild, tip = $(hostId + '_t'), cur = $(hostId + '_x');
+  const move = e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const x = Math.min(o.xmax, Math.max(0, (px - m.l) / (W - m.l - m.r) * o.xmax));
+    let idx = 0, best = Infinity; for (let i = 0; i < n; i++) { const dd = Math.abs(o.xs[i] - x); if (dd < best) { best = dd; idx = i; } }
+    cur.setAttribute('x1', X(o.xs[idx])); cur.setAttribute('x2', X(o.xs[idx])); cur.style.display = '';
+    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.layers.map(l => '<span style="color:' + l.c + '">' + l.n + '</span> <b>' + l.ys[idx].toFixed(1) + '</b>').join('<br>') + '<br>Total <b>' + tot[idx].toFixed(1) + '</b>';
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth, left = X(o.xs[idx]) / W * r.width + 10;
+    tip.style.left = Math.min(left, r.width - tw - 4) + 'px'; tip.style.top = '8px';
+  };
+  svg.addEventListener('pointermove', move); svg.addEventListener('pointerdown', move);
+  svg.addEventListener('pointerleave', () => { tip.style.display = 'none'; cur.style.display = 'none'; });
+}
+let rsz = null;
+window.addEventListener('resize', () => { clearTimeout(rsz); rsz = setTimeout(() => { for (const id in chartRefs) (chartRefs[id].stack ? drawStack : drawChart)(id, chartRefs[id]); }, 120); });
+
+// ---------- sensitivity
+function updateSensNote() { if (sensStale && $('senstbl').rows.length) $('sensstat').textContent = 'Inputs changed. Run again to refresh.'; }
+let sensRun = 0;
+function runSens() {
+  const my = ++sensRun, H = horizon, seeds = [seed, seed + 1];
+  const Pn = cloneParams(P); Pn.openingDepositors = Math.max(1, Math.round(Pn.openingDepositors));
+  const base = avgMetrics(Pn, H, seeds);
+  const out = []; let i = 0;
+  $('sensprog').hidden = false; $('runsens').disabled = true;
+  const t0 = performance.now();
+  const step = () => {
+    if (my !== sensRun) return;
+    if (i >= SENS.length) {
+      $('sensprog').hidden = true; $('runsens').disabled = false; sensStale = false;
+      $('sensstat').textContent = SENS.length + ' parameters at day ' + H + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s';
+      showSens(out, base, H); return;
+    }
+    const s = SENS[i++], res = [];
+    for (const v of [s.lo, s.hi]) { const Q = cloneParams(Pn); s.set(Q, v); res.push(avgMetrics(Q, H, seeds)); }
+    out.push({ s, lo: res[0], hi: res[1], cur: s.get(Pn) });
+    $('sensprog').firstChild.style.width = (i / SENS.length * 100) + '%';
+    setTimeout(step, 0);
+  };
+  setTimeout(step, 0);
+}
+function showSens(out, base, H) {
+  const rel = (a, b) => b ? (a - b) / Math.abs(b) * 100 : 0;
+  const rows = out.map(o => {
+    const e = [rel(o.lo.exp, base.exp), rel(o.hi.exp, base.exp)], m = [rel(o.lo.median, base.median), rel(o.hi.median, base.median)], n = [rel(o.lo.nps, base.nps), rel(o.hi.nps, base.nps)];
+    const pe = Math.max(...e.map(Math.abs), ...m.map(Math.abs)), de = Math.max(...n.map(Math.abs));
+    return { o, e, m, n, pe, de };
+  }).sort((a, b) => Math.max(b.pe, b.de) - Math.max(a.pe, a.de));
+  const sg = v => '<span class="' + (v > 0.05 ? 'pos' : v < -0.05 ? 'neg' : '') + '">' + fmt.sgn(v, 1) + '</span>';
+  const T = 2;
+  let h = '<tr><th>Parameter<span class="d">low / high value</span></th><th>Players: expected return<span class="d">low / high</span></th><th>Players: median<span class="d">low / high</span></th><th>Depositors: NAV per share<span class="d">low / high</span></th><th>Moves</th></tr>';
+  for (const r of rows) {
+    const tag = r.pe >= T && r.de >= T ? '<span class="tag b">Both</span>' : r.pe >= T ? '<span class="tag p">Players</span>' : r.de >= T ? '<span class="tag d">Depositors</span>' : '<span class="tag">Under ' + T + '%</span>';
+    h += '<tr><td>' + r.o.s.label + '<span class="d">' + r.o.s.lo + ' / ' + r.o.s.hi + '</span></td><td class="n">' + sg(r.e[0]) + ' / ' + sg(r.e[1]) + '</td><td class="n">' + sg(r.m[0]) + ' / ' + sg(r.m[1]) + '</td><td class="n">' + sg(r.n[0]) + ' / ' + sg(r.n[1]) + '</td><td>' + tag + '</td></tr>';
+  }
+  $('senstbl').innerHTML = h;
+}
+
+// ---------- validation against the fork run
+const FORK_PRE = { tickets: 3413, ticket: 0.02085, exp: 0.838, median: 0.485, p5: 0.472, p95: 1.456, ge1: 0.153, lt: 0.621, navStart: 0.996, navEnd: 1.0345, minorHits: 2, majorHits: 0, first: 80, mint: 4.94, delivered: 59.67, paid: 71.18 };
+// Fork run, decision 9: report.html and hourly.csv of evidence/play/test_play500PerDay. Mint fees are derived from the hourly NAV balance
+// (deposits, withdrawals, premium and the mint line owed on 3,409 captures), because the run records no mint events.
+const FORK9 = { tickets: 3413, ticket: 0.02233, exp: 0.859, median: 0.462, p5: 0.432, p95: 2.191, ge1: 0.190, lt: 0.568, navStart: 0.9960, navEnd: 1.0340, minorHits: 4, majorHits: 0, first: 18,
+  mint: 5.15, delivered: 65.47, paid: 76.21, settleCalls: 505, settleListed: 3409, settleRefund: 0.2525, rotates: 609, rotDecay: 568, avgListed: 98.7 };
+// Inputs of the fork run that differ from the lab defaults: batch size 5, tip 0.0005 ETH, decay in rotate, minor list price 7500 bps, decay 0.001 ETH per pull, any decayed price reprices, no tickets paid with Shapes, basefee 0.
+function forkInputs() { const Q = defaultParams(); Q.minor.decay = 0.001; Q.major.decay = 0.001; Q.minor.listBps = 7500; Q.repriceMinBps = 0; Q.decayInSettle = false; Q.batchMin = 5; Q.tipWei = 5e14; Q.payInShapesBps = 0; Q.gasPriceGwei = 0; return Q; }
+function validationRun(Pv, N) {
+  const acc = {}, add = (k, v) => { acc[k] = (acc[k] || 0) + v / N; };
+  let path = null, firstHrs = [], s1 = null;
+  for (let sd = 1; sd <= N; sd++) {
+    const r = simulate(Pv, sd, 7, [7], { hourly: true }), s = r.snaps[7];
+    if (sd === 1) s1 = { r, s };
+    add('tickets', s.tickets); add('ticket', s.ticketAvg); add('exp', s.expReturn); add('median', s.median); add('p5', s.p5); add('p95', s.p95);
+    add('ge1', s.ge1); add('lt', s.ltHalf); add('navStart', r.navStart); add('navEnd', s.navPerShare); add('minorHits', s.minorHits); add('majorHits', s.majorHits);
+    add('mint', s.mintReplace); add('delivered', s.deliveredReal); add('paid', s.paid);
+    add('settleCalls', s.settleCalls); add('settleListed', s.settleListed); add('settleRefund', s.settleRefund); add('rotates', s.rotates); add('rotDecay', s.rotDecay);
+    add('avgListed', r.hourly.listed.reduce((a, b) => a + b, 0) / r.hourly.listed.length);
+    const ev = r.events.filter(e => e.track === 0); if (ev.length) firstHrs.push(ev[0].t * 24);
+    if (!path) path = r.hourly.nav.map(() => 0); r.hourly.nav.forEach((v, i) => path[i] += v / N);
+  }
+  acc.first = firstHrs.length ? firstHrs.reduce((a, b) => a + b, 0) / firstHrs.length : NaN;
+  return { acc, path, s1 };
+}
+function runValidation() {
+  const N = 20, V = validationRun(forkInputs(), N), L = validationRun(defaultParams(), N), acc = V.acc;
+  const rows = [
+    ['Tickets in 7 days', 'tickets', 'n0', 0, 'The fork drew 3,413 from a nominal 500 a day.'],
+    ['Average ticket (ETH)', 'ticket', 'e5', 1],
+    ['Expected return over ticket', 'exp', 'x', 1],
+    ['Median return', 'median', 'x', 0],
+    ['p5 return', 'p5', 'x', 0],
+    ['p95 return', 'p95', 'x', 0],
+    ['At or above ticket', 'ge1', 'p', 0],
+    ['Below half the ticket', 'lt', 'p', 0],
+    ['NAV per share, start', 'navStart', 'e4', 0],
+    ['NAV per share, day 7', 'navEnd', 'e4', 1],
+    ['Minor GRAIL hits', 'minorHits', 'd1', 0],
+    ['Major GRAIL hits', 'majorHits', 'd1', 0],
+    ['First minor hit, hour', 'first', 'd0', 0, 'Mean over seeds that hit.'],
+    ['Operator mint fees (ETH)', 'mint', 'e2', 1, 'Fork value derived from the hourly NAV balance.'],
+    ['Backing delivered (ETH)', 'delivered', 'e2', 0],
+    ['ETH paid by players', 'paid', 'e2', 0],
+    ['Settle calls', 'settleCalls', 'n0', 1],
+    ['Items listed by settle', 'settleListed', 'n0', 0],
+    ['Settle refunds (ETH)', 'settleRefund', 'e4', 0],
+    ['Rotate calls', 'rotates', 'n0', 0],
+    ['Rotate calls for Decay', 'rotDecay', 'n0', 0],
+    ['Listed items, hourly mean', 'avgListed', 'd1', 0, 'The model samples the hour end, just before the next keeper tick.'],
+  ];
+  const ff = (k, v) => v === undefined || v === null || isNaN(v) ? '' : k === 'n0' ? fmt.n0(v) : k === 'e5' ? v.toFixed(5) : k === 'e4' ? v.toFixed(4) : k === 'e2' ? v.toFixed(2) : k === 'x' ? v.toFixed(3) + 'x' : k === 'p' ? (v * 100).toFixed(1) + '%' : k === 'd1' ? v.toFixed(1) : v.toFixed(0);
+  let h = '<tr><th>Measure</th><th>Fork run,<br>pre-sampling design</th><th>Fork run,<br>decision 9</th><th>Model, fork inputs,<br>mean of 20</th><th>Difference<br>to decision 9</th><th>Within 5%</th><th>Model, lab defaults,<br>mean of 20</th></tr>';
+  let allOk = true;
+  for (const r of rows) {
+    const f9 = FORK9[r[1]], m = acc[r[1]], d = (m - f9) / (f9 || 1) * 100, gate = r[3] === 1, ok = Math.abs(d) <= 5;
+    if (gate && !ok) allOk = false;
+    h += '<tr><td>' + r[0] + (gate ? ' <span class="tag">gate</span>' : '') + '</td><td>' + ff(r[2], FORK_PRE[r[1]]) + '</td><td>' + ff(r[2], f9) + '</td><td>' + ff(r[2], m) + '</td><td>' + (f9 === 0 ? '' : fmt.sgn(d, 1)) +
+      '</td><td class="' + (gate ? (ok ? 'ok' : 'off') : '') + '">' + (gate ? (ok ? 'yes' : 'no') : '') + '</td><td>' + ff(r[2], L.acc[r[1]]) + '</td></tr>';
+  }
+  $('vtbl').innerHTML = h;
+  $('vnote').innerHTML = 'Rows tagged gate carry the 5 percent rule. <b>Model, fork inputs</b> uses the lab defaults except the values the fork run used: settle batch size 5, a tip of 0.0005 ETH, the decay reprice in rotate, a minor list price of 7500 bps, decay 0.001 ETH per pull on both tracks, a reprice on any decayed price, no tickets paid with Shapes, and a gas price of 0 (the fork basefee, so each refund is the tip). Keeper ticks, arrival groups of 1 to 5 tickets and the weekly schedule follow the runner. <b>Model, lab defaults</b> shows the same week at the values set under Reset to launch values. The pre-sampling column is the earlier recording and has no settle or rotate counts. The model uses expected values for the distribution rows, so p5, p95 and the shares are exact expectations over the draw, and the fork shows one realised draw of 3,413 tickets, which is ' + fmt.sgn((FORK9.tickets / acc.tickets - 1) * 100, 1) + ' against the model mean. Hit counts are small integers: the fork rolled ' + FORK9.minorHits + ' minor hits where the model expects about ' + acc.minorHits.toFixed(1) + '.';
+  const xs = V.path.map((_, i) => i + 1);
+  $('vlegend').innerHTML = lineHtmlLegend([{ n: 'Fork run, decision 9', c: 'var(--fwa)', w: 2 }, { n: 'Fork run, pre-sampling design', c: 'var(--c7)', dash: 1 }, { n: 'Model, fork inputs, mean of 20 seeds', c: 'var(--shapes)' }]);
+  drawChart('vchart', { xs, xmax: 168, series: [
+    { n: 'Fork run, decision 9', ys: FORK_NAV9.slice(1), c: 'var(--fwa)', w: 2 }, { n: 'Fork run, pre-sampling', ys: FORK_NAV_PRE.slice(1), c: 'var(--c7)', dash: '3 3' }, { n: 'Model mean', ys: V.path, c: 'var(--shapes)', w: 2 }],
+    xfmt: v => 'h' + Math.round(v), yfmt: v => v.toFixed(3), tipx: v => 'Hour ' + v });
+  window.__val = { rows, acc, lab: L.acc, allOk };
+}
+
+// ---------- wiring
+function init() {
+  chips('hz', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
+  chips('hz2', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
+  chips('tpdchips', [500, FWA_OBS[0], FWA_OBS[1]], null, v => { P.ticketsPerDay = v; $('tpd').value = v; changed(); }, v => v === 500 ? '500 launch' : fmt.n0(v) + ' FWA V2');
+  buildForm(); renderWarns();
+  $('tpd').addEventListener('input', e => { const v = parse(e.target, 0, 20000); if (v === null) return; P.ticketsPerDay = v; changed(); });
+  $('seed').addEventListener('input', e => { const v = parse(e.target, 1, 999999); if (v === null) return; seed = Math.round(v); changed(); });
+  $('reset').addEventListener('click', () => { P = cloneParams(D); seed = 1; syncForm(); changed(); });
+  $('runsens').addEventListener('click', runSens);
+  compute(); runValidation();
+}
+function syncHz() {
+  for (const id of ['hz', 'hz2']) [...$(id).children].forEach((b, i) => b.setAttribute('aria-pressed', String(HZ[i] === horizon)));
+}
+init();
+</script>

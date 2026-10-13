@@ -15,3 +15,8 @@ node_modules/
 # local
 .DS_Store
 __pycache__/
+
+# deploy records
+deployments/31337-*.json
+deployments/.dry-run-*
+broadcast/**/31337/

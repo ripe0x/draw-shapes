@@ -3,11 +3,11 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
-import {Denominations} from "shapes/lib/Denominations.sol";
-import {IFWAClone, FWAConfigKeys} from "../../src/interfaces/IFWAClone.sol";
+import {ShapePacks} from "draw-packs/ShapePacks.sol";
+import {ShapePackRenderer} from "draw-packs/ShapePackRenderer.sol";
+import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {IFWACloneFactory} from "../../src/interfaces/IFWACloneFactory.sol";
-import {IShapesVaultController as IC} from "../../src/interfaces/IShapesVaultController.sol";
-import {Skim} from "../../src/PoolStore.sol";
+import {IPool} from "../../src/interfaces/IPool.sol";
 
 /// @dev The VRF consumer callback. The FWA VRF service is the registered Chainlink consumer and
 ///      forwards each word to the pool that paid for it.
@@ -16,21 +16,18 @@ interface IVrfConsumer {
 }
 
 /// @dev `VRFConsumerBaseV2Plus.s_vrfCoordinator`, the only caller the FWA VRF service accepts a
-///      callback from. The service holds the Chainlink subscription; `FWAClone` routes through it
-///      and names it as its own coordinator.
+///      callback from.
 interface IVrfRouted {
     function s_vrfCoordinator() external view returns (address);
 }
 
-/// @notice Mainnet-fork harness for the FWA V2 standard custom pool (FWAClone) and its factory.
-///         Every dependency is the real deployed contract at `FORK_BLOCK`: Shapes, the FWAFactory,
-///         the FWAClone implementation and the FWA VRF service.
-///
-///         Run:
-///           MAINNET_RPC_URL=https://gateway.tenderly.co/public/mainnet FORK_BLOCK=26040413 \
-///             forge test --match-contract FwaV2Probe -vv
+/// @notice Mainnet fork base. Forks Ethereum mainnet at `FORK_BLOCK` and exposes the deployed
+///         Shapes collection and FWA factory, plus the factory-owner prank that opens pool
+///         creation and purchases.
+/// @dev `setUpFork()` reads `MAINNET_RPC_URL` (default: Tenderly public gateway) and `FORK_BLOCK`
+///      from the environment. Addresses match `deployments/dependencies.json`, chain 1.
 abstract contract ForkBase is Test {
-    uint256 internal constant FORK_BLOCK = 26_040_413;
+    uint256 internal constant FORK_BLOCK = 26_170_000;
 
     address internal constant SHAPES_ADDR = 0x6fE9193276bF7aBCbEE44AB7aFd717d637D6FAf0;
     address internal constant FACTORY_ADDR = 0xF5A3A153164791AB579C3d9ba5DBECf7cDfd300c;
@@ -38,56 +35,16 @@ abstract contract ForkBase is Test {
 
     IShapes internal shapes = IShapes(SHAPES_ADDR);
     IFWACloneFactory internal factory = IFWACloneFactory(FACTORY_ADDR);
-
-    /// @dev Minor at ladder index 5, major target at index 6 and the minor interval pinned to 1500
-    ///      pulls (minimum equals maximum). Suites whose merge, reseed and board fixtures are written
-    ///      around those sizes return this from their `_grailParams` override.
-    ///      Mechanics fixture, not the shipped launch configuration.
-    function _midLadderGrailParams() internal pure returns (IC.GrailParams memory p) {
-        p = _launchGrailParams();
-        p.minorRungIndex = 5;
-        p.majorTargetRungIndex = 6;
-        p.minorIntervalMinPulls = 1500;
-        p.minorIntervalMaxPulls = 1500;
-    }
-
-    /// @dev The launch GRAIL track settings `script/env/*.env` pins (ECON-05).
-    function _grailParams() internal pure virtual returns (IC.GrailParams memory) {
-        return _launchGrailParams();
-    }
-
-    function _launchGrailParams() internal pure returns (IC.GrailParams memory) {
-        return IC.GrailParams({
-            minorRungIndex: 4,
-            minorSeedNotionalBps: 5000,
-            minorIntervalMinPulls: 100,
-            minorIntervalMaxPulls: 100_000,
-            reseedCapBps: 2500,
-            majorTargetRungIndex: 4,
-            majorStepUpDays: 7,
-            majorStepDownDays: 60,
-            majorNavMultiple: 4,
-            majorDemandDays: 4,
-            majorDecayWeiPerPull: 1e15,
-            majorFloorUnits: 100
-        });
-    }
+    ShapePacks internal drawPacks;
 
     function setUpFork() internal {
         string memory rpc = vm.envOr("MAINNET_RPC_URL", string("https://gateway.tenderly.co/public/mainnet"));
         vm.createSelectFork(rpc, vm.envOr("FORK_BLOCK", FORK_BLOCK));
-        // Fork tests exercise local production mechanics under local chain ID 31337.
         vm.chainId(31337);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                        FACTORY GOVERNANCE (owner pranks)
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Opens the factory for pool creation and purchases. `setVrfRequestsPaused(false)` forwards
-    ///      to the FWA VRF service's own `requestsPaused` internally (FWAFactory.sol:595-601,
-    ///      `IFWACloneVRFServiceAdmin(vrfService).setRequestsPaused(paused)`), so no separate prank of
-    ///      the VRF service is required even though it is a distinct contract the factory owns.
+    /// @dev Pranks the factory owner to enable pool creation (no beta gate, zero fee), purchases
+    ///      and VRF requests.
     function openFactory() internal {
         address factoryOwner = factory.owner();
         vm.startPrank(factoryOwner);
@@ -106,29 +63,8 @@ abstract contract ForkBase is Test {
         assertFalse(factory.vrfRequestsPaused(), "vrfRequestsPaused still true");
     }
 
-    /*//////////////////////////////////////////////////////////////
-                              POOL CREATION
-    //////////////////////////////////////////////////////////////*/
-
-    function createPoolAs(address poolOwner, bytes32 salt) internal returns (IFWAClone pool) {
-        uint256 fee = factory.poolCreationFee();
-        vm.prank(poolOwner);
-        address addr = factory.createPool(salt, fee);
-        pool = IFWAClone(addr);
-
-        assertEq(pool.owner(), poolOwner, "pool owner mismatch");
-        assertTrue(factory.consumerReady(addr), "consumerReady false");
-
-        vm.prank(poolOwner);
-        pool.setBool(FWAConfigKeys.ACQUISITIONS_ENABLED, true);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                                 SHAPES
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Mints `qty` Shapes at `amountWei` backing to EOA `to`. `to` must be an EOA (or implement
-    ///      `onERC721Received`) since `mintBatchTo` uses `_safeMint`.
+    /// @dev Mints `qty` Shapes of `amountWei` backing to `to`, which must be an EOA or implement
+    ///      `onERC721Received`.
     function mintShapes(address to, uint256 amountWei, uint256 qty) internal returns (uint256 firstId) {
         uint256 cost = qty * (amountWei + shapes.mintFee());
         vm.deal(to, to.balance + cost);
@@ -136,44 +72,61 @@ abstract contract ForkBase is Test {
         firstId = shapes.mintBatchTo{value: cost}(amountWei, qty, to);
     }
 
-    function listAs(address poolOwner, IFWAClone pool, uint256 tokenId, uint256 price)
-        internal
-        returns (uint256 listingId)
-    {
-        vm.startPrank(poolOwner);
-        shapes.setApprovalForAll(address(pool), true);
-        listingId = pool.listNFT(SHAPES_ADDR, tokenId, price);
-        vm.stopPrank();
+    /// @dev Deploys the Draw Packs fork against the deployed Shapes with a two unit minimum pack and
+    ///      stores it in `drawPacks`. The constructors need no further wiring.
+    function deployDrawPacks(address admin) internal {
+        ShapePackRenderer renderer = new ShapePackRenderer(SHAPES_ADDR);
+        drawPacks = new ShapePacks(SHAPES_ADDR, address(renderer), admin, "Draw Packs", "DRAW", 2);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                               ACQUISITIONS
-    //////////////////////////////////////////////////////////////*/
+    // ------------------------------------------------------------------ acquisitions
 
     function quote(IFWAClone pool) internal view returns (uint256 fee, uint256 vrf, uint256 total) {
         return pool.quoteAcquisitionPrice();
     }
 
-    /// @dev Sends exactly `fee + vrf`, `maxAcquisitionFee = fee`, `minWeightedValue = 0`,
-    ///      `maxNegativeSlippageBps = 10000` (no downside slippage guard), `expectedInventoryVersion`
-    ///      read live. Callers that need tighter slippage parameters call `pool.acquire` directly.
+    /// @dev Sends exactly `fee + vrf` with `maxAcquisitionFee = fee`, `minWeightedValue = 0`,
+    ///      `maxNegativeSlippageBps = 10_000` and the live inventory version.
     function acquireAs(address caller, address purchaser, IFWAClone pool, uint256 deadline)
         internal
         returns (uint256 requestId)
     {
         (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice();
+        uint256 version = pool.inventoryVersion();
         vm.deal(caller, caller.balance + total);
         vm.prank(caller);
-        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, pool.inventoryVersion(), deadline);
+        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, version, deadline);
     }
 
-    /// @dev Delivers `word` the way a live fulfillment arrives: the Chainlink coordinator calls the
-    ///      FWA VRF service, which is the registered consumer, and the service forwards the word to
-    ///      the pool. The service clears its prepared-request count on that callback and refuses a
-    ///      new request once the subscription no longer covers the count
-    ///      (`InsufficientVrfCoverage`). `processAcquisitions` is then cranked until `requestId`
-    ///      reaches a terminal status; the fast path inside the callback itself may already settle
-    ///      it (dossier fwa-v2.md section 8).
+    /// @dev `maxNegativeSlippageBps` and `expectedInventoryVersion` that `pullWithShapes` passes to the
+    ///      FWA pool: its own `selectionSlippageBps` and the live `inventoryVersion`. Read before a
+    ///      `vm.prank` or `vm.expectRevert`, which apply to the next call.
+    function poolArgs(IFWAClone fwa) internal view returns (uint256 slippageBps, uint256 version) {
+        return (fwa.selectionSlippageBps(), fwa.inventoryVersion());
+    }
+
+    /// @dev `acquireBatch` of `count` through `pool_` as `who`, paying exactly the quoted total with
+    ///      `maxAcquisitionFee` equal to the quoted fee and the pool-chosen arguments of `poolArgs`.
+    ///      Returns the request ids.
+    function acquirePooled(address pool_, IFWAClone fwa, address who, uint256 count)
+        internal
+        returns (uint256[] memory ids)
+    {
+        (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
+        (uint256 slip, uint256 version) = poolArgs(fwa);
+        vm.deal(who, who.balance + total);
+        uint64 last = fwa.lastIssuedSequence();
+        vm.prank(who);
+        IPool(pool_).acquireBatch{value: total}(who, count, fee, 0, slip, version, vm.getBlockTimestamp() + 1 hours);
+        ids = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            ids[i] = fwa.requestIdAtSequence(last + 1 + uint64(i));
+        }
+    }
+
+    /// @dev Delivers `word` the way a live fulfillment arrives: the coordinator calls the FWA VRF
+    ///      service, which forwards the word to the pool. `processAcquisitions` is then cranked
+    ///      until `requestId` reaches a terminal status.
     function fulfill(IFWAClone pool, uint256 requestId, uint256 word) internal {
         uint256[] memory words = new uint256[](1);
         words[0] = word;
@@ -190,55 +143,9 @@ abstract contract ForkBase is Test {
         revert("fulfill: request did not settle");
     }
 
-    /// @dev Launch skim this suite passes to the controller constructor: maintenance, the premium
-    ///      curve floor and the GRAIL feed.
-    function _skim() internal pure virtual returns (Skim memory) {
-        return Skim({maintenanceBps: 0, premiumBps: 200, grailFeedBps: 200, grailMinorShareBps: 5000, reserveBps: 0});
-    }
-
-    /// @dev ECON-04 curve at its launch settings.
-    function _premiumCurve() internal pure virtual returns (IC.PremiumCurve memory) {
-        return IC.PremiumCurve({
-            floorBps: 200,
-            midBps: 350,
-            topBps: 550,
-            kneeLowBps: 1000,
-            kneeMidBps: 2500,
-            kneeHighBps: 5000,
-            windowSeconds: 1 days,
-            minPulls: 300,
-            maxDays: 30
-        });
-    }
-
-    /// @dev FLOW-13 and FLOW-05 settings. Off in the shared fixtures so suites that deposit after
-    ///      launch finalization run ungated; gate suites turn them on through `setParams`.
-    function _gateParams() internal pure virtual returns (IC.GateParams memory) {
-        return IC.GateParams({gateDays: 0, launchCapDays: 0, launchCapQueueUnits: 0, minNavUnits: 0, openingCapUnits: 0, admissionFloorUnits: 0, dailyAdmissionUnits: 0});
-    }
-
-    /// @dev The launch values `script/env/*.env` pins.
-    function _launchGateParams() internal pure returns (IC.GateParams memory) {
-        return IC.GateParams({
-            gateDays: 4,
-            launchCapDays: 7,
-            launchCapQueueUnits: 10_000,
-            minNavUnits: 0,
-            openingCapUnits: 0,
-            admissionFloorUnits: 5_500,
-            dailyAdmissionUnits: 0
-        });
-    }
-
-    /// @dev Maintenance reserve floor at its launch setting (50 ladder units).
-    function _maintenanceReserveWei() internal pure returns (uint256) {
-        return 50 * Denominations.UNIT;
-    }
-
     function _isTerminal(IFWAClone.AcquisitionStatus status) internal pure returns (bool) {
-        return status == IFWAClone.AcquisitionStatus.Fulfilled
-            || status == IFWAClone.AcquisitionStatus.Refunded || status == IFWAClone.AcquisitionStatus.Expired
-            || status == IFWAClone.AcquisitionStatus.DeliveryPending
+        return status == IFWAClone.AcquisitionStatus.Fulfilled || status == IFWAClone.AcquisitionStatus.Refunded
+            || status == IFWAClone.AcquisitionStatus.Expired || status == IFWAClone.AcquisitionStatus.DeliveryPending
             || status == IFWAClone.AcquisitionStatus.DeliveryRefunded;
     }
 
@@ -259,35 +166,23 @@ abstract contract ForkBase is Test {
         }
     }
 
-    /// @dev Advances `block.timestamp` past the pool's current inventory-change cooldown so a
-    ///      subsequent `acquire` is not blocked by `InventoryChangeCooldownActive`.
+    /// @dev Advances `block.timestamp` past the pool's inventory-change cooldown.
     function warpPastCooldown(IFWAClone pool) internal {
         vm.warp(pool.purchasesResumeAt() + 1);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                          SELECTION-TREE TARGETING
-    //////////////////////////////////////////////////////////////*/
+    // ------------------------------------------------------------------ selection targeting
 
-    /// @dev Sum of weights of every Active listing whose slot is below `targetSlot`. The segment tree
-    ///      orders leaves by slot number (FWAClone.sol:1654-1715), so this equals the low end of the
-    ///      target range `_selectSlot` resolves to `targetSlot`.
-    function _cumulativeWeightBeforeSlot(IFWAClone pool, uint256 targetSlot)
-        internal
-        view
-        returns (uint256 cum)
-    {
+    /// @dev Sum of weights of every Active listing whose slot is below `targetSlot`.
+    function _cumulativeWeightBeforeSlot(IFWAClone pool, uint256 targetSlot) internal view returns (uint256 cum) {
         uint256 n = pool.nextListingId();
         for (uint256 id = 1; id < n; ++id) {
             (,,,, uint256 weight,, uint256 slot, IFWAClone.ListingStatus status) = pool.listings(id);
-            if (status == IFWAClone.ListingStatus.Active && slot != 0 && slot < targetSlot) {
-                cum += weight;
-            }
+            if (status == IFWAClone.ListingStatus.Active && slot != 0 && slot < targetSlot) cum += weight;
         }
     }
 
-    /// @dev Lowest random word that selects `listingId`: any word whose `% totalWeight` lands in
-    ///      `[cum, cum + weight)` selects it; the cumulative low end itself always qualifies.
+    /// @dev Lowest random word that selects `listingId`.
     function wordFor(IFWAClone pool, uint256 listingId) internal view returns (uint256 word) {
         (,,,, uint256 weight,, uint256 slot, IFWAClone.ListingStatus status) = pool.listings(listingId);
         require(status == IFWAClone.ListingStatus.Active, "wordFor: listing not active");

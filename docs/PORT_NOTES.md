@@ -13,7 +13,7 @@ Files carried from `shapes-on-fwa-v2` and what each still needs.
 
 ## Draw Packs
 
-`lib/draw-packs` is the Draw Packs fork (local submodule until it has a remote). Fork tests deploy
+`lib/draw-packs` is the Draw Packs fork, branch `draw-packs` of `ripe0x/shape-packs`, pinned at 3a463f7. Fork tests deploy
 it in `setUp` with `new ShapePacks(shapes, renderer, admin, "Draw Packs", "DRAW", 2)` from
 `draw-packs/ShapePacks.sol` and `draw-packs/ShapePackRenderer.sol`. Mainnet Shape Packs
 `0xf215…` keeps a three-unit minimum and is unsuitable for 0.02 rows.

@@ -9,4 +9,5 @@
 	url = https://github.com/ripe0x/shapes
 [submodule "lib/draw-packs"]
 	path = lib/draw-packs
-	url = /Users/dd/CascadeProjects/draw-packs
+	url = https://github.com/ripe0x/shape-packs
+	branch = draw-packs

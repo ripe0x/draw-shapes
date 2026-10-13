@@ -1,6 +1,6 @@
 # Shapes — External Integrator Dossier
 
-Repo: `/Users/dd/CascadeProjects/shapes` (read-only inspection). HEAD at time of inspection:
+Repo: `https://github.com/ripe0x/shapes` (read-only inspection). HEAD at time of inspection:
 `53969b6894c64c8daa1ef5a55cee208c63eda938` (2026-09-09, branch `main`).
 
 ## 1. Deployment facts

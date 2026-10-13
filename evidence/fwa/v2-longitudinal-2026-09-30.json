@@ -1,0 +1,1148 @@
+{
+ "cadence": {
+  "first_request_block": 25991095,
+  "first_request_ts": 1789574399,
+  "last30d_calendar_mean_per_day": 1515.2666666666667,
+  "last30d_count": 45458,
+  "last90d_calendar_mean_per_day": 505.0888888888889,
+  "live_days": 13.550833333333333,
+  "mean_per_live_day": 3354.627636676711,
+  "requests_total": 45458,
+  "sim_data_window": {
+   "from_block": 25816119,
+   "per_day_over_30d_span": 825.9965226053711,
+   "per_day_over_live_days_in_span": 4344.345801193422,
+   "requests_here": 24875,
+   "requests_in_sim_file": 24875,
+   "to_block": 26032119
+  }
+ },
+ "cadence_daily": {
+  "20712": {
+   "pulls": 2679,
+   "ticket_wei": 193675481163683204784
+  },
+  "20713": {
+   "pulls": 3398,
+   "ticket_wei": 233182460164056592854
+  },
+  "20714": {
+   "pulls": 5641,
+   "ticket_wei": 407094981246392796114
+  },
+  "20715": {
+   "pulls": 11801,
+   "ticket_wei": 1023333186835448795186
+  },
+  "20716": {
+   "pulls": 813,
+   "ticket_wei": 63303968642832664225
+  },
+  "20717": {
+   "pulls": 438,
+   "ticket_wei": 34721774688135890991
+  },
+  "20718": {
+   "pulls": 526,
+   "ticket_wei": 40634430610714110452
+  },
+  "20719": {
+   "pulls": 1112,
+   "ticket_wei": 83416239450536767909
+  },
+  "20720": {
+   "pulls": 7797,
+   "ticket_wei": 641848001723290858883
+  },
+  "20721": {
+   "pulls": 3866,
+   "ticket_wei": 319463207665321594899
+  },
+  "20722": {
+   "pulls": 2957,
+   "ticket_wei": 246422151695335834338
+  },
+  "20723": {
+   "pulls": 1758,
+   "ticket_wei": 150033970447087742997
+  },
+  "20724": {
+   "pulls": 1318,
+   "ticket_wei": 113802769593649661429
+  },
+  "20725": {
+   "pulls": 1052,
+   "ticket_wei": 63760119621409141859
+  },
+  "20726": {
+   "pulls": 302,
+   "ticket_wei": 15548757415509430444
+  }
+ },
+ "cadence_weekly": [
+  {
+   "pulls": 19939,
+   "pulls_per_day": 2848.4285714285716,
+   "ticket_volume_eth": 1617.858632954589,
+   "week_end_ts": 1790745191,
+   "week_start_ts": 1790140391
+  },
+  {
+   "pulls": 25519,
+   "pulls_per_day": 3645.5714285714284,
+   "ticket_volume_eth": 2012.3828680088163,
+   "week_end_ts": 1790140391,
+   "week_start_ts": 1789535591
+  },
+  {
+   "pulls": 0,
+   "pulls_per_day": 0.0,
+   "ticket_volume_eth": 0.0,
+   "week_end_ts": 1789535591,
+   "week_start_ts": 1788930791
+  }
+ ],
+ "cashout_assumption": "90% of item value, gas excluded; five-pull = 1,000,000 fixed-board sessions, seed 1729",
+ "deploy_block": 25944609,
+ "deploy_ts": 1789014611,
+ "head_block": 26088128,
+ "head_ts": 1790745191,
+ "notes": [
+  "pool has no code before block 25944609; the 90-day window starts at 25444628"
+ ],
+ "pool": "0x958C41181182e76F221331b2755b77D9e1426A98",
+ "realized": {
+  "all": {
+   "delivered_backing_eth": 3358.9263024329425,
+   "paid_eth": 3577.5161525549115,
+   "pulls": 44917,
+   "ratio_cashout90_pct": 84.50090910227546,
+   "ratio_face_pct": 93.88989900252828,
+   "share_below_half_cashout_pct": 26.422067368702272,
+   "share_ge_2x_cashout_pct": 1.740988935147049,
+   "share_ge_2x_face_pct": 2.4801300175879955,
+   "share_ge_spend_cashout_pct": 30.707749849722823
+  },
+  "allocated": 44917,
+  "allocations_without_request_in_window": 0,
+  "gross_requested_eth": 3630.241500963405,
+  "refund_eth": 52.725348408493346,
+  "refund_kinds": {
+   "expired": 0,
+   "no_listing": 0,
+   "slippage": 541
+  },
+  "refunded": 541,
+  "requests": 45458,
+  "unresolved": 0,
+  "weekly": [
+   {
+    "delivered_backing_eth": 1527.2179301729504,
+    "paid_eth": 1617.858632954589,
+    "pulls": 19939,
+    "ratio_cashout90_pct": 84.9577403833797,
+    "ratio_face_pct": 94.39748931486633,
+    "share_below_half_cashout_pct": 18.175435076984805,
+    "share_ge_2x_cashout_pct": 1.6650784893926476,
+    "share_ge_2x_face_pct": 2.5828777772205225,
+    "share_ge_spend_cashout_pct": 29.0185064446562,
+    "week_end_ts": 1790745191
+   },
+   {
+    "delivered_backing_eth": 1831.708372259992,
+    "paid_eth": 1959.657519600323,
+    "pulls": 24978,
+    "ratio_cashout90_pct": 84.12375726602555,
+    "ratio_face_pct": 93.47084140669506,
+    "share_below_half_cashout_pct": 33.00504443910641,
+    "share_ge_2x_cashout_pct": 1.80158539514773,
+    "share_ge_2x_face_pct": 2.3981103370966452,
+    "share_ge_spend_cashout_pct": 32.05620946432861,
+    "week_end_ts": 1790140391
+   },
+   {
+    "pulls": 0,
+    "week_end_ts": 1789535591
+   }
+  ]
+ },
+ "rpc": {
+  "archive": "https://gateway.tenderly.co/public/mainnet",
+  "recent": "https://ethereum-rpc.publicnode.com"
+ },
+ "samples": [
+  {
+   "block": 25945128,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "0",
+    "activeListingCount": "0",
+    "totalWeight": "0",
+    "weightedBackingTotal": "0"
+   },
+   "metrics": null,
+   "next_listing_id": 1,
+   "timestamp": 1789020863
+  },
+  {
+   "block": 25952278,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "0",
+    "activeListingCount": "0",
+    "totalWeight": "0",
+    "weightedBackingTotal": "0"
+   },
+   "metrics": null,
+   "next_listing_id": 1,
+   "timestamp": 1789107059
+  },
+  {
+   "block": 25959428,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "0",
+    "activeListingCount": "0",
+    "totalWeight": "0",
+    "weightedBackingTotal": "0"
+   },
+   "metrics": null,
+   "next_listing_id": 1,
+   "timestamp": 1789193207
+  },
+  {
+   "block": 25966578,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "757050000000000000",
+    "activeListingCount": "1",
+    "totalWeight": "1386962552011095700",
+    "weightedBackingTotal": "999999999999999999700000000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.721,
+    "fee_eth": 0.75705,
+    "five_pull_cashout": {
+     "above_spend_pct": 0.0,
+     "below_half_pct": 0.0,
+     "mean_pct": 85.71428571530333,
+     "median_pct": 85.71428571428571,
+     "p10_pct": 85.71428571428571,
+     "p90_pct": 85.71428571428571,
+     "two_x_pct": 0.0
+    },
+    "five_pull_face": {
+     "above_spend_pct": 0.0,
+     "below_half_pct": 0.0,
+     "median_pct": 95.23809523809524,
+     "two_x_pct": 0.0
+    },
+    "largest_item_eth": 0.721,
+    "largest_item_odds_one_in": 1.0,
+    "largest_item_odds_pct": 100.0,
+    "listing_count": 1,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 0.0,
+    "single_at_or_above_ticket_cashout_pct": 0.0,
+    "total_backing_eth": 0.721
+   },
+   "next_listing_id": 2,
+   "timestamp": 1789279247
+  },
+  {
+   "block": 25973728,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "56852755391473298",
+    "activeListingCount": "33",
+    "totalWeight": "609469141142045001766",
+    "weightedBackingTotal": "32999999999999999982995000000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.054145481325212665,
+    "fee_eth": 0.056852755391473296,
+    "five_pull_cashout": {
+     "above_spend_pct": 12.0511,
+     "below_half_pct": 3.1747,
+     "mean_pct": 85.69811701207647,
+     "median_pct": 73.45290428309322,
+     "p10_pct": 54.45646352022428,
+     "p90_pct": 103.21399481158788,
+     "two_x_pct": 2.2461
+    },
+    "five_pull_face": {
+     "above_spend_pct": 21.7462,
+     "below_half_pct": 1.6626,
+     "median_pct": 81.6143380923258,
+     "two_x_pct": 2.2482
+    },
+    "largest_item_eth": 33.0,
+    "largest_item_odds_one_in": 20112.481657687484,
+    "largest_item_odds_pct": 0.004972036852636608,
+    "listing_count": 33,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.611832573528174,
+    "single_at_or_above_ticket_cashout_pct": 14.123516998758081,
+    "total_backing_eth": 53.274
+   },
+   "next_listing_id": 51,
+   "timestamp": 1789365263
+  },
+  {
+   "block": 25980878,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "55660471946353410",
+    "activeListingCount": "42",
+    "totalWeight": "792303738324468271143",
+    "weightedBackingTotal": "41999999999999999982761000000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.05300997328224134,
+    "fee_eth": 0.05566047194635341,
+    "five_pull_cashout": {
+     "above_spend_pct": 14.9238,
+     "below_half_pct": 3.5696,
+     "mean_pct": 85.7626295300468,
+     "median_pct": 75.02631318011292,
+     "p10_pct": 54.814483120815254,
+     "p90_pct": 107.04185199404041,
+     "two_x_pct": 1.7337
+    },
+    "five_pull_face": {
+     "above_spend_pct": 25.2544,
+     "below_half_pct": 1.3286,
+     "median_pct": 83.36257020012546,
+     "two_x_pct": 1.7409
+    },
+    "largest_item_eth": 33.0,
+    "largest_item_odds_one_in": 26146.023364707453,
+    "largest_item_odds_pct": 0.00382467339698711,
+    "listing_count": 42,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.7963278120963975,
+    "single_at_or_above_ticket_cashout_pct": 17.480087221221353,
+    "total_backing_eth": 53.9085
+   },
+   "next_listing_id": 63,
+   "timestamp": 1789451363
+  },
+  {
+   "block": 25988028,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "56576728066707040",
+    "activeListingCount": "521",
+    "totalWeight": "9669169969585344026472",
+    "weightedBackingTotal": "520999999999999999966964900000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.053882598158768606,
+    "fee_eth": 0.05657672806670704,
+    "five_pull_cashout": {
+     "above_spend_pct": 21.2081,
+     "below_half_pct": 11.2046,
+     "mean_pct": 85.66268069597596,
+     "median_pct": 79.69707959575965,
+     "p10_pct": 48.99541021056681,
+     "p90_pct": 113.73934513167295,
+     "two_x_pct": 1.351
+    },
+    "five_pull_face": {
+     "above_spend_pct": 37.428,
+     "below_half_pct": 1.7322,
+     "median_pct": 88.55231066195516,
+     "two_x_pct": 1.6284
+    },
+    "largest_item_eth": 33.0,
+    "largest_item_odds_one_in": 319082.6089963163,
+    "largest_item_odds_pct": 0.0003133984654148119,
+    "listing_count": 521,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.9268021683138765,
+    "single_at_or_above_ticket_cashout_pct": 30.579334435983604,
+    "total_backing_eth": 138.6639
+   },
+   "next_listing_id": 555,
+   "timestamp": 1789537499
+  },
+  {
+   "block": 25991395,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "77100408151807248",
+    "activeListingCount": "258",
+    "totalWeight": "3513600076754587817709",
+    "weightedBackingTotal": "257999999999999999830061500000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07342896014457834,
+    "fee_eth": 0.07710040815180724,
+    "five_pull_cashout": {
+     "above_spend_pct": 13.5675,
+     "below_half_pct": 17.456,
+     "mean_pct": 85.82472969234009,
+     "median_pct": 65.60276555269364,
+     "p10_pct": 43.37720227647856,
+     "p90_pct": 123.96821533267018,
+     "two_x_pct": 5.027
+    },
+    "five_pull_face": {
+     "above_spend_pct": 17.7392,
+     "below_half_pct": 11.2914,
+     "median_pct": 72.89196172521515,
+     "two_x_pct": 5.4281
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 298656.00652413996,
+    "largest_item_odds_pct": 0.00033483337959224044,
+    "listing_count": 258,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.652140552999121,
+    "single_at_or_above_ticket_cashout_pct": 29.103482893485513,
+    "total_backing_eth": 514.9744
+   },
+   "next_listing_id": 1361,
+   "timestamp": 1789578059
+  },
+  {
+   "block": 25995178,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "63530210720150090",
+    "activeListingCount": "675",
+    "totalWeight": "11156109699085310516851",
+    "weightedBackingTotal": "674999999999999999877929300000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.06050496259061914,
+    "fee_eth": 0.06353021072015008,
+    "five_pull_cashout": {
+     "above_spend_pct": 15.2932,
+     "below_half_pct": 1.2659,
+     "mean_pct": 85.73139368898052,
+     "median_pct": 79.27566968391288,
+     "p10_pct": 58.28093371687234,
+     "p90_pct": 105.08701174325694,
+     "two_x_pct": 1.4013
+    },
+    "five_pull_face": {
+     "above_spend_pct": 27.837,
+     "below_half_pct": 0.1132,
+     "median_pct": 88.08407742656988,
+     "two_x_pct": 1.6768
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 948269.3244222514,
+    "largest_item_odds_pct": 0.00010545527248909653,
+    "listing_count": 675,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.081831594751782,
+    "single_at_or_above_ticket_cashout_pct": 30.759006872345044,
+    "total_backing_eth": 468.51756000000006
+   },
+   "next_listing_id": 3636,
+   "timestamp": 1789623635
+  },
+  {
+   "block": 26001499,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "67452514061644189",
+    "activeListingCount": "811",
+    "totalWeight": "12624436788549894723903",
+    "weightedBackingTotal": "810999999999999999864326988889932752975"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.06424048958251828,
+    "fee_eth": 0.0674525140616442,
+    "five_pull_cashout": {
+     "above_spend_pct": 13.872,
+     "below_half_pct": 2.0577,
+     "mean_pct": 85.56966479309636,
+     "median_pct": 79.94157186005056,
+     "p10_pct": 57.533808101702114,
+     "p90_pct": 103.00579743625703,
+     "two_x_pct": 1.8132
+    },
+    "five_pull_face": {
+     "above_spend_pct": 26.8047,
+     "below_half_pct": 0.0465,
+     "median_pct": 88.82396873338952,
+     "two_x_pct": 1.9478
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 1073077.1270267412,
+    "largest_item_odds_pct": 9.318994644595384e-05,
+    "listing_count": 811,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 0.9873717121738149,
+    "single_at_or_above_ticket_cashout_pct": 33.11892245529437,
+    "total_backing_eth": 496.71617715310435
+   },
+   "next_listing_id": 7437,
+   "timestamp": 1789699787
+  },
+  {
+   "block": 26002328,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "67918955492761191",
+    "activeListingCount": "881",
+    "totalWeight": "13619909100318715990852",
+    "weightedBackingTotal": "880999999999999999859332164185934888900"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.06468471951691543,
+    "fee_eth": 0.0679189554927612,
+    "five_pull_cashout": {
+     "above_spend_pct": 14.369,
+     "below_half_pct": 1.3128,
+     "mean_pct": 85.60816784829153,
+     "median_pct": 80.56661001777636,
+     "p10_pct": 58.01325964766856,
+     "p90_pct": 103.35847995701572,
+     "two_x_pct": 1.7253
+    },
+    "five_pull_face": {
+     "above_spend_pct": 27.5134,
+     "below_half_pct": 0.0196,
+     "median_pct": 89.51845557530706,
+     "two_x_pct": 1.8344
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 1157692.273527091,
+    "largest_item_odds_pct": 8.637874009069296e-05,
+    "listing_count": 881,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 0.8569825506967772,
+    "single_at_or_above_ticket_cashout_pct": 33.92137060638559,
+    "total_backing_eth": 500.63480715310436
+   },
+   "next_listing_id": 7746,
+   "timestamp": 1789709735
+  },
+  {
+   "block": 26009478,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "71064552098138922",
+    "activeListingCount": "942",
+    "totalWeight": "13918331584417360814417",
+    "weightedBackingTotal": "941999999999999999840997506469375535200"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.06768052580775136,
+    "fee_eth": 0.07106455209813892,
+    "five_pull_cashout": {
+     "above_spend_pct": 15.9964,
+     "below_half_pct": 3.4408,
+     "mean_pct": 85.69691507944668,
+     "median_pct": 77.45633846250826,
+     "p10_pct": 54.888124737820604,
+     "p90_pct": 111.19467817214233,
+     "two_x_pct": 1.9411
+    },
+    "five_pull_face": {
+     "above_spend_pct": 26.7798,
+     "below_half_pct": 0.2026,
+     "median_pct": 86.06259829167584,
+     "two_x_pct": 2.422
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 1183058.1846754756,
+    "largest_item_odds_pct": 8.45266964003389e-05,
+    "listing_count": 942,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.024138394685684,
+    "single_at_or_above_ticket_cashout_pct": 27.204089747680683,
+    "total_backing_eth": 512.3168921531044
+   },
+   "next_listing_id": 13936,
+   "timestamp": 1789795799
+  },
+  {
+   "block": 26016628,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "77533952676812986",
+    "activeListingCount": "1376",
+    "totalWeight": "18634416924703962212722",
+    "weightedBackingTotal": "1375999999999999999834062400000000000000"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07384185969220285,
+    "fee_eth": 0.077533952676813,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.7791,
+     "below_half_pct": 3.4367,
+     "mean_pct": 85.62163750728668,
+     "median_pct": 80.07072754149165,
+     "p10_pct": 52.4441210542852,
+     "p90_pct": 112.82798951917931,
+     "two_x_pct": 1.3019
+    },
+    "five_pull_face": {
+     "above_spend_pct": 34.0351,
+     "below_half_pct": 0.0054,
+     "median_pct": 88.96747504610184,
+     "two_x_pct": 1.6877
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 1583925.4385998368,
+    "largest_item_odds_pct": 6.313428496255373e-05,
+    "listing_count": 1376,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.3617638792563371,
+    "single_at_or_above_ticket_cashout_pct": 32.637546136167714,
+    "total_backing_eth": 560.3563
+   },
+   "next_listing_id": 24780,
+   "timestamp": 1789882067
+  },
+  {
+   "block": 26023778,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "77619886541383710",
+    "activeListingCount": "1824",
+    "totalWeight": "24674089145684265182411",
+    "weightedBackingTotal": "1823999999999999999784479207824311336843"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07392370146798448,
+    "fee_eth": 0.07761988654138371,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.2292,
+     "below_half_pct": 1.8409,
+     "mean_pct": 85.73544517209996,
+     "median_pct": 81.16476692659297,
+     "p10_pct": 57.974833518994984,
+     "p90_pct": 111.98418842529071,
+     "two_x_pct": 1.0509
+    },
+    "five_pull_face": {
+     "above_spend_pct": 33.3069,
+     "below_half_pct": 0.136,
+     "median_pct": 90.18307436288109,
+     "two_x_pct": 1.3727
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 2097297.5773831625,
+    "largest_item_odds_pct": 4.7680406003601965e-05,
+    "listing_count": 1824,
+    "return_cashout90_pct": 85.7142857142857,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.1049034537910505,
+    "single_at_or_above_ticket_cashout_pct": 35.60690672363177,
+    "total_backing_eth": 623.4272173687621
+   },
+   "next_listing_id": 26056,
+   "timestamp": 1789968215
+  },
+  {
+   "block": 26030928,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "78890655734508204",
+    "activeListingCount": "2150",
+    "totalWeight": "28615556290940151668644",
+    "weightedBackingTotal": "2149999999999999999777664361057985523979"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07513395784238877,
+    "fee_eth": 0.07889065573450821,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.6735,
+     "below_half_pct": 2.6687,
+     "mean_pct": 85.68829458158288,
+     "median_pct": 80.77002200924503,
+     "p10_pct": 57.155057947219994,
+     "p90_pct": 112.25664075861174,
+     "two_x_pct": 1.2849
+    },
+    "five_pull_face": {
+     "above_spend_pct": 33.4452,
+     "below_half_pct": 0.3374,
+     "median_pct": 89.74446889916113,
+     "two_x_pct": 1.7685
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 2432322.284729913,
+    "largest_item_odds_pct": 4.111297282757251e-05,
+    "listing_count": 2150,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.266946067218024,
+    "single_at_or_above_ticket_cashout_pct": 36.04002210968757,
+    "total_backing_eth": 665.5506862687699
+   },
+   "next_listing_id": 26816,
+   "timestamp": 1790054711
+  },
+  {
+   "block": 26038078,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "74109306136519128",
+    "activeListingCount": "2747",
+    "totalWeight": "38920213268312705562033",
+    "weightedBackingTotal": "2746999999999999999789152122494479884791"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07058029155858965,
+    "fee_eth": 0.07410930613651913,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.8667,
+     "below_half_pct": 0.3789,
+     "mean_pct": 85.74321841674247,
+     "median_pct": 80.03043489672288,
+     "p10_pct": 58.41371651794189,
+     "p90_pct": 112.2126279887283,
+     "two_x_pct": 1.2755
+    },
+    "five_pull_face": {
+     "above_spend_pct": 32.2349,
+     "below_half_pct": 0.0188,
+     "median_pct": 88.92270544080321,
+     "two_x_pct": 1.6374
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 3308218.12780658,
+    "largest_item_odds_pct": 3.0227752867765753e-05,
+    "listing_count": 2747,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.4249715785627552,
+    "single_at_or_above_ticket_cashout_pct": 28.221909171508383,
+    "total_backing_eth": 712.2624027117699
+   },
+   "next_listing_id": 28215,
+   "timestamp": 1790141087
+  },
+  {
+   "block": 26045228,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "78074816842278746",
+    "activeListingCount": "2588",
+    "totalWeight": "34805076846859600550523",
+    "weightedBackingTotal": "2587999999999999999766628199533177417501"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07435696842121786,
+    "fee_eth": 0.07807481684227875,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.4174,
+     "below_half_pct": 1.4689,
+     "mean_pct": 85.8548328213307,
+     "median_pct": 79.93102324667403,
+     "p10_pct": 57.06065259172721,
+     "p90_pct": 112.85329068141604,
+     "two_x_pct": 1.212
+    },
+    "five_pull_face": {
+     "above_spend_pct": 32.5548,
+     "below_half_pct": 0.1527,
+     "median_pct": 88.81224805186004,
+     "two_x_pct": 1.6437
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 5429591.988110098,
+    "largest_item_odds_pct": 1.8417590164966972e-05,
+    "listing_count": 2588,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.4938126535626695,
+    "single_at_or_above_ticket_cashout_pct": 32.785808931962706,
+    "total_backing_eth": 793.3119442744774
+   },
+   "next_listing_id": 29571,
+   "timestamp": 1790227535
+  },
+  {
+   "block": 26052378,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "81894565118294598",
+    "activeListingCount": "2405",
+    "totalWeight": "30835379568257565420729",
+    "weightedBackingTotal": "2404999999999999999772879844254373652404"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07799482392218533,
+    "fee_eth": 0.0818945651182946,
+    "five_pull_cashout": {
+     "above_spend_pct": 18.9699,
+     "below_half_pct": 1.1238,
+     "mean_pct": 85.71183277244445,
+     "median_pct": 80.59875512453851,
+     "p10_pct": 58.465418225053845,
+     "p90_pct": 111.62697063956726,
+     "two_x_pct": 1.2212
+    },
+    "five_pull_face": {
+     "above_spend_pct": 32.7696,
+     "below_half_pct": 0.072,
+     "median_pct": 89.55417236059836,
+     "two_x_pct": 1.7148
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 4810319.21264818,
+    "largest_item_odds_pct": 2.0788641164823638e-05,
+    "listing_count": 2405,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.3762758193023392,
+    "single_at_or_above_ticket_cashout_pct": 29.166974968166162,
+    "total_backing_eth": 686.7088487288568
+   },
+   "next_listing_id": 37800,
+   "timestamp": 1790314115
+  },
+  {
+   "block": 26059528,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "82367240786182699",
+    "activeListingCount": "2464",
+    "totalWeight": "31410545931921139876015",
+    "weightedBackingTotal": "2463999999999999999792102385060387631356"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.07844499122493591,
+    "fee_eth": 0.08236724078618271,
+    "five_pull_cashout": {
+     "above_spend_pct": 19.1092,
+     "below_half_pct": 1.3746,
+     "mean_pct": 85.67723164634057,
+     "median_pct": 80.52958842239987,
+     "p10_pct": 58.45770665669461,
+     "p90_pct": 112.26065012913652,
+     "two_x_pct": 1.1692
+    },
+    "five_pull_face": {
+     "above_spend_pct": 32.8427,
+     "below_half_pct": 0.1204,
+     "median_pct": 89.47732046933318,
+     "two_x_pct": 1.6556
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 4900045.165379698,
+    "largest_item_odds_pct": 2.0407975156337386e-05,
+    "listing_count": 2464,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.4244721710896089,
+    "single_at_or_above_ticket_cashout_pct": 28.411399284584125,
+    "total_backing_eth": 609.6426562184568
+   },
+   "next_listing_id": 41660,
+   "timestamp": 1790400383
+  },
+  {
+   "block": 26066678,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "85059975968694939",
+    "activeListingCount": "2643",
+    "totalWeight": "32625802774989646283297",
+    "weightedBackingTotal": "2642999999999999999793281759112076999334"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.0810095009225666,
+    "fee_eth": 0.08505997596869494,
+    "five_pull_cashout": {
+     "above_spend_pct": 17.9747,
+     "below_half_pct": 0.4447,
+     "mean_pct": 85.72661030023319,
+     "median_pct": 81.20920892973515,
+     "p10_pct": 60.98755543863802,
+     "p90_pct": 110.29394134149248,
+     "two_x_pct": 0.8345
+    },
+    "five_pull_face": {
+     "above_spend_pct": 32.5365,
+     "below_half_pct": 0.0258,
+     "median_pct": 90.2324543663724,
+     "two_x_pct": 1.275
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 5089625.232898385,
+    "largest_item_odds_pct": 1.964781205374783e-05,
+    "listing_count": 2643,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.1985099623473983,
+    "single_at_or_above_ticket_cashout_pct": 29.679968526163954,
+    "total_backing_eth": 611.899202153874
+   },
+   "next_listing_id": 44406,
+   "timestamp": 1790486603
+  },
+  {
+   "block": 26073828,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "85871777414297767",
+    "activeListingCount": "2778",
+    "totalWeight": "33968086929505341387966",
+    "weightedBackingTotal": "2777999999999999999828761014531935866539"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.08178264515647407,
+    "fee_eth": 0.08587177741429776,
+    "five_pull_cashout": {
+     "above_spend_pct": 17.1687,
+     "below_half_pct": 0.2519,
+     "mean_pct": 85.81654212925741,
+     "median_pct": 81.33056296604796,
+     "p10_pct": 62.37286569904174,
+     "p90_pct": 109.10453098924734,
+     "two_x_pct": 0.7396
+    },
+    "five_pull_face": {
+     "above_spend_pct": 31.94,
+     "below_half_pct": 0.0215,
+     "median_pct": 90.36729218449774,
+     "two_x_pct": 1.2097
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 5299021.561002834,
+    "largest_item_odds_pct": 1.887140840036045e-05,
+    "listing_count": 2778,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 1.2339220021551582,
+    "single_at_or_above_ticket_cashout_pct": 28.36281543206202,
+    "total_backing_eth": 523.0514211318273
+   },
+   "next_listing_id": 46193,
+   "timestamp": 1790572943
+  },
+  {
+   "block": 26080978,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "70316031447641071",
+    "activeListingCount": "3153",
+    "totalWeight": "47082435283128653754403",
+    "weightedBackingTotal": "3152999999999999999816490706082569500362"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.0669676489977534,
+    "fee_eth": 0.07031603144764108,
+    "five_pull_cashout": {
+     "above_spend_pct": 22.5491,
+     "below_half_pct": 5.489,
+     "mean_pct": 85.71542590230247,
+     "median_pct": 81.54470441452023,
+     "p10_pct": 56.03558561085694,
+     "p90_pct": 116.01337322448774,
+     "two_x_pct": 0.9773
+    },
+    "five_pull_face": {
+     "above_spend_pct": 35.6958,
+     "below_half_pct": 1.7632,
+     "median_pct": 90.6052271272447,
+     "two_x_pct": 1.3179
+    },
+    "largest_item_eth": 156.0,
+    "largest_item_odds_one_in": 7344859.90416807,
+    "largest_item_odds_pct": 1.361496356700444e-05,
+    "listing_count": 3153,
+    "return_cashout90_pct": 85.71428571428571,
+    "return_face_pct": 95.23809523809523,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 2.177011788521255,
+    "single_at_or_above_ticket_cashout_pct": 29.61948154217402,
+    "total_backing_eth": 535.7802658045382
+   },
+   "next_listing_id": 47844,
+   "timestamp": 1790659055
+  },
+  {
+   "block": 26088128,
+   "checks": {
+    "count": true,
+    "totalWeight": true,
+    "weightedBacking": true
+   },
+   "getters": {
+    "acquisitionFee": "51072314494042176",
+    "activeListingCount": "4090",
+    "totalWeight": "84086653259095462569359",
+    "weightedBackingTotal": "4089999999999999999821898434839170723942"
+   },
+   "metrics": {
+    "expected_backing_eth": 0.04864029951813541,
+    "fee_eth": 0.051072314494042176,
+    "five_pull_cashout": {
+     "above_spend_pct": 22.9633,
+     "below_half_pct": 3.0802,
+     "mean_pct": 85.78515726255104,
+     "median_pct": 79.33456786010083,
+     "p10_pct": 56.16330547021931,
+     "p90_pct": 119.44240358857472,
+     "two_x_pct": 0.9793
+    },
+    "five_pull_face": {
+     "above_spend_pct": 34.6583,
+     "below_half_pct": 0.0009,
+     "median_pct": 88.14951984455648,
+     "two_x_pct": 1.4889
+    },
+    "largest_item_eth": 85.0,
+    "largest_item_odds_one_in": 7147365.527023114,
+    "largest_item_odds_pct": 1.399116914084148e-05,
+    "listing_count": 4090,
+    "return_cashout90_pct": 85.71428571428572,
+    "return_face_pct": 95.23809523809524,
+    "samples": 1000000,
+    "seed": 1729,
+    "single_2x_cashout_pct": 6.208110897247255,
+    "single_at_or_above_ticket_cashout_pct": 22.202875956956518,
+    "total_backing_eth": 470.9803949458693
+   },
+   "next_listing_id": 50209,
+   "timestamp": 1790745191
+  }
+ ],
+ "vrf_service_fee_wei_at_head": 0,
+ "window_days_requested": 90
+}
