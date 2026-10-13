@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
 import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
@@ -72,6 +73,8 @@ contract Pool is ReentrancyGuard {
         uint256 decayWeiPerPull;
         uint256 floorWei;
         uint256 pullsSinceList;
+        uint256 receivable;
+        uint256 listingId;
     }
 
     struct Claim {
@@ -135,6 +138,17 @@ contract Pool is ReentrancyGuard {
     error FwaPoolMissing();
     error OpeningDeadlineNotReached();
     error PackValueMismatch();
+    error NotLive();
+    error PullsPaused();
+    error InvalidCount();
+    error FeeAboveMax(uint256 fee, uint256 maxFee);
+    error InsufficientValue(uint256 value, uint256 required);
+    error PurchasesCoolingDown();
+    error Insolvent();
+    error BoardTooThin();
+    error GrailProbTooHigh();
+    error UnknownListing(uint256 listingId);
+    error HarvestShortfall(uint256 received, uint256 expected);
 
     // ------------------------------------------------------------------ events
 
@@ -143,6 +157,12 @@ contract Pool is ReentrancyGuard {
     event ClaimPaid(address indexed to, uint256 amount);
     event FwaPoolCreated(address indexed pool);
     event Opened();
+    event Pulled(address indexed purchaser, uint256 count, uint256 fee, uint256[] requestIds);
+    event Captured(uint256 indexed requestId, uint256 indexed listingId, uint16 row, uint256 value, uint256 proceeds);
+    event MarginSplit(uint256 mintLineCover, uint256 premiumShare, uint256 maintenanceShare, uint256 feedShare);
+    event Harvested(uint256 received, uint256 surplus);
+    event Settled(uint64 nextSequenceToBook);
+    event WrittenOff(uint256 indexed requestId, uint256 indexed listingId, uint256 value);
 
     // ------------------------------------------------------------------ constants and immutables
 
@@ -154,6 +174,8 @@ contract Pool is ReentrancyGuard {
     uint256 internal constant MAX_CURVE_CAP_BPS = 2_500;
     uint256 internal constant MAX_MINTS_PER_RESTOCK = 20;
     uint256 internal constant PULL_SLOTS = 5;
+    uint256 internal constant SETTLE_BUDGET = 3;
+    uint256 internal constant MAX_SETTLE_ITEMS = 20;
 
     address public immutable shapes;
     address public immutable drawPacks;
@@ -171,6 +193,8 @@ contract Pool is ReentrancyGuard {
     uint256 public receivable;
     uint256 public claims;
     uint256 public maintenance;
+    /// @notice Maintenance share of booked margin, still held as FWA owner proceeds.
+    uint256 public maintenanceReceivable;
     Grail[2] public grail;
 
     uint256 public totalShares;
@@ -206,6 +230,19 @@ contract Pool is ReentrancyGuard {
     uint256 public replacementHead;
 
     PullSlot[PULL_SLOTS] internal _pullSlots;
+
+    /// @dev `base + 1` of each pull request id, where `base` is the FWA base price at request time.
+    ///      Zero marks a request opened outside `pull`.
+    mapping(uint256 requestId => uint256) internal _basePlusOne;
+    /// @notice First FWA acquisition sequence the pool has not yet booked.
+    uint64 public nextSequenceToBook;
+    /// @notice Booked proceeds minus captured backing, netted across captures. Positive margin is
+    ///         split at once, negative margin carries forward.
+    int256 public margin;
+    /// @notice Replacement mint fees of captured items, covered by margin before it is split.
+    uint256 public mintLineOwed;
+    /// @notice Listed ordinary items.
+    uint256 public listedCount;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -275,6 +312,13 @@ contract Pool is ReentrancyGuard {
         return replacementQueue.length - replacementHead;
     }
 
+    /// @notice FWA base price recorded for pull request `requestId`. `recorded` is false for a
+    ///         request opened directly at the FWA pool.
+    function baseOf(uint256 requestId) external view returns (uint256 base, bool recorded) {
+        uint256 stored = _basePlusOne[requestId];
+        return (stored == 0 ? 0 : stored - 1, stored != 0);
+    }
+
     // ------------------------------------------------------------------ opening
 
     /// @notice Creates the FWA pool through the factory and approves it for both collections.
@@ -291,6 +335,7 @@ contract Pool is ReentrancyGuard {
         fwaPool = clone;
         maxBatch = factory.maxAcquisitionsPerTx();
         concurrency = factory.maxOutstandingRequestsPerPool();
+        nextSequenceToBook = 1;
         openingDeadlineAt = block.timestamp + openingDeadline;
         IShapes(shapes).setApprovalForAll(address(clone), true);
         IShapePacks(drawPacks).setApprovalForAll(address(clone), true);
@@ -345,6 +390,39 @@ contract Pool is ReentrancyGuard {
         if (head == claimQueue.length) return;
         if (block.timestamp < claimQueue[head].requestedAt + rotateInterval) revert ClaimNotDue();
         _payClaims(MAX_CLAIM_ITEMS);
+    }
+
+    // ------------------------------------------------------------------ player paths
+
+    /// @notice Buys `count` FWA acquisitions for `msg.sender` at the quoted fee. Overpayment is
+    ///         refunded. Settles up to `SETTLE_BUDGET` FWA acquisitions and mints one queued
+    ///         replacement from `cash`.
+    function pull(uint256 count, uint256 maxFee, uint256 deadline) external payable nonReentrant {
+        _pull(msg.sender, count, maxFee, deadline, msg.value);
+    }
+
+    /// @notice Redeems the caller's Shapes `tokenIds` and applies the proceeds and `msg.value` to
+    ///         `pull`. The caller must have approved this contract for each token.
+    function pullWithShapes(uint256[] calldata tokenIds, uint256 count, uint256 maxFee, uint256 deadline)
+        external
+        payable
+        nonReentrant
+    {
+        _pull(msg.sender, count, maxFee, deadline, msg.value + _redeemShapes(tokenIds));
+    }
+
+    /// @notice Redeems the caller's Shape `tokenId` and deposits the proceeds. The caller must have
+    ///         approved this contract for the token.
+    function redeemAndDeposit(uint256 tokenId) external nonReentrant {
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = tokenId;
+        _deposit(msg.sender, _redeemShapes(ids));
+    }
+
+    /// @notice Processes up to `maxCount` FWA acquisitions and books their results.
+    function settle(uint256 maxCount) external nonReentrant {
+        if (address(fwaPool) == address(0)) revert FwaPoolMissing();
+        _processAndSettle(maxCount < MAX_SETTLE_ITEMS ? maxCount : MAX_SETTLE_ITEMS);
     }
 
     /// @notice Accepts ETH from Shapes redemptions and FWA proceeds. The ETH is booked by the
@@ -412,14 +490,231 @@ contract Pool is ReentrancyGuard {
         claims -= paidTotal;
     }
 
+    // ------------------------------------------------------------------ pull
+
+    /// @dev Buys `count` acquisitions for `purchaser` with `value` wei available. `value` is
+    ///      already in the pool balance and outside every bucket.
+    function _pull(address purchaser, uint256 count, uint256 maxFee, uint256 deadline, uint256 value) internal {
+        if (lifecycle != Lifecycle.Live) revert NotLive();
+        if (pullsPaused) revert PullsPaused();
+        if (count == 0 || count > maxBatch) revert InvalidCount();
+        _requirePurchasable(value);
+
+        IFWAClone fwa = fwaPool;
+        (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
+        if (fee > maxFee) revert FeeAboveMax(fee, maxFee);
+        if (value < total) revert InsufficientValue(value, total);
+
+        uint256[] memory ids = fwa.acquireBatch{value: total}(
+            purchaser, count, maxFee, 0, fwa.selectionSlippageBps(), fwa.inventoryVersion(), deadline
+        );
+        _recordBases(fwa, fee, ids);
+        _recordPulls(count);
+        emit Pulled(purchaser, count, fee, ids);
+
+        _upkeep();
+        if (value > total) SafeTransferLib.safeTransferETH(purchaser, value - total);
+    }
+
+    /// @dev Transfers `tokenIds` from the caller and redeems them. Returns the ETH redeemed.
+    function _redeemShapes(uint256[] memory tokenIds) internal returns (uint256) {
+        for (uint256 i; i < tokenIds.length; ++i) {
+            IERC721(shapes).transferFrom(msg.sender, address(this), tokenIds[i]);
+        }
+        return IShapes(shapes).redeemBatch(tokenIds);
+    }
+
+    /// @dev Records the FWA base price of each request opened by one `acquireBatch`. The batch
+    ///      reserves staged listings without activating them, so `weightedBackingTotal` and
+    ///      `totalWeight` read after the call equal their values at every request.
+    function _recordBases(IFWAClone fwa, uint256 fee, uint256[] memory ids) internal {
+        uint256 base = fwa.weightedBackingTotal() / fwa.totalWeight();
+        if (base > fee) base = fee;
+        for (uint256 i; i < ids.length; ++i) {
+            _basePlusOne[ids[i]] = base + 1;
+        }
+    }
+
+    /// @dev Per-pull upkeep: settles up to `SETTLE_BUDGET` acquisitions, then mints one queued
+    ///      replacement when `cash` covers it. The replacement stays held. A listing here would
+    ///      start the FWA inventory change cooldown and block the next pull.
+    function _upkeep() internal {
+        _processAndSettle(SETTLE_BUDGET);
+        uint256 head = replacementHead;
+        if (head == replacementQueue.length) return;
+        uint256 mintFee = IShapes(shapes).mintFee();
+        uint256 row = replacementQueue[head];
+        if (cash < _rowCost(row, mintFee)) return;
+        replacementHead = head + 1;
+        _mintRow(row, mintFee);
+    }
+
+    /// @dev Reverts unless a pull may open: the FWA cooldown has passed, the balance covers the
+    ///      buckets plus the `incoming` wei still outside them, the listed ordinary items exceed
+    ///      the unsettled acquisitions by `concurrency`, and the listed GRAIL tracks hold at most
+    ///      `grailProbCapBps` of the FWA selection weight.
+    function _requirePurchasable(uint256 incoming) internal view {
+        IFWAClone fwa = fwaPool;
+        if (block.timestamp < fwa.purchasesResumeAt()) revert PurchasesCoolingDown();
+        if (address(this).balance < incoming + cash + maintenance + grail[MINOR].bucket + grail[MAJOR].bucket) {
+            revert Insolvent();
+        }
+        if (listedCount < fwa.unsettledAcquisitionCount() + concurrency) revert BoardTooThin();
+
+        uint256 grailWeight;
+        for (uint256 t; t < 2; ++t) {
+            Grail storage g = grail[t];
+            if (g.packId != 0 && g.listingId != 0) grailWeight += PricingLib.weightOf(g.notional);
+        }
+        if (grailWeight * BPS > fwa.totalWeight() * grailProbCapBps) revert GrailProbTooHigh();
+    }
+
+    // ------------------------------------------------------------------ settlement
+
+    /// @dev Advances FWA's processing queue by `maxItems`, then books the results.
+    function _processAndSettle(uint256 maxItems) internal {
+        fwaPool.processAcquisitions(maxItems);
+        _settle(maxItems);
+    }
+
+    /// @dev Books up to `maxItems` FWA acquisitions in sequence order from `nextSequenceToBook`
+    ///      to FWA's `nextSequenceToProcess`. A Fulfilled acquisition is a capture: FWA pays the owner
+    ///      `paid - (paid - base) / 2`, and a request without a recorded base books zero proceeds
+    ///      that `_harvest` books as surplus. A refunded
+    ///      delivery returns its token to held items. A DeliveryPending acquisition is written off:
+    ///      its item leaves backing and its value is charged to `margin`, with no proceeds and no
+    ///      replacement. If the delivery later completes, FWA accrues owner proceeds and `_harvest`
+    ///      books them as surplus. If the purchaser later refunds, the admin recovers the token with
+    ///      `adminCall(recoverRefundedNFT)` and `sweep`. Expired, Refunded and TimedOut acquisitions
+    ///      book nothing. The walk stops at any other status.
+    function _settle(uint256 maxItems) internal {
+        IFWAClone fwa = fwaPool;
+        uint64 seq = nextSequenceToBook;
+        uint64 end = fwa.nextSequenceToProcess();
+        if (seq >= end) return;
+
+        uint64 start = seq;
+        uint256 mintFee = IShapes(shapes).mintFee();
+        for (uint256 n; seq < end && n < maxItems; ++n) {
+            uint256 requestId = fwa.requestIdAtSequence(seq);
+            (,, uint256 paid, uint256 listingId, IFWAClone.AcquisitionStatus status) = fwa.acquisitions(requestId);
+            if (status == IFWAClone.AcquisitionStatus.Fulfilled) {
+                Item memory it = _removeListed(listingId);
+                uint256 stored = _basePlusOne[requestId];
+                uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
+                receivable += proceeds;
+                margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
+                mintLineOwed += mintFee * _mix[it.row].rungs.length;
+                replacementQueue.push(it.row);
+                emit Captured(requestId, listingId, it.row, it.value, proceeds);
+                _splitMargin();
+            } else if (status == IFWAClone.AcquisitionStatus.DeliveryRefunded) {
+                _recoverRefunded(fwa, listingId);
+            } else if (status == IFWAClone.AcquisitionStatus.DeliveryPending) {
+                _writeOff(requestId, listingId);
+            } else if (
+                status != IFWAClone.AcquisitionStatus.Expired && status != IFWAClone.AcquisitionStatus.Refunded
+                    && status != IFWAClone.AcquisitionStatus.TimedOut
+            ) {
+                break;
+            }
+            ++seq;
+        }
+        if (seq != start) {
+            nextSequenceToBook = seq;
+            emit Settled(seq);
+        }
+    }
+
+    /// @dev Removes the listed item from backing and charges its value to `margin`.
+    function _writeOff(uint256 requestId, uint256 listingId) internal {
+        Item memory it = _removeListed(listingId);
+        margin -= SafeCastLib.toInt256(it.value);
+        emit WrittenOff(requestId, listingId, it.value);
+    }
+
+    /// @dev Takes back a token that FWA quarantined after a refunded delivery and holds it
+    ///      unlisted. Backing is unchanged.
+    function _recoverRefunded(IFWAClone fwa, uint256 listingId) internal {
+        Item memory it = _removeListed(listingId);
+        fwa.recoverRefundedNFT(listingId);
+        it.listingId = 0;
+        _addItem(it);
+    }
+
+    /// @dev Splits positive `margin`. The mint line owed is covered first and stays in ordinary
+    ///      NAV. The rest divides by `premiumBps : maintenanceBps : feedBps`. The premium share
+    ///      stays in ordinary NAV. The maintenance and feed shares move from `receivable` to
+    ///      `maintenanceReceivable` and the GRAIL receivables, split by `minorShareBps`.
+    function _splitMargin() internal {
+        int256 signedMargin = margin;
+        if (signedMargin <= 0) return;
+        uint256 amount = uint256(signedMargin);
+        uint256 cover = amount < mintLineOwed ? amount : mintLineOwed;
+        mintLineOwed -= cover;
+        uint256 rest = amount - cover;
+
+        FeeSplit memory split = feeSplit;
+        uint256 totalBps = uint256(split.premiumBps) + split.maintenanceBps + split.feedBps;
+        uint256 maintenanceShare;
+        uint256 feedShare;
+        if (totalBps != 0) {
+            maintenanceShare = rest * split.maintenanceBps / totalBps;
+            feedShare = rest * split.feedBps / totalBps;
+        }
+
+        receivable -= maintenanceShare + feedShare;
+        maintenanceReceivable += maintenanceShare;
+        uint256 minorFeed = feedShare * split.minorShareBps / BPS;
+        grail[MINOR].receivable += minorFeed;
+        grail[MAJOR].receivable += feedShare - minorFeed;
+        margin = 0;
+        emit MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
+    }
+
+    /// @dev Withdraws FWA owner proceeds and credits them to the buckets. Returns false when
+    ///      the booking walk is behind FWA's processing queue or no proceeds are held. Proceeds
+    ///      above the booked receivables belong to requests opened outside `pull`, whose captures
+    ///      booked zero proceeds. They enter as margin.
+    function _harvest() internal returns (bool) {
+        IFWAClone fwa = fwaPool;
+        if (nextSequenceToBook < fwa.nextSequenceToProcess() || fwa.ownerProceeds() == 0) return false;
+
+        uint256 received = fwa.withdrawOwnerProceeds();
+        uint256 expected = receivable + maintenanceReceivable + grail[MINOR].receivable + grail[MAJOR].receivable;
+        if (received < expected) revert HarvestShortfall(received, expected);
+
+        uint256 surplus = received - expected;
+        if (surplus != 0) {
+            receivable += surplus;
+            margin += SafeCastLib.toInt256(surplus);
+            _splitMargin();
+        }
+
+        cash += receivable;
+        maintenance += maintenanceReceivable;
+        grail[MINOR].bucket += grail[MINOR].receivable;
+        grail[MAJOR].bucket += grail[MAJOR].receivable;
+        receivable = 0;
+        maintenanceReceivable = 0;
+        grail[MINOR].receivable = 0;
+        grail[MAJOR].receivable = 0;
+        emit Harvested(received, surplus);
+        return true;
+    }
+
     // ------------------------------------------------------------------ registry
 
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through
     ///      `_addItem` and `_removeHeld` / `_removeListed`, which keep `backing` equal to the sum
     ///      of `value` over held and listed items (I2) and `_rowCount` equal to their number.
     function _addItem(Item memory it) internal {
-        if (it.listingId == 0) _held.push(it);
-        else _listed[it.listingId] = it;
+        if (it.listingId == 0) {
+            _held.push(it);
+        } else {
+            _listed[it.listingId] = it;
+            ++listedCount;
+        }
         backing += it.value;
         ++_rowCount[it.row];
     }
@@ -435,9 +730,11 @@ contract Pool is ReentrancyGuard {
 
     function _removeListed(uint256 listingId) internal returns (Item memory it) {
         it = _listed[listingId];
+        if (it.value == 0) revert UnknownListing(listingId);
         delete _listed[listingId];
         backing -= it.value;
         --_rowCount[it.row];
+        --listedCount;
     }
 
     // ------------------------------------------------------------------ pull counter

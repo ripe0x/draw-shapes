@@ -1,0 +1,978 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {Vm} from "forge-std/Test.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {Pool} from "../../src/Pool.sol";
+import {PricingLib} from "../../src/lib/PricingLib.sol";
+import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
+import {ForkBase} from "./ForkBase.sol";
+import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+
+/// @dev Contract purchaser without `onERC721Received`.
+contract NoReceiver {
+    function pull(Pool pool, uint256 count, uint256 maxFee, uint256 deadline) external payable {
+        pool.pull{value: msg.value}(count, maxFee, deadline);
+    }
+}
+
+/// @notice `_splitMargin` against round numbers. Fee split 200 : 100 : 400 bps, minor share 4,000.
+contract PoolSplitMarginTest is PoolFixture {
+    PoolHarness internal pool;
+
+    function setUp() public {
+        pool = _deploy(_params());
+    }
+
+    function test_splitMarginCoversMintLineThenSplitsPro_rata() public {
+        pool.setReceivable(1.1 ether);
+        pool.setMargin(1.1 ether);
+        pool.setMintLineOwed(0.4 ether);
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.MarginSplit(0.4 ether, 0.2 ether, 0.1 ether, 0.4 ether);
+        pool.splitMargin();
+
+        assertEq(pool.margin(), 0);
+        assertEq(pool.mintLineOwed(), 0);
+        assertEq(pool.maintenanceReceivable(), 0.1 ether);
+        assertEq(pool.grailReceivable(0), 0.16 ether);
+        assertEq(pool.grailReceivable(1), 0.24 ether);
+        assertEq(pool.receivable(), 1.1 ether - 0.5 ether);
+    }
+
+    function test_splitMarginPartlyCoversMintLine() public {
+        pool.setReceivable(0.3 ether);
+        pool.setMargin(0.3 ether);
+        pool.setMintLineOwed(1 ether);
+        pool.splitMargin();
+        assertEq(pool.mintLineOwed(), 0.7 ether);
+        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(pool.receivable(), 0.3 ether);
+        assertEq(pool.margin(), 0);
+    }
+
+    function test_splitMarginKeepsNegativeMargin() public {
+        pool.setMargin(-1 ether);
+        pool.setMintLineOwed(0.1 ether);
+        pool.splitMargin();
+        assertEq(pool.margin(), -1 ether);
+        assertEq(pool.mintLineOwed(), 0.1 ether);
+    }
+}
+
+/// @notice Pulls, settlement, harvest, Shapes redemption paths and reopen guards against deployed
+///         Shapes, a Draw Packs deployment and a FWA clone created by the pool.
+/// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
+///      2 x 0.01 ETH (3,000 bps). A 100 ETH deposit builds a board of 7 + 3 items. Listing ids 1 to 3
+///      are row 1 and 4 to 10 are row 0.
+contract PoolPullForkTest is ForkBase, PoolFixture {
+    uint256 internal constant MAINT_BPS = 100;
+    uint256 internal constant FEED_BPS = 400;
+    uint256 internal constant SPLIT_BPS = 700;
+    uint256 internal constant MINOR_SHARE_BPS = 4_000;
+
+    PoolHarness internal pool;
+    IFWAClone internal clone;
+    address internal player = makeAddr("player");
+    uint256 internal mintFee;
+
+    /// @dev Expected `Pool` margin state, advanced one capture at a time.
+    struct Book {
+        uint256 receivable;
+        int256 margin;
+        uint256 mintLineOwed;
+        uint256 maintenanceReceivable;
+        uint256 minorReceivable;
+        uint256 majorReceivable;
+    }
+
+    function setUp() public {
+        setUpFork();
+        openFactory();
+        deployDrawPacks(admin);
+        mintFee = shapes.mintFee();
+        vm.deal(alice, 10_000 ether);
+
+        Pool.Params memory p = _params();
+        p.shapes = SHAPES_ADDR;
+        p.drawPacks = address(drawPacks);
+        p.fwaFactory = FACTORY_ADDR;
+        p.mix[1].rungs[0] = 0;
+        p.mix[1].rungs[1] = 0;
+        pool = new PoolHarness(p);
+        vm.prank(admin);
+        pool.createFwaPool(0);
+        clone = pool.fwaPool();
+        vm.prank(address(pool));
+        clone.setBool(41, true);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    function _open(uint256 depositWei) internal {
+        vm.prank(alice);
+        pool.deposit{value: depositWei}();
+        vm.warp(pool.openingDeadlineAt());
+        pool.open();
+    }
+
+    function _openReady() internal {
+        _open(100 ether);
+        warpPastCooldown(clone);
+    }
+
+    /// @dev Board of 60 items (42 Shapes, 18 packs). The 10 item board of `_openReady` moves FWA's fee
+    ///      by more than the 10% slippage tolerance when two cheap items are captured in one batch.
+    function _openLarge() internal {
+        vm.prank(alice);
+        pool.deposit{value: 100 ether}();
+        vm.warp(pool.openingDeadlineAt());
+        pool.recordPulls(60);
+        pool.open();
+        pool.restock();
+        pool.restock();
+        assertEq(pool.listedCount(), 60);
+        warpPastCooldown(clone);
+    }
+
+    /// @dev FWA base price a request opened now records.
+    function _expectedBase(uint256 fee) internal view returns (uint256 base) {
+        base = clone.weightedBackingTotal() / clone.totalWeight();
+        if (base > fee) base = fee;
+    }
+
+    function _proceeds(uint256 paid, uint256 base) internal pure returns (uint256) {
+        return paid - (paid - base) / 2;
+    }
+
+    /// @dev Pulls `count` through the pool as `who`. Returns the request ids, the per-request fee
+    ///      and the base price computed from FWA reads before the call.
+    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids, uint256 fee, uint256 base) {
+        uint256 total;
+        (fee,, total) = clone.quoteAcquisitionPrice(count);
+        base = _expectedBase(fee);
+        vm.deal(who, who.balance + total);
+        uint64 last = clone.lastIssuedSequence();
+        vm.prank(who);
+        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
+        ids = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
+        }
+    }
+
+    function _listingOfRow(uint256 row, uint256 nth) internal view returns (uint256) {
+        uint256 next = clone.nextListingId();
+        uint256 seen;
+        for (uint256 id = 1; id < next; ++id) {
+            Pool.Item memory it = pool.listedItem(id);
+            if (it.value != 0 && it.row == row) {
+                if (seen == nth) return id;
+                ++seen;
+            }
+        }
+        revert("no such listing");
+    }
+
+    /// @dev Delivers the word that selects `listingId` and checks the request ended Fulfilled.
+    function _capture(uint256 requestId, uint256 listingId) internal {
+        fulfill(clone, requestId, wordFor(clone, listingId));
+        (,,,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(requestId);
+        assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Fulfilled), "request not fulfilled");
+    }
+
+    function _rungs(uint256 row) internal pure returns (uint256) {
+        return row == 0 ? 1 : 2;
+    }
+
+    /// @dev Applies one capture to `b` with the settlement rules of `Pool._bookCapture`.
+    function _apply(Book memory b, uint256 proceeds, uint256 value, uint256 row) internal view {
+        b.receivable += proceeds;
+        b.margin += int256(proceeds) - int256(value);
+        b.mintLineOwed += mintFee * _rungs(row);
+        if (b.margin <= 0) return;
+        uint256 amount = uint256(b.margin);
+        uint256 cover = amount < b.mintLineOwed ? amount : b.mintLineOwed;
+        b.mintLineOwed -= cover;
+        uint256 rest = amount - cover;
+        uint256 maintenanceShare = rest * MAINT_BPS / SPLIT_BPS;
+        uint256 feedShare = rest * FEED_BPS / SPLIT_BPS;
+        uint256 minorFeed = feedShare * MINOR_SHARE_BPS / 10_000;
+        b.receivable -= maintenanceShare + feedShare;
+        b.maintenanceReceivable += maintenanceShare;
+        b.minorReceivable += minorFeed;
+        b.majorReceivable += feedShare - minorFeed;
+        b.margin = 0;
+    }
+
+    function _assertBook(Book memory b) internal view {
+        assertEq(pool.receivable(), b.receivable, "receivable");
+        assertEq(pool.margin(), b.margin, "margin");
+        assertEq(pool.mintLineOwed(), b.mintLineOwed, "mintLineOwed");
+        assertEq(pool.maintenanceReceivable(), b.maintenanceReceivable, "maintenanceReceivable");
+        assertEq(pool.grailReceivable(0), b.minorReceivable, "minor receivable");
+        assertEq(pool.grailReceivable(1), b.majorReceivable, "major receivable");
+    }
+
+    function _grailBuckets() internal view returns (uint256 minorBucket, uint256 majorBucket) {
+        (minorBucket,,,,,,,,,,,) = pool.grail(0);
+        (majorBucket,,,,,,,,,,,) = pool.grail(1);
+    }
+
+    function _assertI1() internal view {
+        (uint256 minorBucket, uint256 majorBucket) = _grailBuckets();
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + minorBucket + majorBucket, "I1");
+    }
+
+    /// @dev Sum of listed and held item values.
+    function _registryValue() internal view returns (uint256 sum) {
+        uint256 next = clone.nextListingId();
+        for (uint256 id = 1; id < next; ++id) {
+            sum += pool.listedItem(id).value;
+        }
+        for (uint256 i; i < pool.heldCount(); ++i) {
+            sum += pool.heldItem(i).value;
+        }
+    }
+
+    // ---------------------------------------------------------------- pull and settle
+
+    function test_pullSingleCaptureOfShapeBooksNegativeMargin() public {
+        _openReady();
+        uint256 listingId = _listingOfRow(0, 0);
+        Pool.Item memory it = pool.listedItem(listingId);
+        uint256 backingBefore = pool.backing();
+        uint256 cashBefore = pool.cash();
+
+        vm.recordLogs();
+        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(pool) || logs[i].topics[0] != Pool.Pulled.selector) continue;
+            found = true;
+            assertEq(address(uint160(uint256(logs[i].topics[1]))), player);
+            (uint256 count, uint256 loggedFee, uint256[] memory loggedIds) =
+                abi.decode(logs[i].data, (uint256, uint256, uint256[]));
+            assertEq(count, 1);
+            assertEq(loggedFee, fee);
+            assertEq(loggedIds.length, 1);
+            assertEq(loggedIds[0], ids[0]);
+        }
+        assertTrue(found, "Pulled");
+
+        (uint256 recordedBase, bool recorded) = pool.baseOf(ids[0]);
+        assertTrue(recorded);
+        assertEq(recordedBase, base);
+        assertEq(pool.backing(), backingBefore);
+
+        _capture(ids[0], listingId);
+        uint256 proceeds = _proceeds(fee, base);
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.Captured(ids[0], listingId, 0, it.value, proceeds);
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.Settled(2);
+        pool.settle(5);
+
+        assertEq(pool.backing(), backingBefore - it.value, "backing");
+        assertEq(pool.listedItem(listingId).value, 0, "unlisted");
+        assertEq(pool.rowCount(0), 6);
+        assertEq(pool.listedCount(), 9);
+        assertEq(pool.nextSequenceToBook(), 2);
+        assertEq(pool.replacementLength(), 1);
+        assertEq(pool.replacementQueue(0), 0);
+        assertEq(pool.cash(), cashBefore, "cash untouched by settle");
+        assertLt(proceeds, it.value, "row 0 capture is a loss");
+
+        Book memory b;
+        _apply(b, proceeds, it.value, 0);
+        assertEq(b.receivable, proceeds);
+        assertEq(b.margin, int256(proceeds) - int256(it.value));
+        assertEq(b.mintLineOwed, mintFee);
+        _assertBook(b);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function test_pullSingleCaptureOfPackSplitsPositiveMargin() public {
+        _openReady();
+        uint256 listingId = _listingOfRow(1, 0);
+        Pool.Item memory it = pool.listedItem(listingId);
+
+        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        _capture(ids[0], listingId);
+        uint256 proceeds = _proceeds(fee, base);
+        assertGt(proceeds, it.value, "row 1 capture is a gain");
+
+        uint256 amount = proceeds - it.value;
+        uint256 cover = amount < 2 * mintFee ? amount : 2 * mintFee;
+        uint256 rest = amount - cover;
+        uint256 maintenanceShare = rest * MAINT_BPS / SPLIT_BPS;
+        uint256 feedShare = rest * FEED_BPS / SPLIT_BPS;
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
+        pool.settle(5);
+
+        Book memory b;
+        _apply(b, proceeds, it.value, 1);
+        assertEq(b.margin, 0);
+        assertEq(b.mintLineOwed, 2 * mintFee - cover);
+        assertEq(b.maintenanceReceivable, maintenanceShare);
+        assertEq(b.minorReceivable + b.majorReceivable, feedShare);
+        assertEq(b.receivable, proceeds - maintenanceShare - feedShare);
+        _assertBook(b);
+    }
+
+    function test_pullBatchOfThreeNetsMarginAcrossCaptures() public {
+        _openLarge();
+        // Shape, pack, pack. The Shape loss carries until the second pack repays it.
+        uint256[3] memory listingIds = [_listingOfRow(0, 0), _listingOfRow(1, 0), _listingOfRow(1, 1)];
+        uint256[3] memory rowOf = [uint256(0), 1, 1];
+
+        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 3);
+        assertEq(ids.length, 3);
+        for (uint256 i; i < 3; ++i) {
+            (uint256 recordedBase, bool recorded) = pool.baseOf(ids[i]);
+            assertTrue(recorded);
+            assertEq(recordedBase, base, "same base across the batch");
+            _capture(ids[i], listingIds[i]);
+        }
+
+        uint256 proceeds = _proceeds(fee, base);
+        Book memory b;
+        uint256 valueSum;
+        for (uint256 i; i < 3; ++i) {
+            uint256 value = pool.listedItem(listingIds[i]).value;
+            valueSum += value;
+            _apply(b, proceeds, value, rowOf[i]);
+            if (i < 2) assertLt(b.margin, 0, "margin carries");
+        }
+        assertEq(b.margin, 0, "second pack repays the loss and splits the rest");
+        assertGt(b.maintenanceReceivable, 0);
+        uint256 backingBefore = pool.backing();
+        pool.settle(10);
+
+        assertEq(pool.backing(), backingBefore - valueSum);
+        assertEq(pool.nextSequenceToBook(), 4);
+        assertEq(pool.replacementLength(), 3);
+        _assertBook(b);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function test_settleBudgetBoundsTheWalk() public {
+        _openLarge();
+        (uint256[] memory ids,,) = _pullAs(player, 3);
+        _capture(ids[0], _listingOfRow(1, 0));
+        _capture(ids[1], _listingOfRow(1, 1));
+        _capture(ids[2], _listingOfRow(1, 2));
+
+        pool.settle(2);
+        assertEq(pool.nextSequenceToBook(), 3);
+        pool.settle(2);
+        assertEq(pool.nextSequenceToBook(), 4);
+        pool.settle(2);
+        assertEq(pool.nextSequenceToBook(), 4);
+    }
+
+    function test_harvestMatchesOwnerProceedsAndCreditsBuckets() public {
+        _openLarge();
+        uint256[3] memory listingIds = [_listingOfRow(1, 0), _listingOfRow(0, 0), _listingOfRow(1, 1)];
+        uint256[3] memory rowOf = [uint256(1), 0, 1];
+        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 3);
+        Book memory b;
+        for (uint256 i; i < 3; ++i) {
+            _apply(b, _proceeds(fee, base), pool.listedItem(listingIds[i]).value, rowOf[i]);
+            _capture(ids[i], listingIds[i]);
+        }
+        pool.settle(10);
+
+        uint256 owed = clone.ownerProceeds();
+        assertEq(owed, 3 * _proceeds(fee, base), "FWA owner proceeds");
+        assertEq(b.receivable + b.maintenanceReceivable + b.minorReceivable + b.majorReceivable, owed);
+        uint256 cashBefore = pool.cash();
+        uint256 balanceBefore = address(pool).balance;
+        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.Harvested(owed, 0);
+        assertTrue(pool.harvest());
+
+        assertEq(address(pool).balance, balanceBefore + owed);
+        assertEq(clone.ownerProceeds(), 0);
+        assertEq(pool.cash(), cashBefore + b.receivable);
+        assertEq(pool.maintenance(), b.maintenanceReceivable);
+        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
+        assertEq(minorAfter - minorBefore, b.minorReceivable);
+        assertEq(majorAfter - majorBefore, b.majorReceivable);
+        assertEq(pool.receivable(), 0);
+        assertEq(pool.maintenanceReceivable(), 0);
+        assertEq(pool.grailReceivable(0), 0);
+        assertEq(pool.grailReceivable(1), 0);
+        assertEq(pool.margin(), b.margin);
+        _assertI1();
+        assertFalse(pool.harvest(), "nothing left to harvest");
+    }
+
+    function test_harvestWaitsForTheBookingWalk() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        assertGt(clone.ownerProceeds(), 0);
+
+        assertFalse(pool.harvest(), "walk is behind FWA");
+        assertGt(clone.ownerProceeds(), 0);
+
+        pool.settle(5);
+        assertTrue(pool.harvest());
+        assertEq(clone.ownerProceeds(), 0);
+    }
+
+    function test_revert_harvestShortfall() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        pool.settle(5);
+
+        uint256 owed = clone.ownerProceeds();
+        pool.setReceivable(pool.receivable() + 1);
+        uint256 expected =
+            pool.receivable() + pool.maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
+        vm.expectRevert(abi.encodeWithSelector(Pool.HarvestShortfall.selector, owed, expected));
+        pool.harvest();
+    }
+
+    function test_upkeepSliceSettlesAndMintsOneReplacementInsideNextPull() public {
+        _openReady();
+        uint256 listingId = _listingOfRow(0, 0);
+        Pool.Item memory it = pool.listedItem(listingId);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        _capture(ids[0], listingId);
+        assertEq(pool.nextSequenceToBook(), 1, "pool has not booked yet");
+
+        uint256 cashBefore = pool.cash();
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.Captured(ids[0], listingId, 0, it.value, _proceeds(fee, base));
+        _pullAs(player, 1);
+
+        assertEq(pool.nextSequenceToBook(), 2, "slice booked the capture");
+        assertEq(pool.replacementLength(), 0, "slice consumed the replacement");
+        assertEq(pool.replacementHead(), 1);
+        assertEq(pool.heldCount(), 1, "replacement is held, not listed");
+        assertEq(pool.heldItem(0).row, 0);
+        assertEq(pool.heldItem(0).value, it.value);
+        assertEq(pool.cash(), cashBefore - it.value - mintFee, "cash paid the mint");
+        assertEq(pool.rowCount(0), 7);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function test_upkeepSliceSkipsReplacementWhenCashIsShort() public {
+        _openLarge();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(0, 0));
+        pool.settle(5);
+        assertEq(pool.replacementLength(), 1);
+
+        pool.spendOnBacking(pool.cash() - 0.05 ether);
+        _pullAs(player, 1);
+        assertEq(pool.replacementLength(), 1);
+        assertEq(pool.heldCount(), 0);
+    }
+
+    function test_listingWhileUnsettledStagesAndStartsTheCooldown() public {
+        _openReady();
+        _pullAs(player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+
+        uint256 tokenId = mintShapes(address(pool), 0.1 ether, 1);
+        pool.addItem(SHAPES_ADDR, 0, tokenId, 0.1 ether, 0);
+        uint256 versionBefore = clone.inventoryVersion();
+        assertTrue(pool.restock());
+
+        (,,,,,,, IFWAClone.ListingStatus status) = clone.listings(pool.listedItem(clone.nextListingId() - 1).listingId);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Staged));
+        assertEq(clone.inventoryVersion(), versionBefore + 1);
+        assertEq(clone.lastInventoryChangeAt(), block.timestamp);
+        assertGt(clone.purchasesResumeAt(), block.timestamp);
+    }
+
+    // ---------------------------------------------------------------- direct purchases
+
+    function test_directAcquireBooksValueWithZeroProceedsThenHarvestRepaysMargin() public {
+        _openReady();
+        uint256 listingId = _listingOfRow(0, 0);
+        Pool.Item memory it = pool.listedItem(listingId);
+
+        uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
+        (, bool recorded) = pool.baseOf(requestId);
+        assertFalse(recorded);
+        uint256 paid = clone.acquisitionFee();
+        _capture(requestId, listingId);
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.Captured(requestId, listingId, 0, it.value, 0);
+        pool.settle(5);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        assertEq(pool.receivable(), 0);
+        assertEq(pool.margin(), -int256(it.value));
+        assertEq(pool.replacementLength(), 1);
+
+        uint256 owed = clone.ownerProceeds();
+        assertGt(owed, 0);
+        assertLt(owed, paid + 1);
+        uint256 cashBefore = pool.cash();
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.Harvested(owed, owed);
+        assertTrue(pool.harvest());
+
+        assertEq(pool.margin(), int256(owed) - int256(it.value), "surplus repays the margin");
+        assertLt(pool.margin(), 0);
+        assertEq(pool.cash(), cashBefore + owed);
+        assertEq(pool.receivable(), 0);
+        assertEq(pool.maintenanceReceivable(), 0);
+        _assertI1();
+    }
+
+    function test_directAcquireOfPackSplitsSurplusMargin() public {
+        _openReady();
+        uint256 listingId = _listingOfRow(1, 0);
+        uint256 value = pool.listedItem(listingId).value;
+        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
+        _capture(requestId, listingId);
+        pool.settle(5);
+        assertEq(pool.mintLineOwed(), 2 * mintFee);
+
+        uint256 owed = clone.ownerProceeds();
+        assertGt(owed, value);
+        assertTrue(pool.harvest());
+
+        uint256 amount = owed - value;
+        uint256 cover = amount < 2 * mintFee ? amount : 2 * mintFee;
+        uint256 rest = amount - cover;
+        uint256 maintenanceShare = rest * MAINT_BPS / SPLIT_BPS;
+        uint256 feedShare = rest * FEED_BPS / SPLIT_BPS;
+        assertEq(pool.margin(), 0);
+        assertEq(pool.mintLineOwed(), 2 * mintFee - cover);
+        assertEq(pool.maintenance(), maintenanceShare);
+        (uint256 minorBucket, uint256 majorBucket) = _grailBuckets();
+        assertEq(minorBucket + majorBucket - minorBefore - majorBefore, feedShare);
+        _assertI1();
+    }
+
+    // ---------------------------------------------------------------- Shapes payment paths
+
+    function test_pullWithShapesCoversTicketAndRefundsExcess() public {
+        _openReady();
+        uint256 first = mintShapes(player, 0.1 ether, 2);
+        vm.prank(player);
+        IERC721(SHAPES_ADDR).setApprovalForAll(address(pool), true);
+        uint256[] memory tokenIds = new uint256[](2);
+        tokenIds[0] = first;
+        tokenIds[1] = first + 1;
+
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        uint256 playerBefore = player.balance;
+        uint256 poolBefore = address(pool).balance;
+        uint256 cashBefore = pool.cash();
+        uint64 last = clone.lastIssuedSequence();
+
+        vm.prank(player);
+        pool.pullWithShapes(tokenIds, 1, fee, block.timestamp + 1 hours);
+
+        assertEq(player.balance, playerBefore + 0.2 ether - total, "excess refunded");
+        assertEq(address(pool).balance, poolBefore, "redeemed ETH passed through");
+        assertEq(pool.cash(), cashBefore, "no bucket moved");
+        assertEq(clone.lastIssuedSequence(), last + 1);
+        vm.expectRevert();
+        shapes.ownerOf(first);
+        vm.expectRevert();
+        shapes.ownerOf(first + 1);
+        _assertI1();
+    }
+
+    function test_pullWithShapesAddsMsgValue() public {
+        _openReady();
+        uint256 tokenId = mintShapes(player, 0.1 ether, 1);
+        vm.prank(player);
+        IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = tokenId;
+
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(3);
+        assertGt(total, 0.1 ether);
+        uint256 topUp = total - 0.1 ether;
+        vm.deal(player, player.balance + topUp);
+        uint256 playerBefore = player.balance;
+
+        vm.prank(player);
+        pool.pullWithShapes{value: topUp}(tokenIds, 3, fee, block.timestamp + 1 hours);
+        assertEq(player.balance, playerBefore - topUp);
+        assertEq(clone.unsettledAcquisitionCount(), 3);
+    }
+
+    function test_revert_pullWithShapesTooLittle() public {
+        _openReady();
+        uint256 tokenId = mintShapes(player, 0.1 ether, 1);
+        vm.prank(player);
+        IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = tokenId;
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(3);
+        vm.prank(player);
+        vm.expectRevert(abi.encodeWithSelector(Pool.InsufficientValue.selector, 0.1 ether, total));
+        pool.pullWithShapes(tokenIds, 3, fee, block.timestamp + 1 hours);
+    }
+
+    function test_redeemAndDepositMintsSharesForRedeemedValue() public {
+        _openReady();
+        uint256 tokenId = mintShapes(player, 0.1 ether, 1);
+        vm.prank(player);
+        IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
+
+        uint256 navBefore = pool.nav();
+        uint256 supplyBefore = pool.totalShares();
+        uint256 balanceBefore = address(pool).balance;
+        (uint256 baseBps, uint256 slopeBps, uint256 capBps, uint256 referenceWei) = _curve();
+        uint256 contribution = PricingLib.entryContribution(
+            0.1 ether, PricingLib.entryCurveBps(navBefore, baseBps, slopeBps, capBps, referenceWei)
+        );
+        uint256 expectedShares = PricingLib.sharesFor(0.1 ether - contribution, navBefore, supplyBefore);
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit Pool.Deposited(player, 0.1 ether, contribution, expectedShares);
+        vm.prank(player);
+        pool.redeemAndDeposit(tokenId);
+
+        assertEq(pool.sharesOf(player), expectedShares);
+        assertEq(address(pool).balance, balanceBefore + 0.1 ether);
+        assertEq(pool.nav(), navBefore + 0.1 ether - contribution);
+        assertEq(pool.totalShares(), supplyBefore + expectedShares);
+        _assertI1();
+    }
+
+    function test_revert_redeemAndDepositNotApproved() public {
+        _openReady();
+        uint256 tokenId = mintShapes(player, 0.1 ether, 1);
+        vm.prank(player);
+        vm.expectRevert();
+        pool.redeemAndDeposit(tokenId);
+    }
+
+    function _curve() internal view returns (uint256, uint256, uint256, uint256) {
+        (uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei) = pool.curve();
+        return (baseBps, slopeBps, capBps, referenceWei);
+    }
+
+    // ---------------------------------------------------------------- reopen guards
+
+    function test_revert_purchasesCoolingDownRightAfterOpen() public {
+        _open(100 ether);
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(Pool.PurchasesCoolingDown.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+
+        warpPastCooldown(clone);
+        vm.prank(player);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_revert_boardTooThin() public {
+        _open(0.5 ether);
+        warpPastCooldown(clone);
+        uint256 concurrency = pool.concurrency();
+        assertGt(concurrency, 0);
+        assertGt(pool.listedCount(), 0, "board is built");
+        assertLt(pool.listedCount(), concurrency, "board is below concurrency");
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(Pool.BoardTooThin.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_boardTooThinCountsUnsettledAcquisitions() public {
+        _openReady();
+        assertEq(pool.listedCount(), pool.concurrency());
+        _pullAs(player, 1);
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(Pool.BoardTooThin.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_boardStaysThinUntilReplacementIsListed() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        _capture(ids[0], _listingOfRow(1, 0));
+        pool.settle(5);
+        assertEq(pool.listedCount(), pool.concurrency() - 1);
+
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(Pool.BoardTooThin.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    /// @dev On the 10 item board the first capture of a batch moves FWA's fee past the slippage
+    ///      tolerance, so later requests of the batch end Refunded and book nothing.
+    function test_slippageRefundedRequestsBookNothing() public {
+        _openReady();
+        uint256[3] memory listingIds = [_listingOfRow(1, 0), _listingOfRow(0, 0), _listingOfRow(1, 1)];
+        (uint256[] memory ids, uint256 fee,) = _pullAs(player, 3);
+        uint256 captures;
+        for (uint256 i; i < 3; ++i) {
+            fulfill(clone, ids[i], wordFor(clone, listingIds[i]));
+            (,,,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(ids[i]);
+            if (status == IFWAClone.AcquisitionStatus.Fulfilled) ++captures;
+        }
+        assertEq(captures, 1);
+        uint256 backingBefore = pool.backing();
+        pool.settle(10);
+        assertEq(pool.nextSequenceToBook(), 4);
+        assertEq(pool.replacementLength(), captures);
+        assertEq(pool.backing(), backingBefore - 0.02 ether);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        assertEq(clone.acquisitionRefundCredit(player), 2 * fee);
+    }
+
+    function test_revert_feeAboveMax() public {
+        _openReady();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(abi.encodeWithSelector(Pool.FeeAboveMax.selector, fee, fee - 1));
+        pool.pull{value: total}(1, fee - 1, block.timestamp + 1 hours);
+    }
+
+    function test_revert_insufficientValue() public {
+        _openReady();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.prank(player);
+        vm.expectRevert(abi.encodeWithSelector(Pool.InsufficientValue.selector, total - 1, total));
+        pool.pull{value: total - 1}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_pullRefundsOverpayment() public {
+        _openReady();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total + 1 ether);
+        vm.prank(player);
+        pool.pull{value: total + 1 ether}(1, fee, block.timestamp + 1 hours);
+        assertEq(player.balance, 1 ether);
+    }
+
+    function test_revert_countOutOfRange() public {
+        _openReady();
+        (uint256 fee,,) = clone.quoteAcquisitionPrice(1);
+        vm.expectRevert(Pool.InvalidCount.selector);
+        pool.pull(0, fee, block.timestamp + 1 hours);
+        uint256 over = pool.maxBatch() + 1;
+        vm.expectRevert(Pool.InvalidCount.selector);
+        pool.pull(over, fee, block.timestamp + 1 hours);
+    }
+
+    function test_revert_pullBeforeOpenAndWhenPaused() public {
+        vm.expectRevert(Pool.NotLive.selector);
+        pool.pull(1, 1 ether, block.timestamp + 1 hours);
+
+        _openReady();
+        pool.setPullsPaused(true);
+        vm.expectRevert(Pool.PullsPaused.selector);
+        pool.pull(1, 1 ether, block.timestamp + 1 hours);
+    }
+
+    function test_revert_insolvent() public {
+        _openReady();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+        vm.deal(address(pool), pool.cash() - 1);
+        vm.prank(player);
+        vm.expectRevert(Pool.Insolvent.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_grailProbabilityGuard() public {
+        _openReady();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, 2 * total);
+
+        // Weight of a 0.01 ETH list price is about half of the board weight, above the 20% cap.
+        pool.setGrailListing(0, 1, 11, 0.01 ether);
+        vm.prank(player);
+        vm.expectRevert(Pool.GrailProbTooHigh.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+
+        pool.setGrailListing(0, 1, 11, 100 ether);
+        vm.prank(player);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_revert_settleWithoutFwaPool() public {
+        PoolHarness fresh = new PoolHarness(_params());
+        vm.expectRevert(Pool.FwaPoolMissing.selector);
+        fresh.settle(1);
+    }
+
+    function test_revert_unknownListingRemoval() public {
+        vm.expectRevert(abi.encodeWithSelector(Pool.UnknownListing.selector, 999));
+        pool.removeListed(999);
+    }
+
+    // ---------------------------------------------------------------- delivery failures
+
+    /// @dev FWA delivers with `transferFrom`, so a contract purchaser without `onERC721Received`
+    ///      still receives the token and the capture books normally.
+    function test_contractPurchaserWithoutReceiverIsDelivered() public {
+        _openReady();
+        NoReceiver noReceiver = new NoReceiver();
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(address(noReceiver), total);
+        uint256 listingId = _listingOfRow(0, 0);
+        Pool.Item memory it = pool.listedItem(listingId);
+        uint64 last = clone.lastIssuedSequence();
+        noReceiver.pull{value: total}(Pool(payable(address(pool))), 1, fee, block.timestamp + 1 hours);
+        uint256 requestId = clone.requestIdAtSequence(last + 1);
+
+        _capture(requestId, listingId);
+        pool.settle(5);
+        assertEq(IERC721(it.collection).ownerOf(it.tokenId), address(noReceiver));
+        assertEq(pool.nextSequenceToBook(), 2);
+    }
+
+    /// @dev Direct acquisition with the Shapes contract as purchaser, delivered to the listing.
+    ///      Delivery reverts in `Shapes._update` (self custody), so the acquisition stays
+    ///      DeliveryPending.
+    function _grief(uint256 listingId) internal returns (uint256 requestId) {
+        requestId = acquireAs(SHAPES_ADDR, SHAPES_ADDR, clone, block.timestamp + 1 hours);
+        fulfill(clone, requestId, wordFor(clone, listingId));
+        (,,,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(requestId);
+        assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.DeliveryPending));
+    }
+
+    function _bookFromPool() internal view returns (Book memory b) {
+        b.receivable = pool.receivable();
+        b.margin = pool.margin();
+        b.mintLineOwed = pool.mintLineOwed();
+        b.maintenanceReceivable = pool.maintenanceReceivable();
+        b.minorReceivable = pool.grailReceivable(0);
+        b.majorReceivable = pool.grailReceivable(1);
+    }
+
+    function test_griefedDeliveriesAreWrittenOffByTheWalk() public {
+        _openLarge();
+        uint256 g1 = _listingOfRow(0, 0);
+        uint256 g2 = _listingOfRow(0, 1);
+        uint256 shapeValue = pool.listedItem(g1).value;
+        uint256 backingStart = pool.backing();
+        uint256 r1 = _grief(g1);
+        uint256 r2 = _grief(g2);
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.WrittenOff(r1, g1, shapeValue);
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.WrittenOff(r2, g2, shapeValue);
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit Pool.Settled(3);
+        pool.settle(5);
+
+        assertEq(pool.nextSequenceToBook(), 3, "walk passes both deliveries");
+        assertEq(pool.backing(), backingStart - 2 * shapeValue, "backing falls by the written-off values");
+        assertEq(pool.backing(), _registryValue(), "I2");
+        assertEq(pool.listedItem(g1).value, 0);
+        assertEq(pool.listedCount(), 58);
+        assertEq(pool.rowCount(0), 40);
+        assertEq(pool.margin(), -int256(2 * shapeValue), "margin carries the loss");
+        assertEq(pool.replacementLength(), 0, "write-off enqueues no replacement");
+        assertEq(pool.receivable(), 0);
+        _assertI1();
+
+        // Later pulls settle and harvest normally. Pack captures repay the loss before any split.
+        Book memory b = _bookFromPool();
+        bool repaid;
+        for (uint256 i; i < 18 && !repaid; ++i) {
+            uint256 listing = _listingOfRow(1, 0);
+            (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+            _capture(ids[0], listing);
+            _apply(b, _proceeds(fee, base), pool.listedItem(listing).value, 1);
+            pool.settle(5);
+            _assertBook(b);
+            if (b.margin < 0) {
+                assertEq(pool.maintenanceReceivable() + pool.maintenance(), 0, "no split while margin is negative");
+            } else {
+                repaid = true;
+            }
+            if (i == 0) {
+                uint256 owed = clone.ownerProceeds();
+                assertEq(owed, _proceeds(fee, base), "written-off deliveries accrued no proceeds");
+                vm.expectEmit(false, false, false, true, address(pool));
+                emit Pool.Harvested(owed, 0);
+                assertTrue(pool.harvest());
+                b.receivable = 0;
+                _assertBook(b);
+            }
+        }
+        assertTrue(repaid, "margin repaid");
+        assertEq(pool.margin(), 0, "split follows repayment");
+        assertEq(pool.backing(), _registryValue(), "I2");
+    }
+
+    /// @dev A purchaser that refunds before the pool settles leaves a DeliveryRefunded acquisition for
+    ///      the walk. The Shapes contract cannot call `refundFailedDelivery`, so the fork impersonates it.
+    function test_refundBeforeTheWalkRecoversTheToken() public {
+        _openLarge();
+        uint256 listingId = _listingOfRow(0, 0);
+        Pool.Item memory stuck = pool.listedItem(listingId);
+        uint256 backingBefore = pool.backing();
+        uint256 listedBefore = pool.listedCount();
+
+        (uint256[] memory ids,,) = _pullAs(SHAPES_ADDR, 1);
+        fulfill(clone, ids[0], wordFor(clone, listingId));
+        (, uint64 deadline) = clone.pendingDeliveries(listingId);
+        vm.warp(deadline);
+        vm.prank(SHAPES_ADDR);
+        clone.refundFailedDelivery(listingId);
+        pool.settle(5);
+
+        assertEq(pool.nextSequenceToBook(), 2);
+        assertEq(shapes.ownerOf(stuck.tokenId), address(pool), "token recovered");
+        assertEq(pool.heldCount(), 1);
+        assertEq(pool.heldItem(0).tokenId, stuck.tokenId);
+        assertEq(pool.heldItem(0).value, stuck.value);
+        assertEq(pool.heldItem(0).listingId, 0);
+        assertEq(pool.backing(), backingBefore, "refunded item keeps its backing");
+        assertEq(pool.rowCount(0), 42);
+        assertEq(pool.listedCount(), listedBefore - 1);
+        assertEq(pool.replacementLength(), 0);
+        assertEq(pool.margin(), 0);
+        assertEq(pool.backing(), _registryValue(), "I2");
+        _assertI1();
+    }
+
+    function _pendingDelivery(uint256 listingId) internal view returns (uint256 requestId, uint64 deadline) {
+        return clone.pendingDeliveries(listingId);
+    }
+
+    function test_expiredAcquisitionBooksNothing() public {
+        _openReady();
+        (uint256[] memory ids,,) = _pullAs(player, 1);
+        uint256 backingBefore = pool.backing();
+        expire(clone, ids[0]);
+
+        pool.settle(5);
+        assertEq(pool.nextSequenceToBook(), 2);
+        assertEq(pool.backing(), backingBefore);
+        assertEq(pool.replacementLength(), 0);
+        assertEq(pool.margin(), 0);
+        assertEq(clone.acquisitionRefundCredit(player), clone.acquisitionFee());
+    }
+}

@@ -71,6 +71,45 @@ contract PoolHarness is Pool {
         fwaPool = IFWAClone(clone);
         openingDeadlineAt = deadlineAt;
     }
+
+    function harvest() external returns (bool) {
+        return _harvest();
+    }
+
+    function settleBudget(uint256 maxItems) external {
+        _settle(maxItems);
+    }
+
+    function splitMargin() external {
+        _splitMargin();
+    }
+
+    function setReceivable(uint256 amount) external {
+        receivable = amount;
+    }
+
+    function setMargin(int256 amount) external {
+        margin = amount;
+    }
+
+    function setMintLineOwed(uint256 amount) external {
+        mintLineOwed = amount;
+    }
+
+    function setGrailListing(uint256 track, uint256 packId, uint256 listingId, uint256 notional) external {
+        Grail storage g = grail[track];
+        g.packId = packId;
+        g.listingId = listingId;
+        g.notional = notional;
+    }
+
+    function setPullsPaused(bool paused) external {
+        pullsPaused = paused;
+    }
+
+    function grailReceivable(uint256 track) external view returns (uint256) {
+        return grail[track].receivable;
+    }
 }
 
 abstract contract PoolFixture is Test {
@@ -120,7 +159,7 @@ contract PoolConstructorTest is PoolFixture {
         assertEq(pool.navCap(), 1_000 ether);
         assertEq(pool.rotateInterval(), 3_600);
         assertEq(pool.openingDeadline(), 24 hours);
-        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,) = pool.grail(1);
+        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = pool.grail(1);
         assertEq(target, 100 ether);
         assertEq(step, 1 ether);
         assertEq(listBps, 9_000);
@@ -229,7 +268,7 @@ contract PoolTest is PoolFixture {
     }
 
     function _bucket(uint256 track) internal view returns (uint256 bucket) {
-        (bucket,,,,,,,,,) = pool.grail(track);
+        (bucket,,,,,,,,,,,) = pool.grail(track);
     }
 
     function _claim(uint256 index) internal view returns (address to, uint256 requestedAt, uint256 amount) {

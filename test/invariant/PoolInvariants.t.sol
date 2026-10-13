@@ -175,8 +175,8 @@ contract PoolInvariantsTest is PoolFixture {
     }
 
     function _grailBuckets() internal view returns (uint256 total) {
-        (uint256 minorBucket,,,,,,,,,) = pool.grail(0);
-        (uint256 majorBucket,,,,,,,,,) = pool.grail(1);
+        (uint256 minorBucket,,,,,,,,,,,) = pool.grail(0);
+        (uint256 majorBucket,,,,,,,,,,,) = pool.grail(1);
         return minorBucket + majorBucket;
     }
 

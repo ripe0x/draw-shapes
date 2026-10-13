@@ -91,9 +91,10 @@ abstract contract ForkBase is Test {
         returns (uint256 requestId)
     {
         (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice();
+        uint256 version = pool.inventoryVersion();
         vm.deal(caller, caller.balance + total);
         vm.prank(caller);
-        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, pool.inventoryVersion(), deadline);
+        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, version, deadline);
     }
 
     /// @dev Delivers `word` the way a live fulfillment arrives: the coordinator calls the FWA VRF
