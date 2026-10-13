@@ -7,3 +7,6 @@
 [submodule "lib/shapes"]
 	path = lib/shapes
 	url = https://github.com/ripe0x/shapes
+[submodule "lib/draw-packs"]
+	path = lib/draw-packs
+	url = /Users/dd/CascadeProjects/draw-packs
