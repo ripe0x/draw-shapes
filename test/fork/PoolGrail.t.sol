@@ -381,6 +381,34 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _assertI1();
     }
 
+    function test_decayBelowOnePercentOfTheListPriceDoesNotReprice() public {
+        _openReady();
+        for (uint256 i; i < 10; ++i) {
+            _grow(0);
+        }
+        for (uint256 i; i < 7; ++i) {
+            _grow(1);
+        }
+        assertEq(_backing(1), 1.05 ether, "the major track is at its target");
+        uint256 listingId = _listing(0);
+        assertEq(_notional(0), 0.4 ether);
+
+        pool.recordPulls(3);
+        _warpToRotation();
+        assertEq(uint256(pool.rotateDue()), uint256(IPoolTypes.RotateTrigger.None), "0.75 percent is not due");
+        (uint256 price,) = _price(listingId);
+        assertEq(price, 0.4 ether);
+        assertEq(_pulls(0), 3, "the pulls keep counting");
+
+        pool.recordPulls(1);
+        _warpToRotation();
+        assertEq(uint256(pool.rotateDue()), uint256(IPoolTypes.RotateTrigger.Decay), "1 percent is due");
+        pool.rotate();
+        assertEq(_notional(0), 0.396 ether, "4 pulls at 0.001 ETH");
+        assertEq(_pulls(0), 0);
+        _assertI1();
+    }
+
     function test_growthRunsInsideRotateAndRestartsTheSpacing() public {
         _openReady();
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);

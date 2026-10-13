@@ -96,6 +96,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     uint256 internal settleFailures;
     uint256 internal totalSettleListed;
     uint256 internal totalSettleRefund;
+    uint256 internal totalRotateRefund;
     uint256 internal depositFailures;
     uint256 internal withdrawFailures;
     bytes4[] internal rejectSel;
@@ -483,8 +484,9 @@ contract PlayMonthTest is ForkBase, Deploy {
                 totalSettleListed += listed;
                 totalSettleRefund += refund;
             } else if (t == IPoolTypes.Rotated.selector) {
-                (, bool inv,) = abi.decode(l.data, (bool, bool, uint256));
+                (, bool inv, uint256 refund) = abi.decode(l.data, (bool, bool, uint256));
                 if (inv) ++inventoryChanged;
+                totalRotateRefund += refund;
             } else if (t == IPoolTypes.Withdrawn.selector) {
                 _onWithdrawn(address(uint160(uint256(l.topics[1]))), l.data);
             }
@@ -633,6 +635,8 @@ contract PlayMonthTest is ForkBase, Deploy {
         console2.log("settleFailures", settleFailures);
         console2.log("settleListed", totalSettleListed);
         console2.log("settleRefund", totalSettleRefund);
+        console2.log("rotateRefund", totalRotateRefund);
+        console2.log("maintenanceEnd", pool.maintenance());
         console2.log("depositFailures", depositFailures);
         console2.log("withdrawFailures", withdrawFailures);
         for (uint256 i; i < rejectSel.length; ++i) {

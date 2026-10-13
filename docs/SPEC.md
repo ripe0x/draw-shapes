@@ -93,7 +93,7 @@ slope 2,000, cap 2,500, reference 55 ETH; opening deadline 24 h. The owner set t
 - `rotateInterval` 900 s, `batchMin` 5, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`).
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
-`grailProbCapBps` and the GRAIL tracks are set in `script/env/<env>.env`.
+`grailProbCapBps` and the GRAIL tracks are set in `script/env/<env>.env`. The launch `decayWeiPerPull` is 0.0001 ETH for both tracks.
 
 ## 6. Lifecycle
 
@@ -219,7 +219,7 @@ is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer 
 unless a reason holds. `lastRotateAt` moves when the call changed inventory. Reasons, in evaluation order:
 1. Claim: the head queued claim is at least `rotateInterval` old.
 2. GrailStep: a track below `targetWei` holds a bucket that covers a step and its mint fees.
-3. Decay: a listed GRAIL track has `pullsSinceList` above zero and its decayed price, or its price lifted to restore
+3. Decay: a listed GRAIL track has `pullsSinceList` above zero and its decayed price, at least 1 percent below the list price, or its price lifted to restore
    `grailProbCapBps`, differs from its list price. An unlisted pack whose next price keeps the cap counts as well.
 4. Held: `settle` may not list (cooldown above zero and `listWhilePaused` off), and a held item exists or spendable cash
    covers the queue head.
@@ -255,8 +255,8 @@ Growth (trigger GrailStep), per track: requires `bucket >= stepWei + mint fees`,
 Shapes, and repacks it as one Shape; `notional = backing * listBps / 10_000`; lists. It resets `pullsSinceList`.
 
 Decay (reason Decay), inside `rotate`, after the growth step, for a track the growth step left unchanged: `next =
-max(floorWei, notional - decayWeiPerPull * pullsSinceList)`. The reprice runs when the listing is Active, `next` is below
-`notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice` and resets
+max(floorWei, notional - decayWeiPerPull * pullsSinceList)`. The reprice runs when the listing is Active, `next` is at
+least 1 percent (`notional / 100`) below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice` and resets
 `pullsSinceList`. An unlisted pack is listed at `next`. On capture, proceeds go to the track's receivable and then its
 bucket, and `packId` and `backing` reset to 0.
 

@@ -750,16 +750,16 @@ contract Pool is PoolBooks {
     }
 
     /// @dev List price that `_rotateGrail` sets for track `t`, or zero when it sets none: the
-    ///      decayed price of an unlisted pack or of an Active listing when it keeps the probability
-    ///      cap, else the lifted price of an Active listing while the cap is exceeded and the lift
-    ///      raises the price.
+    ///      decayed price of an unlisted pack, the decayed price of an Active listing when it is at
+    ///      least `notional / 100` below `notional` and keeps the probability cap, else the lifted
+    ///      price of an Active listing while the cap is exceeded and the lift raises the price.
     function _nextPrice(uint256 t, Grail storage g) internal view returns (uint256) {
         if (g.packId == 0) return 0;
         uint256 listingId = g.listingId;
         uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
         if (listingId == 0) return _grailCapExceeded(t, next) ? 0 : next;
         if (_listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) return 0;
-        if (next < g.notional && !_grailCapExceeded(t, next)) return next;
+        if (next < g.notional && g.notional - next >= g.notional / 100 && !_grailCapExceeded(t, next)) return next;
         if (!_grailCapExceeded(MAJOR + 1, 0)) return 0;
         uint256 lifted = _liftedNotional(t, g);
         return lifted > g.notional ? lifted : 0;
@@ -998,10 +998,10 @@ contract Pool is PoolBooks {
     ///      lowers the list price by the decay accrued since the last listing or reprice, or lifts
     ///      the price when the listed GRAIL weight exceeds `grailProbCapBps`. A listed track is
     ///      repriced only when its listing is Active. A decay applies when the new price
-    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is below the current one and keeps
-    ///      the listed GRAIL weight within `grailProbCapBps`. A lift
-    ///      applies when the weight is above the cap at the current price. Returns whether the FWA
-    ///      listing changed. `busy` is true while FWA holds unsettled acquisitions, which lock
+    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is at least 1 percent below the
+    ///      current one and keeps the listed GRAIL weight within `grailProbCapBps`. A lift applies
+    ///      when the weight is above the cap at the current price. Returns whether the FWA listing
+    ///      changed. `busy` is true while FWA holds unsettled acquisitions, which lock
     ///      repricing and withdrawal.
     function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
         if (_growGrail(t, busy) == 0) return true;

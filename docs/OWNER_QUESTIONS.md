@@ -79,9 +79,18 @@ h. Size after decision 9: Pool 24,395 B and PoolAdmin 23,974 B. To fit, `createF
    Pool change needs a byte budget first.
 i. Keeper economics measured on the 500 a day week with cooldown 0: 505 settle calls listing
    3,409 items (0.25 ETH refunded) and 609 rotate calls, 568 of them for GRAIL decay, 0.56 ETH of
-   refunds in all, against about 0.7 ETH of maintenance inflow. Open for the owner: move the
-   decay reprice into settle's batch (no separate rotate), lower or parametrise the 0.0005 ETH
-   tip, or raise `maintenanceBps`.
+   refunds in all, against about 0.7 ETH of maintenance inflow. Spec author's finding
+   (2026-10-13): the cause is `decayWeiPerPull` 0.001, which makes a reprice due every 20 minutes
+   at 500 pulls a day and hits the floor in a day. Decided: launch decay 0.0001 for both tracks
+   (odds ramp over a week) and a fixed 1 percent reprice threshold in the decay step; the tip and
+   `maintenanceBps` stay. Rerun, 500 a day for 7 days: 88 rotates (45 GrailStep, 43 Decay),
+   505 settles, refunds 0.30 ETH (settle 0.25, rotate 0.04) against 1.20 ETH of maintenance
+   inflow measured as bucket end plus refunds. At 100 a day: 29 rotates, 141 settles, 0.08 ETH
+   refunds against 0.20 ETH inflow. Decided and in SPEC.
+j. Size plan (recorded, not built): Pool 24,395 B and PoolAdmin 23,974 B leave no room for an
+   audit fix. The next Pool change first moves the listing engine (`_fill`, `_collectQueue`,
+   `_listBatch`, `_listItems`, `_openBoard`) into a third module reached the same way as
+   `chooseRow`, which frees roughly 3 KB in Pool.
 
 ## Guesses taken during the run
 
