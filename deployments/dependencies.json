@@ -1,0 +1,15 @@
+{
+  "1": {
+    "shapes": "0x6fe9193276bf7abcbee44ab7afd717d637d6faf0",
+    "shapePacks": "0xf21514b090da7df4390803497d6ae673801e5ca7",
+    "fwaFactory": "0xa1e8e92609708AbA08E0A66e811C41cdBBF610Fa",
+    "fwaCloneImplementation": "0x2969749Fa2D9618fF08a63F41Be7bF7d018009d7",
+    "fwaVrfService": "0x225f815F2585f6F676243be6944b8A598Db7595A",
+    "fwaToken": "0xa0Df17B5aC76ABaBA36E1450E2cbCd18A620C845"
+  },
+  "11155111": {
+    "shapes": "0x6C2F9c00F44FBBF141dD166979903004b80D5f99",
+    "fwaFactory": "0xdF0b2Cf3dCc47B79b42e310c06C98df93f894358",
+    "note": "Sepolia FWA factory taken from the prior deployment record; docs/external/fwa-v2.md lists 0xf5a3a153164791ab579c3d9ba5dbecf7cdfd300c in its top table. Verify before use."
+  }
+}

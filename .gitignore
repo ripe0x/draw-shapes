@@ -1,0 +1,17 @@
+# secrets: every env variant except committed values-only files
+.env*
+!.env.example
+!script/env/*.env
+*.bak
+*keystore*
+# foundry
+foundry.lock
+out/
+cache/
+broadcast/**/dry-run/
+# node
+node_modules/
+.next/
+# local
+.DS_Store
+__pycache__/

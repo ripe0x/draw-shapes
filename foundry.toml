@@ -1,0 +1,24 @@
+[profile.default]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "solady/=lib/solady/src/",
+    "shapes/=lib/shapes/src/",
+    "ladder/=lib/shapes/ladders/mainnet/",
+    "@openzeppelin/contracts/=lib/shapes/lib/openzeppelin-contracts/contracts/",
+]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+bytecode_hash = "none"
+cbor_metadata = false
+fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./script/env" }]
+# Fork suites read MAINNET_RPC_URL (default: Tenderly public gateway) and FORK_BLOCK from the
+# environment in test/fork/ForkBase.sol. Pin FORK_BLOCK so ~/.foundry/cache/rpc compounds.
+no_storage_caching = false
