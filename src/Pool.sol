@@ -151,6 +151,8 @@ contract Pool is ReentrancyGuard {
     error HarvestShortfall(uint256 received, uint256 expected);
     error BooksBehind();
     error NavZero();
+    error RotateTooSoon();
+    error RedeemMismatch();
 
     // ------------------------------------------------------------------ events
 
@@ -166,6 +168,9 @@ contract Pool is ReentrancyGuard {
     event SurplusBooked(uint256 surplus);
     event Settled(uint64 nextSequenceToBook);
     event WrittenOff(uint256 indexed requestId, uint256 indexed listingId, uint256 value);
+    /// @dev `fee` is the amount deducted from the head claim for the mint fees of the redeemed Shapes.
+    event Liquidated(uint256 indexed listingId, uint256 value, uint256 fee);
+    event Rotated(bool changed, bool inventoryChanged, uint256 refund);
 
     // ------------------------------------------------------------------ constants and immutables
 
@@ -179,6 +184,11 @@ contract Pool is ReentrancyGuard {
     uint256 internal constant PULL_SLOTS = 5;
     uint256 internal constant SETTLE_BUDGET = 3;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
+    uint256 internal constant MAX_LIQUIDATE_ITEMS = 10;
+    /// @dev Added to the refund of every `rotate` that changed state.
+    uint256 internal constant ROTATE_TIP = 0.0005 ether;
+    /// @dev Intrinsic transaction gas plus the refund transfer, added to the measured gas.
+    uint256 internal constant ROTATE_GAS_OVERHEAD = 30_000;
 
     address public immutable shapes;
     address public immutable drawPacks;
@@ -246,6 +256,12 @@ contract Pool is ReentrancyGuard {
     uint256 public mintLineOwed;
     /// @notice Listed ordinary items.
     uint256 public listedCount;
+    /// @notice Timestamp of the last `rotate` that changed inventory, or of `open()` going Live.
+    uint256 public lastRotateAt;
+    /// @dev FWA listing ids of listed ordinary items, by row.
+    uint256[][] internal _listedByRow;
+    /// @dev Position of each listing id inside its row's `_listedByRow` array.
+    mapping(uint256 listingId => uint256) internal _listedIndex;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -358,6 +374,7 @@ contract Pool is ReentrancyGuard {
         if (!fwa.localPurchasesEnabled()) fwa.setBool(FWAConfigKeys.ACQUISITIONS_ENABLED, true);
         if (_restock() < MAX_MINTS_PER_RESTOCK) {
             lifecycle = Lifecycle.Live;
+            lastRotateAt = block.timestamp;
             emit Opened();
         }
     }
@@ -395,14 +412,33 @@ contract Pool is ReentrancyGuard {
         if (paidNow != 0) SafeTransferLib.safeTransferETH(msg.sender, paidNow);
     }
 
-    /// @notice Pays queued claims from `cash` in request order once the head claim is at least
-    ///         `rotateInterval` old. Does nothing when the queue is empty.
+    /// @notice Pays queued claims in request order once the head claim is at least `rotateInterval`
+    ///         old. Pays from `cash`, then withdraws and redeems up to `MAX_LIQUIDATE_ITEMS` listed
+    ///         items until the head claim is covered. Does nothing when the queue is empty.
     function liquidate() external nonReentrant {
         _sync();
         uint256 head = claimHead;
         if (head == claimQueue.length) return;
         if (block.timestamp < claimQueue[head].requestedAt + rotateInterval) revert ClaimNotDue();
-        _payClaims(MAX_CLAIM_ITEMS);
+        _clearClaims();
+    }
+
+    /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, restocks
+    ///         and lists the board, then refunds the caller from `maintenance`. Callable once
+    ///         `rotateInterval` has passed since `lastRotateAt`.
+    function rotate() external nonReentrant {
+        if (lifecycle != Lifecycle.Live) revert NotLive();
+        if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
+        uint256 gasStart = gasleft();
+
+        bool changed = _settleAndHarvest();
+        uint256 claimsBefore = claims;
+        bool inventoryChanged = _clearClaims();
+        bool heldPending = _held.length != 0;
+        bool minted = _restock() != 0;
+        inventoryChanged = inventoryChanged || heldPending || minted;
+        if (inventoryChanged) lastRotateAt = block.timestamp;
+        _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
     }
 
     // ------------------------------------------------------------------ player paths
@@ -525,6 +561,94 @@ contract Pool is ReentrancyGuard {
         for (uint256 i; i < paidCount; ++i) {
             emit ClaimPaid(recipients[i], payouts[i]);
             SafeTransferLib.forceSafeTransferETH(recipients[i], payouts[i]);
+        }
+    }
+
+    /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Returns
+    ///      whether a listing was withdrawn.
+    function _clearClaims() internal returns (bool withdrawn) {
+        _payClaims(MAX_CLAIM_ITEMS);
+        withdrawn = _liquidateForClaims(MAX_LIQUIDATE_ITEMS);
+        if (withdrawn) _payClaims(MAX_CLAIM_ITEMS);
+    }
+
+    /// @dev Settles up to `MAX_SETTLE_ITEMS` acquisitions and harvests. Returns whether a booking
+    ///      or a harvest happened.
+    function _settleAndHarvest() internal returns (bool) {
+        uint64 booked = nextSequenceToBook;
+        _processAndSettle(MAX_SETTLE_ITEMS);
+        bool harvested = _harvest();
+        return harvested || nextSequenceToBook != booked;
+    }
+
+    /// @dev Pays the caller `min(maintenance, gas cost + ROTATE_TIP)` when the rotation changed
+    ///      state. The transfer is the last step.
+    function _refund(uint256 gasStart, bool changed, bool inventoryChanged) internal {
+        uint256 refund;
+        uint256 bucket = maintenance;
+        if (changed && bucket != 0) {
+            uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + ROTATE_TIP;
+            refund = cost < bucket ? cost : bucket;
+            maintenance = bucket - refund;
+        }
+        emit Rotated(changed, inventoryChanged, refund);
+        if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
+    }
+
+    /// @dev Withdraws and redeems listed items, at most `maxItems`, while `cash` is below the head
+    ///      claim. Each pick is the last listed item of the row most over its share. Does nothing
+    ///      while FWA holds unsettled acquisitions, which lock withdrawals, or while the booking
+    ///      walk is behind FWA's processing queue, which leaves captured listings in `_listed`.
+    ///      Returns whether an item was withdrawn.
+    function _liquidateForClaims(uint256 maxItems) internal returns (bool withdrawn) {
+        uint256 head = claimHead;
+        if (head == claimQueue.length || listedCount == 0) return false;
+        IFWAClone fwa = fwaPool;
+        if (fwa.unsettledAcquisitionCount() != 0 || nextSequenceToBook != fwa.nextSequenceToProcess()) return false;
+        uint256 mintFee = IShapes(shapes).mintFee();
+        for (uint256 n; n < maxItems && listedCount != 0 && cash < claimQueue[head].amount; ++n) {
+            _liquidateOne(fwa, head, mintFee);
+            withdrawn = true;
+        }
+    }
+
+    /// @dev Withdraws the last listed item of the most overweight row, redeems it into `cash` and
+    ///      deducts the mint fees of the redeemed Shapes from the claim at `head`. The deducted ETH
+    ///      stays in `cash` for the replacement mint.
+    function _liquidateOne(IFWAClone fwa, uint256 head, uint256 mintFee) internal {
+        uint256[] storage ids = _listedByRow[_mostOverweightListedRow()];
+        uint256 listingId = ids[ids.length - 1];
+        fwa.withdrawListing(listingId);
+        Item memory it = _removeListed(listingId);
+
+        uint256 balanceBefore = address(this).balance;
+        IShapes(it.collection).redeem(it.tokenId);
+        if (address(this).balance - balanceBefore != it.value) revert RedeemMismatch();
+        cash += it.value;
+
+        Claim storage c = claimQueue[head];
+        uint256 amount = c.amount;
+        uint256 fee = mintFee * _mix[it.row].rungs.length;
+        if (fee > amount) fee = amount;
+        c.amount = amount - fee;
+        claims -= fee;
+        emit Liquidated(listingId, it.value, fee);
+    }
+
+    /// @dev Row with listed items that maximizes `rowCount / shareBps`, compared by cross
+    ///      multiplication. A listed row with zero share ranks above every row with a share.
+    function _mostOverweightListedRow() internal view returns (uint256 best) {
+        uint256 bestCount;
+        uint256 bestShare;
+        for (uint256 r; r < _mix.length; ++r) {
+            if (_listedByRow[r].length == 0) continue;
+            uint256 count = _rowCount[r];
+            uint256 share = _mix[r].shareBps;
+            if (bestCount == 0 || count * bestShare > bestCount * share) {
+                best = r;
+                bestCount = count;
+                bestShare = share;
+            }
         }
     }
 
@@ -766,13 +890,17 @@ contract Pool is ReentrancyGuard {
 
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through
     ///      `_addItem` and `_removeHeld` / `_removeListed`, which keep `backing` equal to the sum
-    ///      of `value` over held and listed items (I2) and `_rowCount` equal to their number.
+    ///      of `value` over held and listed items (I2), `_rowCount` equal to their number and
+    ///      `_listedByRow` equal to the listing ids of the listed items.
     function _addItem(Item memory it) internal {
         if (it.listingId == 0) {
             _held.push(it);
         } else {
             _listed[it.listingId] = it;
             ++listedCount;
+            uint256[] storage ids = _listedByRow[it.row];
+            _listedIndex[it.listingId] = ids.length;
+            ids.push(it.listingId);
         }
         backing += it.value;
         ++_rowCount[it.row];
@@ -791,6 +919,12 @@ contract Pool is ReentrancyGuard {
         it = _listed[listingId];
         if (it.value == 0) revert UnknownListing(listingId);
         delete _listed[listingId];
+        uint256[] storage ids = _listedByRow[it.row];
+        uint256 lastId = ids[ids.length - 1];
+        uint256 index = _listedIndex[listingId];
+        ids[index] = lastId;
+        _listedIndex[lastId] = index;
+        ids.pop();
         backing -= it.value;
         --_rowCount[it.row];
         --listedCount;
@@ -944,7 +1078,10 @@ contract Pool is ReentrancyGuard {
         delete _rowBackingWei;
         for (uint256 i; i < rows.length; ++i) {
             _rowBackingWei.push(PricingLib.rowBacking(rows[i]));
-            if (_rowCount.length < rows.length) _rowCount.push();
+            if (_rowCount.length < rows.length) {
+                _rowCount.push();
+                _listedByRow.push();
+            }
             _mix.push();
             PricingLib.MixRow storage row = _mix[i];
             row.shareBps = rows[i].shareBps;

@@ -1125,9 +1125,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         assertEq(pool.nextSequenceToBook(), 2, "liquidate booked the capture");
         uint256 paid = saver.balance - balance;
-        assertGt(paid, 0, "claim paid from the harvest");
-        assertLe(paid, _proceeds(fee, base));
-        assertEq(pool.claims(), queued - paid);
+        assertGt(paid, _proceeds(fee, base), "claim paid from the harvest, then from liquidated listings");
+        assertLe(pool.claims() + paid, queued, "liquidation fees reduce the claim");
         assertEq(pool.cash(), 0);
     }
 

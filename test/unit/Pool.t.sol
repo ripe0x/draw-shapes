@@ -33,6 +33,20 @@ contract PoolHarness is Pool {
         cash += msg.value;
     }
 
+    /// @dev Sends `amount` of `cash` out of the pool, as a loss of ordinary ETH.
+    function loseCash(uint256 amount) external {
+        cash -= amount;
+        SafeTransferLib.safeTransferETH(SINK, amount);
+    }
+
+    function setMaintenance(uint256 amount) external {
+        maintenance = amount;
+    }
+
+    function listedIds(uint256 row) external view returns (uint256[] memory) {
+        return _listedByRow[row];
+    }
+
     function pauseDeposits() external {
         depositsPaused = true;
     }
