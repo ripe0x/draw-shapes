@@ -1,0 +1,236 @@
+/* Paper theme ported from the shapes-on-fwa-v2 web app: tokens, square buttons, hairline rules. */
+:root {
+  color-scheme: light;
+  --page: #f7f7f3;
+  --ink: #11110f;
+  --body: #2f2f2b;
+  --muted: #686862;
+  --rule: #d8d8d1;
+  --rule-inner: #e7e7e1;
+  --border: #b9b9b1;
+  --row: #efefe9;
+  --bad: #a3352f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--body);
+}
+
+body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--ink);
+  text-underline-offset: 3px;
+}
+a:hover {
+  color: var(--muted);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+/* Header */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 24px;
+  background: var(--page);
+  border-bottom: 1px solid var(--rule);
+}
+.header nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.header nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.header nav a:hover {
+  color: var(--ink);
+}
+.header nav a.wordmark {
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 16px;
+}
+
+/* Page */
+.page {
+  max-width: 1080px;
+  margin-inline: auto;
+  padding: 0 24px 96px;
+}
+section {
+  padding-block: 28px;
+  border-top: 1px solid var(--rule);
+}
+section:first-child {
+  border-top: 0;
+}
+h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.note {
+  margin: 8px 0;
+  color: var(--muted);
+  line-height: 1.55;
+  max-width: 68ch;
+}
+.error {
+  margin: 10px 0;
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+/* Key-value list */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(140px, 260px) 1fr;
+  margin: 16px 0;
+}
+.kv dt,
+.kv dd {
+  margin: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule-inner);
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.kv dd.strong {
+  font-size: 15px;
+}
+.kv-pair {
+  display: contents;
+}
+
+/* Tables */
+.scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+th,
+td {
+  padding: 7px 10px 7px 0;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--rule-inner);
+}
+th {
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+tr.mine td {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* Controls */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 14px 0;
+}
+.btn {
+  padding: 10px 20px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--page);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
+}
+.btn.outline {
+  background: none;
+  color: var(--ink);
+  border-color: var(--border);
+}
+.btn.outline:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+.btn.outline[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--page);
+}
+.btn:disabled {
+  cursor: default;
+  background: var(--rule);
+  border-color: var(--rule);
+  color: var(--muted);
+}
+input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  background: var(--page);
+  color: var(--ink);
+}
+
+@media (max-width: 560px) {
+  .header {
+    padding: 10px 16px;
+  }
+  .page {
+    padding: 0 16px 72px;
+  }
+  h1 {
+    font-size: 26px;
+  }
+  .kv {
+    grid-template-columns: 1fr;
+  }
+  .kv dt {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+}
