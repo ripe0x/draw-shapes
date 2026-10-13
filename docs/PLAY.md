@@ -47,27 +47,45 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
 - Board: purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
   Rotate calls are counted by the trigger `rotateDue()` returned. A keeper tick runs every 5 minutes.
 - Return buckets list the share of pulls by value over ticket. With `--fwa`, one reference column follows the
-  run columns: "FWA V2 main, expected" (see FWA reference data). Rows with a value on both sides (ticket, expected
-  return) mark the better side for the player with an asterisk.
+  run columns: "FWA V2 main, expected" (see FWA reference data). Every row with a value on both sides (ticket,
+  expected, median, p5 and p95 return, shares at or above ticket, below half and at 2x or more) marks the better
+  side for the player with an asterisk. The histogram shows both series.
+- Example pull: after the table, one ticket is split in ETH and percent on each side. The Shapes split is computed
+  from `pulls.csv` and the fee split in `run.txt`: the FWA protocol keeps `(paid - base) / 2` with
+  `base = paid / feeOverEv` (1.05), each ordinary capture owes the Shapes mint fee (0.001 ETH) per rung, and the
+  remaining margin divides by `PREMIUM_BPS : MAINTENANCE_BPS : FEED_BPS`. GRAIL pull proceeds go to the feed.
+  The runner records no MarginSplit events, so the split follows the SPEC section 9 formulas applied to the
+  recorded per-pull totals. The V2 split is the ticket, 90 percent of the expected backing as cashout, the
+  surcharge (ticket over expected backing) and the settlement discount.
 
 Files per run: `pulls.csv` (one row per request), `hourly.csv` (hour 0 is the baseline, hour h covers the h-th
 hour), `claims.csv`, `run.txt` (resolved inputs), `report.html`.
 
 ## FWA reference data
 
-`evidence/fwa/` holds a static copy of the FWA V2 main pool launch snapshot. Nothing fetches from a chain or an API.
+`evidence/fwa/` holds a static copy of FWA V2 main pool evidence. Nothing fetches from a chain or an API.
 
-- `reference.json`: read by `report.py --fwa`. Holds the V2 main pool `0x958C4118...` at block 25,991,175: the
-  ticket (the `acquisition_fee` getter), the expected value, the 90 percent ETH settlement discount, the expected
-  cashout of 0.857x the ticket and the active listing count (571). Win frequency is unknown, so the median, p5,
-  p95 and win rows read "unknown".
-- Ticket basis: neither side includes VRF or gas. A run's `paid` is the FWA acquisition fee with the VRF fee at
-  zero at the fork block. The V2 ticket is the `acquisition_fee` getter, which excludes VRF.
+- `reference.json`: read by `report.py --fwa`. `v2` holds the V2 main pool `0x958C4118...` at block 26,088,128
+  (2026-09-30 05:13 UTC): 4,090 active listings, the ticket (the acquisition fee, 0.051072 ETH), the expected
+  value, the 90 percent ETH settlement discount, and `stats` and `histogram` of the single-pull return over
+  ticket. `v2.cadence` holds pulls and ticket ETH per day for the last two weeks, and per week
+  (2,848 pulls/day in the week to 2026-09-30, 3,646 in the week before). `shapes` holds the Shapes mint fee and
+  the denomination ladder used by the example pull. `v2Launch` keeps the earlier launch snapshot (block
+  25,991,175, 571 listings, win frequency unknown).
+- Distribution source: the full active board, replayed by Multicall3 over `listings(id)` at the block and checked
+  against `activeListingCount`, `totalWeight` and `weightedBackingTotal`. FWA selects a listing with weight
+  `1e36 / backing`, so the single-pull distribution over the board is exact. Value received is 90 percent of
+  backing, over the ticket. `v2-board-26088128-histogram.json` holds the board as `[backing wei, count]` pairs and
+  `v2-board-26088128-stats.json` the computed distribution.
+- Cadence source: `v2-longitudinal-2026-09-30.json` and `.md` (daily boards and pull cadence from the
+  `AcquisitionRequested` log).
+- Ticket basis: both sides exclude VRF and gas. A run's `paid` is the FWA acquisition fee with the VRF fee at zero
+  at the fork block. The V2 ticket is the acquisition fee, and `vrfServiceFee()` reads 0 at the head block.
 - Exclusions: wallet gas, VRF (zero in the simulation, excluded from the V2 ticket), FWA token rewards, epoch
   rewards, NFT resale value.
-- `v2-launch-README.md`: method and limits of the snapshot, copied from the source repo.
+- `v2-launch-README.md`: method and limits of the launch snapshot, copied from the source repo.
 
-Provenance: copied from `evidence/fee-odds-review` of the `shapes-on-fwa-v2` repo on 2026-10-13.
+Provenance: board replay copied from the `shapes-on-fwa-v2` repo evidence on 2026-10-13.
 
 ## Live anvil (not built yet)
 

@@ -3,13 +3,17 @@
 
 usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [REFERENCE_JSON]] [--no-html]
 
-Each RUN_DIR holds pulls.csv, hourly.csv and claims.csv. The tables print one column per run. With --fwa
-one reference column "FWA V2 main, expected" is added from REFERENCE_JSON (default evidence/fwa/reference.json,
-a static copy of the V2 main pool launch snapshot; only the ticket, the expected cashout over ticket and the
-listing count are known). Neither side includes VRF or gas: a run's ticket is the FWA acquisition fee with the
-VRF fee at zero at the fork block, and the V2 ticket is the acquisition_fee getter. Where both sides have a
-value, the ticket and expected return rows mark the better side for the player with an asterisk. Unless
---no-html is given, report.html is written into each RUN_DIR. Standard library only.
+Each RUN_DIR holds pulls.csv, hourly.csv, claims.csv and run.txt. The tables print one column per run. With
+--fwa one reference column "FWA V2 main, expected" is added from REFERENCE_JSON (default
+evidence/fwa/reference.json, a static copy of the V2 main pool board at one block: the return distribution is
+computed from the full board, and the pull cadence comes from the event log). Neither side includes VRF or gas:
+a run's ticket is the FWA acquisition fee with the VRF fee at zero at the fork block, and the V2 ticket is the
+acquisition fee. Every row with a value on both sides marks the better side for the player with an asterisk.
+After the table, an example pull block splits one ticket on each side. The Shapes split is computed from the
+run's pulls.csv totals and the fee split in run.txt: the FWA protocol keeps (paid - base) / 2 with
+base = paid / feeOverEv, each ordinary capture owes mintFee x rungs, and the remaining margin divides by
+PREMIUM_BPS : MAINTENANCE_BPS : FEED_BPS. Unless --no-html is given, report.html is written into each RUN_DIR.
+Standard library only.
 """
 import csv
 import json
@@ -65,9 +69,14 @@ def analyze(run_dir):
     hourly = read_csv(os.path.join(run_dir, "hourly.csv"))
     claims = read_csv(os.path.join(run_dir, "claims.csv"))
     m = {"name": os.path.basename(os.path.normpath(run_dir)).replace("test_", "")}
+    cfg = {}
     for line in read_text(os.path.join(run_dir, "run.txt")):
-        if line.startswith("pullsPerDay="):
-            m["name"] = f"Shapes run ({line.split('=', 1)[1].strip()}/day)"
+        k, _, v = line.partition("=")
+        cfg[k] = v.strip()
+    m["cfg"] = cfg
+    m["pulls_rows"] = pulls
+    if "pullsPerDay" in cfg:
+        m["name"] = f"Shapes run ({cfg['pullsPerDay']}/day)"
 
     counted = [r for r in pulls if r["kind"] in RETURN_KINDS]
     ratios = sorted(int(r["backingReceived"]) / int(r["paid"]) for r in counted)
@@ -81,6 +90,7 @@ def analyze(run_dir):
         m["p95"] = percentile(ratios, 0.95)
         m["ge1"] = sum(1 for x in ratios if x >= 1) / len(ratios)
         m["lt_half"] = sum(1 for x in ratios if x < 0.5) / len(ratios)
+        m["ge2"] = sum(1 for x in ratios if x >= 2) / len(ratios)
         hist = [0] * len(EDGES)
         for x in ratios:
             hist[bucket_index(x)] += 1
@@ -155,6 +165,7 @@ ROWS = [
     ("p95 return / ticket", "p95", _x),
     ("pulls at or above ticket", "ge1", _pct),
     ("pulls below half ticket", "lt_half", _pct),
+    ("pulls at 2x ticket or more", "ge2", _pct),
     ("share Shape", "share_Shape", _pct),
     ("share Pack", "share_Pack", _pct),
     ("share GRAIL", "share_Grail", _pct),
@@ -187,7 +198,16 @@ ROWS = [
 
 
 # Rows compared across columns: key -> True when a higher value is better for the player.
-BETTER_HIGH = {"ticket": False, "mean": True}
+BETTER_HIGH = {
+    "ticket": False,
+    "mean": True,
+    "median": True,
+    "p5": True,
+    "p95": True,
+    "ge1": True,
+    "lt_half": False,
+    "ge2": True,
+}
 
 
 def better_columns(cols, key):
@@ -225,7 +245,7 @@ def render_table(cols):
             cells.append((text + ("*" if i in best else " ")).rjust(w + 1))
         lines.append(label.ljust(label_w) + "  " + "  ".join(cells))
     if marked:
-        lines += ["", "* better for the player: lower ticket, higher return"]
+        lines += ["", "* better for the player: lower ticket, higher return, higher share at or above ticket and at 2x or more, lower share below half"]
     lines.append("")
     lines.append("Return buckets, share of pulls by value / ticket")
     for i, lab in enumerate(bucket_labels()):
@@ -305,7 +325,7 @@ def histogram(title, series, w=640, h=240):
     return "".join(out)
 
 
-def write_html(m, fwa):
+def write_html(m, fwa, ref=None):
     rows = m["series"]
     xs = [int(r["hour"]) for r in rows]
     charts = [
@@ -317,8 +337,11 @@ def write_html(m, fwa):
         ),
     ]
     hist_series = [(m["name"], m["hist"])] if "hist" in m else []
+    hist_series += [(f["name"], f["hist"]) for f in fwa if "hist" in f]
     charts.append(histogram("Player return, share of pulls by value / ticket", hist_series))
     table = render_table([m] + fwa)
+    if ref:
+        table += "\n\n" + "\n".join(example_pull(m, ref))
     html = (
         "<!doctype html><meta charset=utf-8><title>Play report</title>"
         "<style>body{font-family:system-ui,sans-serif;margin:16px auto;max-width:700px;padding:0 16px}"
@@ -356,46 +379,127 @@ def main(argv):
         m = analyze(d)
         m["dir"] = d
         runs.append(m)
-    fwa = []
+    fwa, ref = [], None
     if fwa_path:
         with open(fwa_path) as f:
             ref = json.load(f)
         fwa = reference_columns(ref)
         print(reference_header(ref))
     print(render_table(runs + fwa))
+    if ref:
+        for m in runs:
+            print()
+            print("\n".join(example_pull(m, ref)))
     if html:
         for m in runs:
-            print("wrote", write_html(m, fwa))
+            print("wrote", write_html(m, fwa, ref))
     return 0
 
 
 def reference_header(ref):
     v2 = ref["v2"]
+    wk = v2["cadence"]["weeks"]
+    cad = ", ".join(f"{w['pullsPerDay']:,} pulls/day ({w['ticketEthPerDay']:,.0f} ETH/day) in the week to {w['endsOn']}" for w in wk)
     return (
-        f"FWA V2 main, expected: pool {v2['pool'][:10]}, block {v2['block']:,}, "
-        f"ticket {v2['ticketWei'] / ETH:.6f} ETH (acquisition_fee getter, VRF excluded), "
-        f"{v2['activeListings']} listings, {v2['ethSettlementDiscountBps'] / 100:g}% settlement discount. "
+        f"FWA V2 main, expected: pool {v2['pool'][:10]}, block {v2['block']:,} ({v2['timestamp'][:10]}), "
+        f"{v2['listings']:,} listings, ticket {v2['ticketWei'] / ETH:.6f} ETH (acquisition fee, VRF excluded), "
+        f"{v2['ethSettlementDiscountBps'] / 100:g}% settlement discount, return distribution exact from the board. "
+        f"Cadence: {cad}. "
         "Shapes run ticket: FWA acquisition fee, VRF fee zero at the fork block. "
         f"Excluded: {ref['exclusions']}."
     )
 
 
 def reference_columns(ref):
-    """Maps reference.json onto the metric keys of analyze(): the V2 expected column."""
+    """Maps reference.json onto the metric keys of analyze(): the V2 board column."""
     v2 = ref["v2"]
+    s = v2["stats"]
     return [
         {
             "name": "FWA V2 main, expected",
             "ticket": v2["ticketWei"] / ETH,
-            "mean": v2["expectedCashoutOverTicket"],
-            "median": "unknown",
-            "p5": "unknown",
-            "p95": "unknown",
-            "ge1": "unknown",
-            "lt_half": "unknown",
-            "listed_avg": str(v2["activeListings"]),
+            "mean": s["mean"],
+            "median": s["median"],
+            "p5": s["p5"],
+            "p95": s["p95"],
+            "ge1": s["shareAtOrAbove"],
+            "lt_half": s["shareBelowHalf"],
+            "ge2": s["share2xPlus"],
+            "hist": v2["histogram"]["share"],
+            "listed_avg": f"{v2['listings']:,}",
         },
     ]
+
+
+def split_pulls(m, ref):
+    """Per-ticket ETH split of a run, from pulls.csv and the fee split in run.txt. None when run.txt lacks it."""
+    cfg, sh = m["cfg"], ref["shapes"]
+    try:
+        bps = [int(cfg[k]) for k in ("PREMIUM_BPS", "MAINTENANCE_BPS", "FEED_BPS")]
+    except KeyError:
+        return None
+    rungs = {}
+    for row in cfg.get("MIX_ROWS", "").split(";"):
+        idx = row.split(":")[0].split(",")
+        if idx != [""]:
+            rungs[sum(sh["denominationsWei"][int(i)] for i in idx)] = len(idx)
+    counted = [r for r in m["pulls_rows"] if r["kind"] in RETURN_KINDS]
+    paid = sum(int(r["paid"]) for r in counted)
+    ordinary = [r for r in counted if r["kind"] != "Grail"]
+    grail = [r for r in counted if r["kind"] == "Grail"]
+    k = 1 - 1 / ref["v2"]["feeOverEv"]
+    protocol = paid * k / 2
+    mint = sum(sh["mintFeeWei"] * rungs.get(int(r["backingReceived"]), 1) for r in ordinary)
+    backing = sum(int(r["backingReceived"]) for r in ordinary)
+    margin = sum(int(r["paid"]) for r in ordinary) * (1 - k / 2) - backing - mint
+    grail_proceeds = sum(int(r["paid"]) for r in grail) * (1 - k / 2)
+    n = len(counted)
+    out = {
+        "ticket": paid / n,
+        "backing": backing / n,
+        "mint": mint / n,
+        "protocol": protocol / n,
+        "premium": margin * bps[0] / sum(bps) / n,
+        "maintenance": margin * bps[1] / sum(bps) / n,
+        "feed": (margin * bps[2] / sum(bps) + grail_proceeds) / n,
+        "grail_prizes": sum(int(r["backingReceived"]) for r in grail) / n,
+    }
+    return out
+
+
+def example_pull(m, ref):
+    """Text block: one ticket on each side, ETH and share of the ticket."""
+    v2 = ref["v2"]
+    lines = ["Example pull, one ticket (ETH, share of ticket)"]
+    sp = split_pulls(m, ref)
+    if sp:
+        t = sp["ticket"]
+        lines += [f"{m['name']}: ticket {t / ETH:.6f}"]
+        for label, key in (
+            ("backing to players (ordinary items, redeemable at face)", "backing"),
+            ("Shapes mint fees (replacement mints)", "mint"),
+            ("FWA protocol", "protocol"),
+            ("depositor premium", "premium"),
+            ("maintenance", "maintenance"),
+            ("GRAIL feed", "feed"),
+        ):
+            lines.append(f"  {label:<56}{sp[key] / ETH:>10.6f}{100 * sp[key] / t:>8.1f}%")
+        lines.append(f"  {'total':<56}{sum(sp[k] for k in ('backing', 'mint', 'protocol', 'premium', 'maintenance', 'feed')) / ETH:>10.6f}{100.0:>8.1f}%")
+        lines.append(
+            f"  GRAIL prizes paid out of the feed buckets, per pull: {sp['grail_prizes'] / ETH:.6f} ETH "
+            f"({100 * sp['grail_prizes'] / t:.1f}% of ticket, in expected return {m['mean']:.3f}x)"
+        )
+    ticket, ev = v2["ticketWei"], v2["evWei"]
+    cash = ev * v2["ethSettlementDiscountBps"] / 10_000
+    lines += [
+        f"FWA V2 main, block {v2['block']:,}: ticket {ticket / ETH:.6f}",
+        f"  {'expected cashout (' + format(v2['ethSettlementDiscountBps'] / 100, 'g') + '% of expected backing ' + format(ev / ETH, '.6f') + ')':<56}"
+        f"{cash / ETH:>10.6f}{100 * cash / ticket:>8.1f}%",
+        f"  {'surcharge (ticket over expected backing)':<56}{(ticket - ev) / ETH:>10.6f}{100 * (ticket - ev) / ticket:>8.1f}%",
+        f"  {'settlement discount (backing not cashed out)':<56}{(ev - cash) / ETH:>10.6f}{100 * (ev - cash) / ticket:>8.1f}%",
+        f"  {'total':<56}{ticket / ETH:>10.6f}{100.0:>8.1f}%",
+    ]
+    return lines
 
 
 if __name__ == "__main__":

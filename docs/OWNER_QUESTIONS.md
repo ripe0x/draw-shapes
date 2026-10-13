@@ -124,7 +124,7 @@ No entry is open.
    `startExit` in practice. Place: `PricingLib.sharesFor`.
 
 12. **Replacement mint fees leave NAV at mint time, not at capture.** (decided, in SPEC) A holder who exits between
-   a capture and its replacement mint avoids `mintFee` (0.0005 ETH) per capture. Guess: accepted
+   a capture and its replacement mint avoids `mintFee` (0.001 ETH on mainnet) per capture. Guess: accepted
    for v1 as rounding-scale. A `queuedMintFees` term subtracted in `nav()` would close it.
 
 13. **Recovered tokens are not re-registered.** (decided, in SPEC) A token the admin recovers through `adminCall`
