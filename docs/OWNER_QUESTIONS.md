@@ -40,6 +40,39 @@ the named place; none of them is load bearing for the others unless the entry sa
 7. Remaining entries accepted as written: 4, 5, 10, 13, 18, 20, 22, 28, 29, 30, 31. Entry 6 is
    superseded: the FWA-shaped `acquire` takes the caller's `maxNegativeSlippageBps`.
 
+
+## Owner decision 9, 2026-10-13: FWA cooldown goes to zero; settlement lists; replacement is sampled
+
+Context: the FWA team is setting the factory `inventoryChangeCooldown` to 0, so inventory changes
+no longer pause purchases. The owner reviewed the implications and decided:
+
+a. `settle()` (anyone) books captures, harvests, and lists replacements in batches when due:
+   queue at or above `batchMin` (5), oldest queued replacement older than `batchMaxAge` (3,600 s),
+   or the board within 5 items of the concurrency guard. The caller is refunded gas plus the
+   0.0005 ETH tip from maintenance only when the call was due and listed at least one item, so
+   bots race for it and purchases carry no listing work. The purchase slice books and harvests
+   only. Rotate keeps claims, GRAIL steps, decay and the held-items fallback.
+b. Deleted: the Weight trigger and snapshot, `restockTriggerBps`, demand sizing (trailing pulls,
+   `rowDepth`; a row's target is `ceil(minItems * share)`), `repriceMinBps`, the quiet floor and
+   `lastRotateCallAt`. Decisions 8, F1 and F2 are superseded by this block.
+c. Replacement row is sampled at booking from the mix shares with deficit weighting
+   `share * (1 + restoreK * deficit / target)` (`restoreK` 8), a surprise upgrade with
+   `surpriseBps` (200) to a single Shape row of at least five times the drawn backing (60/30/10
+   by size), and a band cap of target plus `bandBps` (3,000) above which the largest-deficit row
+   is chosen. Randomness is `keccak256(FWA randomWord, requestId)`, public after fulfilment and
+   unknowable at purchase. A captured 0.1 row returns within about eight captures at `restoreK` 8.
+d. Shapes paid in through `pullWithShapes` and `redeemAndDeposit` are kept as inventory and fill
+   replacements before any mint (singles and pack components through `createPack` with existing
+   ids), which saves the mint fee; both fall back to redeeming when cash is short.
+e. Replacement minting spends only cash above queued claims plus `reserveBps` (1,000) of NAV, so
+   withdrawals are normally paid at once. Withdrawals never delay purchases.
+f. Cooldown guard: settle lists only while the live factory cooldown is zero or the admin switch
+   `listWhilePaused` is on; otherwise rotate lists held items in its batch, today's cadence. A
+   nonzero cooldown throttles, nothing reverts.
+g. Open for the owner: `maintenanceBps` may need 200 at launch if gas prices make keeper refunds
+   exceed the 100 bps inflow; the lab shows the depositor cost. Pack rows carry the largest mint
+   fee drag (0.003 ETH on a 0.03 pack) and remain part of the game by decision.
+
 ## Guesses taken during the run
 
 Every entry carries its status in the title: decided (folded into SPEC on 2026-10-13) or superseded by an owner decision.
