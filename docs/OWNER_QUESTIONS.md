@@ -18,9 +18,16 @@ the named place; none of them is load bearing for the others unless the entry sa
 1. **Harvest equality versus direct purchases.** SPEC 9 step 4 says the harvested amount must
    equal booked receivables. Direct FWA purchases (SPEC 12) have no recorded base, so equality is
    unreachable. Guess: `_harvest` reverts only when `received < expected`; the surplus is booked
-   as margin for the direct captures that were booked with zero proceeds. Place: `Pool._harvest`.
+   as margin for the direct captures that were booked with zero proceeds. After the packet 3
+   review the surplus is also booked at the end of every `settle` from `ownerProceeds()`, so a
+   direct capture never depresses NAV between settle and harvest. Place: `Pool._bookSurplus`.
    Proposed SPEC 9 step 4 wording: "received must be at least the booked receivables; the
    difference is the proceeds of direct purchases and enters the margin."
+
+1b. **Share pricing follows the books.** FWA processes acquisitions permissionlessly and VRF words
+   are public once Ready, so a depositor could exit at a pre-loss NAV. Guess: `deposit`,
+   `withdraw`, `redeemAndDeposit` and `liquidate` first process, settle, require the walk to be
+   caught up, and harvest. SPEC 7 does not say this. Place: `Pool._sync`.
 
 2. **Mint line inside the margin split.** SPEC 9 step 2 reserves the mint line in cash and step 3
    splits margin three ways (premium, maintenance, feed) with no mint line share. Three ways
@@ -57,6 +64,26 @@ the named place; none of them is load bearing for the others unless the entry sa
    `listNFT`, staged or not. Listing inside `pull` would lock purchases for 300 s after every
    ticket. Guess: the slice mints one replacement and holds it; `rotate` lists held items.
    Place: `Pool._pull`. SPEC 10 wording "mint and list" should become "mint; list at rotate".
+
+10. **FWA slippage is a free option for buyers.** FWA re-prices each request at processing: a
+   fee rise up to `selectionSlippageBps` (10 percent, fixed at clone init) is filled, a fee drop
+   beyond the purchaser's tolerance is refunded. On a thin board one capture moves the harmonic
+   mean by several percent, comparable to the edge. The pool cannot change the positive side.
+   Guess: keep `pull` as is and treat a deep board (`minItems` well above `concurrency` and
+   batch size) as the mitigation; log for a later SPEC decision on setting the operator.
+
+11. **Residual NAV after a full exit goes to the next depositor.** `sharesFor` mints 1:1 when
+   `totalShares == 0` whatever NAV is. Premium margin or a recovered token can leave NAV above
+   zero with no shares. Guess: accepted for v1, amount is small and the pool is retired through
+   `startExit` in practice. Place: `PricingLib.sharesFor`.
+
+12. **Replacement mint fees leave NAV at mint time, not at capture.** A holder who exits between
+   a capture and its replacement mint avoids `mintFee` (0.0005 ETH) per capture. Guess: accepted
+   for v1 as rounding-scale. A `queuedMintFees` term subtracted in `nav()` would close it.
+
+13. **Recovered tokens are not re-registered.** A token the admin recovers through `adminCall`
+   after a purchaser refund is outside `backing`; `sweep` sends it out. Guess: no re-register
+   admin path in v1, the admin redeems it and deposits the ETH if it should return to NAV.
 
 9. **`purchaseOperator` left unset (SPEC 12, pending owner confirmation).** FWA's own UI can
    acquire from the pool directly; the pool books those captures at the next `settle` with zero

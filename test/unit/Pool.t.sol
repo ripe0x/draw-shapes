@@ -11,6 +11,8 @@ import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 contract PoolHarness is Pool {
     address internal constant SINK = address(0xdead);
 
+    error Preview(uint256 nav, uint256 cash, uint256 claims);
+
     constructor(Params memory p) Pool(p) {}
 
     /// @dev Moves `amount` from `cash` to `backing` and sends the ETH out, as a mint does.
@@ -39,8 +41,23 @@ contract PoolHarness is Pool {
         lifecycle = state;
     }
 
-    function restock() external returns (bool) {
+    function restock() external returns (uint256) {
         return _restock();
+    }
+
+    function sync() external {
+        _sync();
+    }
+
+    /// @dev Runs `_sync` and reverts with the resulting pricing state, so a caller reads the state
+    ///      a pricing action would use without changing the pool.
+    function previewSynced() external {
+        _sync();
+        revert Preview(nav(), cash, claims);
+    }
+
+    function setClaims(uint256 amount) external {
+        claims = amount;
     }
 
     function addItem(address collection, uint16 row, uint256 tokenId, uint256 value, uint256 listingId) external {
@@ -613,6 +630,98 @@ contract PoolTest is PoolFixture {
         assertEq(pool.claimHead(), 1);
         assertEq(pool.claims(), 0);
         assertEq(address(rejecter).balance, 8.9 ether);
+    }
+
+    // ---------------------------------------------------------------- nav saturation
+
+    function test_navIsZeroWhenClaimsExceedAssets() public {
+        _deposit(alice, 10 ether);
+        assertEq(pool.nav(), 8.9 ether);
+        pool.setClaims(8.9 ether);
+        assertEq(pool.nav(), 0);
+        pool.setClaims(9 ether);
+        assertEq(pool.nav(), 0);
+    }
+
+    function test_revert_depositAtZeroNav() public {
+        _deposit(alice, 10 ether);
+        pool.setClaims(9 ether);
+        vm.prank(bob);
+        vm.expectRevert(Pool.NavZero.selector);
+        pool.deposit{value: 1 ether}();
+    }
+
+    function test_withdrawAtZeroNavBurnsSharesAndPaysNothing() public {
+        _deposit(alice, 10 ether);
+        pool.setClaims(9 ether);
+        uint256 shares = pool.sharesOf(alice);
+        uint256 before = alice.balance;
+        uint256 cashBefore = pool.cash();
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit Pool.Withdrawn(alice, shares, 0, 0);
+        vm.prank(alice);
+        pool.withdraw(shares);
+
+        assertEq(alice.balance, before);
+        assertEq(pool.sharesOf(alice), 0);
+        assertEq(pool.totalShares(), 0);
+        assertEq(pool.cash(), cashBefore);
+        assertEq(pool.claims(), 9 ether);
+    }
+
+    // ---------------------------------------------------------------- effects before sends
+
+    function test_payClaimsWritesStateBeforeSending() public {
+        ClaimProbe probe = new ClaimProbe(pool);
+        vm.deal(address(probe), 10 ether);
+        probe.deposit(10 ether);
+        _deposit(alice, 10 ether);
+        pool.spendOnBacking(pool.cash());
+        probe.withdrawAll();
+        uint256 aliceShares = pool.sharesOf(alice);
+        vm.prank(alice);
+        pool.withdraw(aliceShares);
+        assertEq(pool.claimHead(), 0);
+
+        pool.bookProceeds{value: 30 ether}();
+        vm.warp(block.timestamp + 3_600);
+        pool.liquidate();
+
+        assertEq(probe.calls(), 1);
+        assertEq(pool.claimHead(), 2);
+        assertEq(probe.seenCash(), pool.cash(), "cash updated before the send");
+        assertEq(probe.seenClaims(), pool.claims(), "claims updated before the send");
+        assertEq(probe.seenHead(), pool.claimHead(), "head updated before the send");
+        assertEq(pool.claims(), 0);
+    }
+}
+
+/// @dev Claimant that records the pool's public state when it receives a claim payout.
+contract ClaimProbe {
+    Pool internal immutable _pool;
+    uint256 public calls;
+    uint256 public seenCash;
+    uint256 public seenClaims;
+    uint256 public seenHead;
+
+    constructor(Pool pool) {
+        _pool = pool;
+    }
+
+    function deposit(uint256 value) external {
+        _pool.deposit{value: value}();
+    }
+
+    function withdrawAll() external {
+        _pool.withdraw(_pool.sharesOf(address(this)));
+    }
+
+    receive() external payable {
+        ++calls;
+        seenCash = _pool.cash();
+        seenClaims = _pool.claims();
+        seenHead = _pool.claimHead();
     }
 }
 

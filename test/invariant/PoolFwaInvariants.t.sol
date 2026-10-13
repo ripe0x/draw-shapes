@@ -13,7 +13,8 @@ import {PoolHandler} from "./PoolInvariants.t.sol";
 ///         Deposit, withdraw, liquidate and warp are delegated to `PoolHandler`, which holds the
 ///         I3 and I4 ghost state. Pool events are read after every action and summed into the I6
 ///         and I7 ghost state. A reverted action leaves no ghost change because the whole handler
-///         call reverts.
+///         call reverts. After every pricing action (deposit, withdraw, liquidate, redeemAndDeposit)
+///         the handler checks that the books are level with FWA and every receivable is harvested.
 contract PoolFwaHandler is ForkBase {
     PoolHarness public immutable pool;
     IFWAClone public immutable clone;
@@ -25,13 +26,14 @@ contract PoolFwaHandler is ForkBase {
     uint256 public ghostGrailIn;
     uint256 public ghostCapturedProceeds;
     uint256 public ghostHarvestReceived;
-    uint256 public ghostHarvestSurplus;
+    uint256 public ghostSurplus;
     uint256 public ghostCapturedValue;
     uint256 public ghostWrittenOff;
     uint256 public ghostMarginSplit;
     uint256 public lastMaintenance;
     bool public i6Broken;
     bool public harvestBroken;
+    bool public booksBehindAfterPricing;
 
     uint256 public captures;
     uint256 public griefs;
@@ -56,7 +58,10 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev Sums the pool events emitted since the last call and checks I6.
     function _collect() internal {
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        _ingest(vm.getRecordedLogs());
+    }
+
+    function _ingest(Vm.Log[] memory logs) internal {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(pool)) continue;
             bytes32 topic = logs[i].topics[0];
@@ -77,14 +82,24 @@ contract PoolFwaHandler is ForkBase {
             } else if (topic == Pool.WrittenOff.selector) {
                 ghostWrittenOff += abi.decode(logs[i].data, (uint256));
             } else if (topic == Pool.Harvested.selector) {
-                (uint256 received, uint256 surplus) = abi.decode(logs[i].data, (uint256, uint256));
+                (uint256 received,) = abi.decode(logs[i].data, (uint256, uint256));
                 ghostHarvestReceived += received;
-                ghostHarvestSurplus += surplus;
+            } else if (topic == Pool.SurplusBooked.selector) {
+                ghostSurplus += abi.decode(logs[i].data, (uint256));
             }
         }
         uint256 current = pool.maintenance();
         if (current < lastMaintenance) i6Broken = true;
         lastMaintenance = current;
+    }
+
+    /// @dev Flags a pricing action that left the booking walk behind FWA's processing queue or a
+    ///      receivable unharvested.
+    function _checkPriced() internal {
+        if (
+            pool.nextSequenceToBook() != clone.nextSequenceToProcess() || pool.receivable() != 0
+                || pool.maintenanceReceivable() != 0 || pool.grailReceivable(0) != 0 || pool.grailReceivable(1) != 0
+        ) booksBehindAfterPricing = true;
     }
 
     modifier recorded() {
@@ -96,15 +111,30 @@ contract PoolFwaHandler is ForkBase {
     // ------------------------------------------------------------------ depositor actions
 
     function deposit(uint96 value, uint8 actorSeed) external recorded {
-        base.deposit(value, actorSeed);
+        if (base.deposit(value, actorSeed)) _checkPriced();
     }
 
     function withdraw(uint256 shares, uint8 actorSeed) external recorded {
-        base.withdraw(shares, actorSeed);
+        if (base.withdraw(shares, actorSeed)) _checkPriced();
     }
 
     function liquidate() external recorded {
-        base.liquidate();
+        (bool executed, Vm.Log[] memory logs) = base.liquidate();
+        _ingest(logs);
+        if (executed) _checkPriced();
+    }
+
+    /// @dev FWA processes acquisitions without the pool booking them, then a holder withdraws.
+    function withdrawAfterProcess(uint8 n, uint256 shares, uint8 actorSeed) external recorded {
+        clone.processAcquisitions(bound(n, 1, 5));
+        if (base.withdraw(shares, actorSeed)) _checkPriced();
+    }
+
+    /// @dev A direct FWA purchase is fulfilled and processed, then a depositor prices against the
+    ///      books.
+    function directThenDeposit(uint8 playerSeed, uint256 pick, uint96 value, uint8 actorSeed) external recorded {
+        _direct(playerSeed, pick, true);
+        if (base.deposit(value, actorSeed)) _checkPriced();
     }
 
     function warp(uint32 seconds_) external {
@@ -127,6 +157,7 @@ contract PoolFwaHandler is ForkBase {
         IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
         pool.redeemAndDeposit(tokenId);
         vm.stopPrank();
+        _checkPriced();
     }
 
     // ------------------------------------------------------------------ player actions
@@ -148,6 +179,10 @@ contract PoolFwaHandler is ForkBase {
 
     /// @dev A wallet acquires at the FWA pool without going through `Pool.pull`.
     function directAcquire(uint8 playerSeed, uint256 pick, bool fulfillNow) external recorded {
+        _direct(playerSeed, pick, fulfillNow);
+    }
+
+    function _direct(uint8 playerSeed, uint256 pick, bool fulfillNow) internal {
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         address player = _players[playerSeed % _players.length];
@@ -286,9 +321,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         pool.deposit{value: 200 ether}();
         vm.warp(pool.openingDeadlineAt());
         pool.recordPulls(60);
-        pool.open();
-        pool.restock();
-        pool.restock();
+        while (pool.lifecycle() == Pool.Lifecycle.Opening) pool.open();
         warpPastCooldown(clone);
 
         address[] memory actors = new address[](4);
@@ -301,7 +334,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         }
         handler = new PoolFwaHandler(pool, clone, actors, players);
 
-        bytes4[] memory selectors = new bytes4[](16);
+        bytes4[] memory selectors = new bytes4[](18);
         selectors[0] = PoolFwaHandler.deposit.selector;
         selectors[1] = PoolFwaHandler.withdraw.selector;
         selectors[2] = PoolFwaHandler.liquidate.selector;
@@ -318,6 +351,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[13] = PoolFwaHandler.restock.selector;
         selectors[14] = PoolFwaHandler.settleAndHarvest.selector;
         selectors[15] = PoolFwaHandler.griefShapes.selector;
+        selectors[16] = PoolFwaHandler.withdrawAfterProcess.selector;
+        selectors[17] = PoolFwaHandler.directThenDeposit.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -340,6 +375,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             handler.withdraw(i * 1e18, uint8(i));
             handler.liquidate();
             handler.redeemAndDeposit(uint8(i));
+            handler.directThenDeposit(uint8(i), i, uint96(i * 1e17), uint8(i));
+            handler.withdrawAfterProcess(uint8(i), i * 1e18, uint8(i));
         }
         handler.directAcquire(0, 1, false);
         handler.expireOutstanding();
@@ -350,7 +387,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.directPurchases(), 0);
         assertGt(handler.captures(), 0);
         assertGt(handler.harvests(), 0);
-        assertGt(handler.ghostHarvestSurplus(), 0);
+        assertGt(handler.ghostSurplus(), 0);
         assertGt(handler.ghostMaintenanceShares(), 0);
         assertGt(handler.griefs(), 0);
         assertGt(handler.ghostWrittenOff(), 0);
@@ -362,6 +399,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         invariant_I7_bucketsCreditedOnlyFromSplitsAndContributions();
         invariant_proceedsConserved();
         invariant_harvestConsistency();
+        invariant_booksNeverBehindAfterPricing();
         invariant_sharesSumToTotal();
         invariant_marginConserved();
         emit log_named_uint("written off", handler.ghostWrittenOff());
@@ -448,13 +486,13 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertEq(_grailBuckets() + _grailReceivables(), handler.ghostGrailIn());
     }
 
-    /// @dev Booked proceeds are either still a receivable or already received at harvest. Harvest
-    ///      surplus is received without having been booked.
+    /// @dev Booked proceeds are either still a receivable or already received at harvest. Surplus
+    ///      is the part of the received amount above the booked captures.
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_proceedsConserved() public view {
         assertEq(
-            handler.ghostCapturedProceeds() + handler.ghostHarvestSurplus(),
+            handler.ghostCapturedProceeds() + handler.ghostSurplus(),
             _bookedReceivables() + handler.ghostHarvestReceived()
         );
     }
@@ -467,7 +505,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     function invariant_marginConserved() public view {
         assertEq(
             pool.margin(),
-            int256(handler.ghostCapturedProceeds() + handler.ghostHarvestSurplus())
+            int256(handler.ghostCapturedProceeds() + handler.ghostSurplus())
                 - int256(handler.ghostCapturedValue() + handler.ghostWrittenOff() + handler.ghostMarginSplit())
         );
     }
@@ -480,6 +518,14 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertFalse(handler.harvestBroken());
         assertLe(_bookedReceivables(), clone.ownerProceeds());
         assertLe(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
+    }
+
+    /// @dev After a deposit, withdraw, liquidate or redeemAndDeposit the booking walk equals FWA's
+    ///      processing queue and every receivable has been harvested.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_booksNeverBehindAfterPricing() public view {
+        assertFalse(handler.booksBehindAfterPricing());
     }
 
     /// forge-config: default.invariant.runs = 16

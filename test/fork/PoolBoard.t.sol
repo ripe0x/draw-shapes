@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Vm} from "forge-std/Test.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
 import {Pool} from "../../src/Pool.sol";
@@ -150,6 +151,84 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
     }
 
+    function test_openRepeatsUntilTheBoardIsBuiltThenGoesLive() public {
+        Pool.Params memory p = _forkParams();
+        p.minItems = 60;
+        _create(p);
+        vm.prank(alice);
+        pool.deposit{value: 100 ether}();
+        vm.warp(pool.openingDeadlineAt());
+        assertFalse(clone.localPurchasesEnabled());
+
+        vm.recordLogs();
+        pool.open();
+        assertTrue(clone.localPurchasesEnabled(), "first call enables acquisitions");
+        assertEq(pool.listedCount(), 20);
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening));
+
+        pool.open();
+        assertEq(pool.listedCount(), 40);
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening));
+
+        pool.open();
+        assertEq(pool.listedCount(), 60, "board at target after 20 mints");
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Opening), "a full batch keeps the pool Opening");
+
+        pool.open();
+        assertEq(pool.listedCount(), 60);
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Live));
+        assertEq(pool.rowCount(0), 42);
+        assertEq(pool.rowCount(1), 18);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 opened;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == Pool.Opened.selector) ++opened;
+        }
+        assertEq(opened, 1, "Opened is emitted on the transition only");
+
+        vm.expectRevert(Pool.NotOpening.selector);
+        pool.open();
+    }
+
+    function test_openGoesLiveWhenCashRunsOutBeforeTheBatchFills() public {
+        Pool.Params memory p = _forkParams();
+        p.minItems = 60;
+        _create(p);
+        pool.bookProceeds{value: 3 * row0Cost + row1Cost}();
+        vm.warp(pool.openingDeadlineAt());
+        pool.open();
+        assertGt(pool.listedCount(), 0);
+        assertLt(pool.listedCount(), 20);
+        assertEq(uint8(pool.lifecycle()), uint8(Pool.Lifecycle.Live));
+    }
+
+    function test_restockPaysQueuedClaimsBeforeMinting() public {
+        _depositAndOpen(100 ether);
+        address saver = makeAddr("saver");
+        vm.deal(saver, 10 ether);
+        vm.prank(saver);
+        pool.deposit{value: 10 ether}();
+        pool.spendOnBacking(pool.cash() - 1 ether);
+        uint256 shares = pool.sharesOf(saver);
+        vm.prank(saver);
+        pool.withdraw(shares);
+        uint256 queued = pool.claims();
+        assertGt(queued, 0);
+        assertEq(pool.cash(), 0);
+
+        // Cash of 0.03 ETH covers the 0.0221 ETH replacement. Paying claims first leaves the mint queued.
+        pool.pushReplacement(1);
+        pool.bookProceeds{value: 0.03 ether}();
+        uint256 before = saver.balance;
+        pool.restock();
+
+        assertEq(saver.balance - before, 0.03 ether);
+        assertEq(pool.claims(), queued - 0.03 ether);
+        assertEq(pool.cash(), 0);
+        assertEq(pool.replacementLength(), 1);
+    }
+
     function test_openBuildsBoardToMinItemsByRowShare() public {
         vm.prank(alice);
         pool.deposit{value: 100 ether}();
@@ -257,7 +336,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(pool.heldCount(), 2);
         assertEq(pool.backing(), 0.2 ether);
 
-        assertTrue(pool.restock());
+        assertEq(pool.restock(), 0);
         assertEq(pool.rowCount(0), 2);
         assertEq(pool.heldCount(), 0);
         assertEq(clone.activeListingCount(), 2);
@@ -274,7 +353,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
             pool.addItem(SHAPES_ADDR, 0, first + i, 0.1 ether, 0);
         }
         uint256 versionBefore = clone.inventoryVersion();
-        assertTrue(pool.restock());
+        assertEq(pool.restock(), 0);
         assertEq(pool.heldCount(), 0);
         assertEq(clone.activeListingCount(), count);
         assertEq(clone.inventoryVersion(), versionBefore + 2);
@@ -284,7 +363,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_restockWithNothingToDoReportsNoChange() public {
         _open();
-        assertFalse(pool.restock());
+        assertEq(pool.restock(), 0);
     }
 
     function test_strangerTransferIsNotRegistered() public {

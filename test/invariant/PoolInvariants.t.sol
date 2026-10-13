@@ -9,6 +9,8 @@ import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 /// @notice Drives deposits, withdrawals, liquidations and bucket moves, and records the ghost
 ///         state the invariants compare against. Assertion failures inside the handler are
 ///         recorded in `i3Broken` and `i4Broken` because reverts of handler calls are discarded.
+///         Pricing inputs (NAV, cash, claims) are read through `PoolHarness.previewSynced`, which
+///         returns the state a pricing action sees after `_sync` and leaves the pool unchanged.
 contract PoolHandler is Test {
     PoolHarness public immutable pool;
     address[] public actors;
@@ -43,24 +45,44 @@ contract PoolHandler is Test {
         total -= paidInHead;
     }
 
-    function deposit(uint96 value, uint8 actorSeed) external {
+    /// @dev Pool state a pricing action reads after `_sync`. Other reverts are rethrown. The
+    ///      recorder keeps logs of reverted calls, so the recorded logs are cleared afterwards. Call
+    ///      this before any other pool call of the action.
+    function _preview() internal returns (uint256 navNow, uint256 cashNow, uint256 claimsNow) {
+        try pool.previewSynced() {}
+        catch (bytes memory data) {
+            vm.getRecordedLogs();
+            if (bytes4(data) != PoolHarness.Preview.selector) {
+                assembly {
+                    revert(add(data, 32), mload(data))
+                }
+            }
+            assembly {
+                navNow := mload(add(data, 36))
+                cashNow := mload(add(data, 68))
+                claimsNow := mload(add(data, 100))
+            }
+        }
+    }
+
+    function deposit(uint96 value, uint8 actorSeed) external returns (bool) {
         address actor = actors[actorSeed % actors.length];
         uint256 amount = bound(value, 0.01 ether, 50 ether);
         vm.deal(actor, amount);
         vm.prank(actor);
         pool.deposit{value: amount}();
+        return true;
     }
 
-    function withdraw(uint256 shares, uint8 actorSeed) external {
+    /// @dev Returns whether `withdraw` was called.
+    function withdraw(uint256 shares, uint8 actorSeed) external returns (bool) {
         address actor = actors[actorSeed % actors.length];
         uint256 balance = pool.sharesOf(actor);
-        if (balance == 0) return;
+        if (balance == 0) return false;
         shares = bound(shares, 1, balance);
 
-        uint256 navBefore = pool.nav();
+        (uint256 navBefore, uint256 cashBefore, uint256 claimsBefore) = _preview();
         uint256 supplyBefore = pool.totalShares();
-        uint256 cashBefore = pool.cash();
-        uint256 claimsBefore = pool.claims();
         uint256 ethBefore = actor.balance;
         uint256 expected = PricingLib.claimFor(shares, navBefore, supplyBefore);
 
@@ -80,31 +102,33 @@ contract PoolHandler is Test {
             _queuedTo.push(actor);
             _queuedAmount.push(enqueued);
         }
+        return true;
     }
 
-    function liquidate() external {
+    /// @dev Returns whether `liquidate` was called and every log it emitted.
+    function liquidate() external returns (bool executed, Vm.Log[] memory logs) {
         uint256 head = pool.claimHead();
-        if (head == _queuedTo.length) return;
+        if (head == _queuedTo.length) return (false, logs);
         (, uint256 requestedAt,) = pool.claimQueue(head);
-        if (block.timestamp < requestedAt + pool.rotateInterval()) return;
+        if (block.timestamp < requestedAt + pool.rotateInterval()) return (false, logs);
 
-        uint256 cashBefore = pool.cash();
-        uint256 claimsBefore = pool.claims();
+        (, uint256 cashBefore, uint256 claimsBefore) = _preview();
         vm.recordLogs();
         pool.liquidate();
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        logs = vm.getRecordedLogs();
+        executed = true;
 
         uint256 total;
         uint256 events;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].topics[0] != Pool.ClaimPaid.selector) continue;
+            if (logs[i].emitter != address(pool) || logs[i].topics[0] != Pool.ClaimPaid.selector) continue;
             ++events;
             address to = address(uint160(uint256(logs[i].topics[1])));
             uint256 amount = abi.decode(logs[i].data, (uint256));
             total += amount;
             if (paidIndex >= _queuedTo.length || to != _queuedTo[paidIndex]) {
                 i4Broken = true;
-                return;
+                return (executed, logs);
             }
             paidInHead += amount;
             if (paidInHead > _queuedAmount[paidIndex]) i4Broken = true;
