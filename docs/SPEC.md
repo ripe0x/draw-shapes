@@ -15,9 +15,9 @@ Depositors exit at NAV in ETH.
 | Actor | Can |
 | --- | --- |
 | Depositor | `deposit`, `withdraw`, read position. |
-| Player | `pull`, `pullWithShapes`, `redeemAndDeposit`, claim FWA refunds at the FWA pool. |
+| Player | `acquire`, `acquireBatch`, `pullWithShapes`, `redeemAndDeposit`, claim FWA refunds at the FWA pool. |
 | Anyone | `rotate`, `liquidate`, `growGrail`, `exportStep`, `migrateHolder` on a successor. |
-| Admin | One address, transferable. Pause flags, parameter setters, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
+| Admin | One address, transferable. Pause flags, parameter setters, `setPurchaseGate`, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
 
 Shares are nontransferable. There is one admin role.
 
@@ -25,17 +25,18 @@ Shares are nontransferable. There is one admin role.
 
 | Contract | Role |
 | --- | --- |
-| `Pool.sol` | Shares, buckets, board, pulls, GRAIL tracks, upkeep, rotation, liquidation. Immutable. Owns the FWA pool. Its `fallback` delegates to `PoolAdmin`. |
+| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL tracks, upkeep, rotation, liquidation. Immutable. Owns the FWA pool. Its `fallback` delegates to `PoolAdmin`. |
 | `PoolAdmin.sol` | Admin and exit surface: setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
 | `PoolBooks.sol`, `PoolStorage.sol` | Shared bases of both: settlement, harvest and margin split; storage layout, item registry and parameter validation. |
 | `interfaces/IPool.sol` | Combined ABI of `Pool` and `PoolAdmin`, with the types, errors and events. |
 | `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
 | Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
 | Shapes | Mainnet `0x6fe9193276bf7abcbee44ab7afd717d637d6faf0`. `mintBatchTo`, `redeem`, `mintFee`. |
-| FWA V2 clone | Created by the pool through the factory. `listNFT`, `listNFTs`, `updatePrice`, `withdrawListingTo`, `processAcquisitions`, `withdrawOwnerProceeds`, `acquire`, `acquireBatch`, `retirePool`. |
+| FWA V2 clone | Created by the pool through the factory. `listNFT`, `listNFTs`, `updatePrice`, `withdrawListingTo`, `processAcquisitions`, `withdrawOwnerProceeds`, `acquire`, `acquireBatch`, `setPurchaseOperator`, `retirePool`. |
 
-`Pool` and `PoolAdmin` compile with via_ir, and each stays under EIP-170 (24,576 bytes). The `PoolAdmin` module is the
-only delegatecall target. Pure math is in internal libraries (`PricingLib`).
+`Pool` and `PoolAdmin` compile with via_ir. The `PoolAdmin` module is the only delegatecall target. Pure math is in
+internal libraries (`PricingLib`). Measured runtime sizes: `Pool` 23,711 B, `PoolAdmin` 17,703 B, `Lens` 12,453 B, against
+the EIP-170 limit of 24,576 B.
 
 ## 4. Buckets and invariants
 
@@ -88,12 +89,18 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setRepriceMinBps(bps)` | At most 10,000. |
 | `setMaxBatch(n)`, `setConcurrency(n)` | At most FWA's live values. `n` above zero for `setMaxBatch`. |
 | `setRotateInterval(seconds)` | At least FWA's `inventoryChangeCooldown`. |
-
 | `setAdmin(address)` | Nonzero. |
 
 Launch values: premium 200, maintenance 100, feed 400, minor share per `launch-profile.json`; entry curve base 1,100,
-slope 2,000, cap 2,500, reference 55 ETH; `rotateInterval` 3,600 s; opening deadline 24 h; `repriceMinBps`
-100. The mix table, `minItems`, `grailProbCapBps`, `navCap` and the GRAIL tracks are set in `script/env/<env>.env`.
+slope 2,000, cap 2,500, reference 55 ETH; opening deadline 24 h. The owner set these:
+- `minItems` 100: the board stays above FWA's 10 outstanding requests and the captures per rotate.
+- `navCap` 100 ETH: bounds the opening.
+- Mix 0.01 Shape 38 percent, 0.02 pack 28, 0.03 pack 19, 0.05 Shape 10, 0.1 Shape 4, 0.5 Shape 1: the 0.1 and 0.5
+  rows restore the large pieces of the launch profile at a small share.
+- `rotateInterval` 3,600 s: FWA's purchase pause restarts at most once per hour.
+- `repriceMinBps` 100: GRAIL decay reprices in steps of at least 1 percent.
+
+`grailProbCapBps` and the GRAIL tracks are set in `script/env/<env>.env`.
 
 ## 6. Lifecycle
 
@@ -138,16 +145,25 @@ at or below that cost leaves listings alone.
 
 ## 8. Player paths
 
-`pull(count, maxFee, deadline)` payable. `count` at most `maxBatch` and at most FWA's live limit. Checks the reopen
-guards (section 9), quotes FWA `quoteAcquisitionPrice(count)`, forwards it with `acquireBatch(msg.sender, ...)`, refunds
-overpayment to the caller, and runs the per-pull upkeep slice (section 10). The purchaser is always `msg.sender`. `pull`
-records each request's base price (section 9). Pull counts for demand sizing and GRAIL decay are recorded at settlement.
+`acquire(purchaser, maxAcquisitionFee, minWeightedValue, maxNegativeSlippageBps, expectedInventoryVersion, deadline)`
+payable returns one request id. `acquireBatch(purchaser, count, maxAcquisitionFee, minWeightedValue,
+maxNegativeSlippageBps, expectedInventoryVersion, deadline)` payable returns the request ids. Both take FWA's purchase
+ABI. `purchaser` must equal the caller (`PurchaserMismatch`). `count` is at most `maxBatch` and FWA's live limit. The
+pool checks the reopen guards (section 9), forwards the caller's slippage, minimum weighted value, inventory version and
+deadline to FWA `acquireBatch`, refunds overpayment to the caller, records each request's base price (section 9) and
+runs the upkeep slice (section 10). `quoteAcquisitionPrice(count)` returns FWA's fee and VRF fee per acquisition and the
+total.
 
 `pullWithShapes(tokenIds, count, maxFee, deadline)` payable. Redeems the caller's Shapes at Shapes, adds `msg.value`,
-and runs `pull`. Excess returns to the caller.
+and calls the batch path with the pool defaults: minimum weighted value 0 and FWA's `selectionSlippageBps` and
+`inventoryVersion`. Excess returns to the caller.
 
-Direct FWA buyers bypass the reopen guards (board depth, solvency, GRAIL cap). The GRAIL cap reaches them only through
-listing prices.
+Purchase gate. `createFwaPool` sets the pool as the FWA `purchaseOperator`, so FWA accepts a purchase only while the
+pool's `canPurchase(wallet)` is true, which holds only inside the pool's forwarding call for that purchaser. Every
+purchase passes the reopen guards and the upkeep slice. `setPurchaseGate(bool)` sets the operator to the pool or to
+zero. The gate depends on the FWA site update that routes buys through the pool. Until it ships, the launch runs with
+the gate off: direct FWA buys skip the reopen guards (board depth, solvency), and the next `settle` books them and
+counts them for demand sizing and decay.
 
 Refunds for slippage, timeout and failed delivery are FWA credits that the purchaser claims at the FWA pool.
 
@@ -164,7 +180,8 @@ Settlement. FWA pays the pool owner per acquisition `paid - (paid - base) / 2`, 
 `base = min(fee, weightedBackingTotal / totalWeight)` at request time (the harmonic mean of list prices). Proceeds are
 the same for every capture in a batch.
 
-1. At `pull`, the pool records `base` per request id. A request opened outside `pull` books zero proceeds at capture.
+1. At `acquire` and `acquireBatch`, the pool records `base` per request id. A request opened by a direct FWA buy books
+   zero proceeds at capture.
 2. `settle(maxCount)` (at most 20 per call) calls `processAcquisitions(maxCount)`, then walks FWA's sequence numbers
    from `nextSequenceToBook` up to FWA's processing queue. Every sequence passed counts as one pull in the current clock
    hour and adds one to `pullsSinceList` of each listed GRAIL track. Per status:
@@ -195,20 +212,16 @@ inventory, so FWA's purchase pause restarts at most once per interval. In order,
    row's backing plus mint fees, mint new inventory toward target depth from `cash` above one step of the cheapest row
    (only when the replacement queue is empty), then list every held item with `listNFTs`. At most 20 mints.
 4. `activateListings` when FWA's `unsettledAcquisitionCount` is zero and the walk is level.
-5. GRAIL, per track: grow when funded, otherwise decay reprice (section 11).
+5. GRAIL, per track: grow when funded, otherwise decay or lift the list price (section 11).
 6. Refund the caller (section 10).
-
-
-
-Reopen guards, checked by `pull`: FWA `purchasesResumeAt` passed, I1 holds with the incoming value, listed ordinary
-items at least `concurrency` above the unsettled acquisitions, and the listed GRAIL tracks' share of FWA selection
-weight at most `grailProbCapBps`.
+Reopen guards, checked by `acquire` and `acquireBatch`: FWA `purchasesResumeAt` passed, I1 holds with the incoming
+value, and listed ordinary items at least `concurrency` above the unsettled acquisitions.
 
 ## 10. Upkeep and refund
 
-Per-pull slice, inside `pull`: process and settle up to 3 acquisitions, harvest, pay queued claims from `cash`, then
-mint at most one queued replacement when `cash` covers it. The slice mints and holds; `rotate` lists. FWA restarts its
-purchase pause on every listing, so a listing inside `pull` would pause the next ticket.
+Per-pull slice, inside `acquire` and `acquireBatch`: process and settle up to 3 acquisitions, harvest, pay queued claims
+from `cash`, then mint at most one queued replacement when `cash` covers it. The slice mints and holds; `rotate` lists.
+FWA restarts its purchase pause on every listing, so a listing inside the purchase would pause the next ticket.
 
 FWA rejects `withdrawListing` and `updatePrice` while any acquisition is unsettled. Under continuous pull flow,
 listed-item liquidation, GRAIL growth and repricing wait for a gap. The admin can pause pulls to open one.
@@ -230,19 +243,18 @@ to a native rung, opens, composes at Shapes, and recreates the pack as one Shape
 10_000`; lists. Growth resets `pullsSinceList`.
 
 Decay, inside `rotate`, after the growth step, for a track the growth step left unchanged: `next = max(floorWei,
-notional
-- decayWeiPerPull * pullsSinceList)`. The reprice runs when the listing is Active, `notional - next >= notional *
-  repriceMinBps / 10_000`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice`
-  and resets `pullsSinceList`. An unlisted pack is listed at `next`. On capture: proceeds go to the track's receivable
-  and then its bucket, `packId = 0`, `backing = 0`.
+notional - decayWeiPerPull * pullsSinceList)`. The reprice runs when the listing is Active, `notional - next >=
+notional * repriceMinBps / 10_000`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls
+`updatePrice` and resets `pullsSinceList`. An unlisted pack is listed at `next`. On capture: proceeds go to the track's
+receivable and then its bucket, `packId = 0`, `backing = 0`.
 
-The gap between `backing` and the capture `price` is the track's cost and is paid by its bucket (I5). I5 holds in the
-books. A GRAIL listed above the harmonic mean raises the ordinary ticket and so ordinary margin, which the track's
-expected loss funds.
+Probability cap. When the listed GRAIL weight exceeds `grailProbCapBps`, `rotate` lifts a track's `notional` to the
+smallest price that restores the cap, at most `backing * listBps / 10_000`. The lift mirrors decay: it needs an Active
+listing and no unsettled acquisitions, and it resets `pullsSinceList`. Purchases carry no cap check.
 
 ## 12. Admin
 
-`PoolAdmin` implements the setters (section 5), `setPaused`, `setAdmin`, `startExit`, `exportStep`,
+`PoolAdmin` implements the setters (section 5), `setPaused`, `setPurchaseGate`, `setAdmin`, `startExit`, `exportStep`,
 `transferGrailEstate(t, to)` (Exiting or Exported), `sweep`, `adminCall` and the import functions. `Pool` implements
 `createFwaPool`.
 
@@ -252,10 +264,6 @@ ordinary token and for a GRAIL pack.
 `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After the
 call it checks I1 and I2 and reverts `InvariantBroken` when either fails. The admin is trusted: on the old pool,
 `adminCall` can reach the successor's import functions, and a forged `finalizeImport` argument misprices a migration.
-
-`purchaseOperator` on the FWA pool is left unset so FWA's own UI can acquire from the pool directly; the pool's `pull`
-is a convenience path that adds the upkeep slice and Shapes payment. Direct FWA purchases are booked by the next
-`settle`. (Pending owner confirmation, 2026-10-12.)
 
 ## 13. Exit: retirement and migration
 
@@ -296,7 +304,8 @@ FWA refund credits stay at the old FWA pool and remain claimable there.
 ## 14. Lens
 
 Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail(t)`, `claims()`,
-`reopenStatus()`, `parameters()`.
+`reopenStatus()`, `parameters()`. `reopenStatus()` lists the reopen guards: the purchase cooldown, solvency and board
+depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
 
 ## 15. Out of scope for v1
 
@@ -311,8 +320,8 @@ and profile pages, runtime keeper package.
 All suites run against the real Shapes, Draw Packs and FWA contracts on a mainnet fork at a pinned block.
 
 - Unit tests per external function.
-- Invariant suite over I1 to I7 with deposit, withdraw, pull, settle, rotate, liquidate, growGrail, startExit,
+- Invariant suite over I1 to I7 with deposit, withdraw, acquire, settle, rotate, liquidate, growGrail, startExit,
   exportStep as actions.
 - Scenario suite: open a pool, deposit, build, pull single and batch, settle, capture a pack, capture a GRAIL, withdraw
   with liquidation, retire, migrate to a second pool and `migrateHolder`.
-- Gas: `pull(5)` and `rotate` receipts in `evidence/`. Sepolia rehearsal of the scenario path, then mainnet.
+- Gas: `acquireBatch(5)` and `rotate` receipts in `evidence/`. Sepolia rehearsal of the scenario path, then mainnet.
