@@ -41,6 +41,7 @@ interface IFWAClone {
     function listNFTs(InventoryInput[] calldata items) external returns (uint256[] memory listingIds);
     function MAX_INVENTORY_BATCH() external view returns (uint256);
     function withdrawListing(uint256 listingId) external;
+    function withdrawListingTo(uint256 listingId, address recipient) external;
     function updatePrice(uint256 listingId, uint256 newPrice) external;
     function activateListings(uint256 maxCount) external;
     function recoverRefundedNFT(uint256 listingId) external;

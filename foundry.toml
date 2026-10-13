@@ -17,6 +17,9 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
+# lib/draw-packs compiles only with via_ir (stack too deep otherwise). Scoped profile, Pool stays legacy.
+additional_compiler_profiles = [{ name = "draw-packs-ir", via_ir = true, optimizer_runs = 200 }]
+compilation_restrictions = [{ paths = "lib/draw-packs/src/**", via_ir = true }]
 bytecode_hash = "none"
 cbor_metadata = false
 fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./script/env" }]
