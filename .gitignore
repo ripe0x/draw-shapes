@@ -20,3 +20,5 @@ __pycache__/
 deployments/31337-*.json
 deployments/.dry-run-*
 broadcast/**/31337/
+.anvil-*.pid
+.anvil-*.log

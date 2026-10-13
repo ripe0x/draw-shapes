@@ -1,5 +1,7 @@
 # Deploy
 
+Local run, launch steps and keeper operation: `docs/RUNBOOK.md`.
+
 One contract (`script/Deploy.s.sol`), one wrapper (`script/deploy.sh <env>`), one values file per
 environment (`script/env/<env>.env`). Every environment runs the same guards, build, broadcast,
 readback and record code.
