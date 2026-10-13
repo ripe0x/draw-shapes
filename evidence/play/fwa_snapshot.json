@@ -1,0 +1,127 @@
+{
+ "source": "factory PoolCreated logs and activeListingCount at the fork block (docs/external/fwa-v2.md names no pool)",
+ "factory": "0xF5A3A153164791AB579C3d9ba5DBECf7cDfd300c",
+ "pool": "0x39fde68bfa68a1dda887d34838ef0fc36972fcf8",
+ "block": 26170000,
+ "activeListings": 9923,
+ "feeWei": 1050000000000000,
+ "vrfWei": 0,
+ "ticketWei": 1050000000000000,
+ "edgeBps": 500,
+ "harmonicMeanWei": 1000000000000000,
+ "stats": {
+  "mean": 0.9523809523810237,
+  "median": 0.9523809523809523,
+  "p5": 0.9523809523809523,
+  "p95": 0.9523809523809523,
+  "shareAtOrAbove": 0,
+  "shareBelowHalf": 0
+ },
+ "histogram": {
+  "edges": [
+   0,
+   0.25,
+   0.5,
+   0.75,
+   1.0,
+   1.25,
+   1.5,
+   2,
+   3,
+   5,
+   10
+  ],
+  "share": [
+   0.0,
+   0.0,
+   0.0,
+   1.0000000000001203,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "oddsByPriceBucket": [
+  {
+   "bucket": "0x to 0.25x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "0.25x to 0.5x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "0.5x to 0.75x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "0.75x to 1x",
+   "listings": 9923,
+   "probability": 1.0,
+   "minPriceWei": 1000000000000000,
+   "maxPriceWei": 1000000000000000
+  },
+  {
+   "bucket": "1x to 1.25x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "1.25x to 1.5x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "1.5x to 2x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "2x to 3x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "3x to 5x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "5x to 10x",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  },
+  {
+   "bucket": "10x and above",
+   "listings": 0,
+   "probability": 0.0,
+   "minPriceWei": 0,
+   "maxPriceWei": 0
+  }
+ ]
+}
