@@ -15,9 +15,9 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 ///         Deposit, withdraw and warp are delegated to `PoolHandler`, which holds the I3 ghost
 ///         state. The claim queue ghost (I4), the I6 and I7 ghost state are kept here: pool events
 ///         are read after every action, including the claim payouts and liquidation fee deductions
-///         of `pull`, `liquidate` and `rotate`. A reverted action leaves no ghost change because
+///         of `pull`, `payClaims` and `rotateIfDue`. A reverted action leaves no ghost change because
 ///         the whole handler call reverts. After every pricing action (deposit, withdraw,
-///         liquidate, rotate, redeemAndDeposit) the handler checks that the books are level with
+///         rotateIfDue, redeemAndDeposit) the handler checks that the books are level with
 ///         FWA and every receivable is harvested. GRAIL ghost state is kept per track: credits
 ///         (entry contributions and feed shares), captured proceeds, and the cost of every growth
 ///         step, derived from the track's `stepWei` and the mint fees of its `defaultMakeup`.
@@ -53,6 +53,8 @@ contract PoolFwaHandler is ForkBase {
     bool public i6Broken;
     bool public harvestBroken;
     bool public booksBehindAfterPricing;
+    /// @dev Set when `rotate` succeeds while `rotateDue` is `None`.
+    bool public rotateGateBroken;
 
     uint256 public captures;
     uint256 public grailCaptures;
@@ -304,37 +306,26 @@ contract PoolFwaHandler is ForkBase {
         }
     }
 
-    /// @dev Calls `liquidate` once the head claim is due. Checks that the call stops only when the
-    ///      head claim is covered, the item limit is reached, FWA holds unsettled acquisitions or
-    ///      no item is listed.
-    function liquidate() external {
-        uint256 head = pool.claimHead();
-        if (head == _queuedTo.length) return;
-        (, uint256 requestedAt,) = pool.claimQueue(head);
-        if (block.timestamp < requestedAt + pool.rotateInterval()) return;
-        uint256 itemsBefore = liquidatedItems;
-        uint256 listedBefore = liquidatedListed;
-        vm.recordLogs();
-        pool.liquidate();
-        _ingest(vm.getRecordedLogs());
-        _checkPriced();
-        _checkLiquidationStop(liquidatedItems - itemsBefore, liquidatedListed - listedBefore);
-        ++liquidations;
-    }
-
     /// @dev A call redeems at most `MAX_LIQUIDATE_ITEMS` items and withdraws a listing only while FWA
     ///      holds no unsettled acquisition. Held items need no FWA call.
     function _checkLiquidationStop(uint256 items, uint256 listedItems) internal {
-        if (items > 10) i4Broken = true;
+        if (items > 25) i4Broken = true;
         if (listedItems != 0 && clone.unsettledAcquisitionCount() != 0) i4Broken = true;
     }
 
-    /// @dev Warps to the end of the rotation interval and calls `rotate` as this contract, which
-    ///      receives the refund. The ETH received must equal the logged refund.
-    function rotate() external {
+    /// @dev Warps to the end of the rotation spacing, then calls `rotate` as this contract, which
+    ///      receives the refund, when `rotateDue` is nonzero. The ETH received must equal the logged
+    ///      refund. A `rotate` call while `rotateDue` is `None` must revert.
+    function rotateIfDue() external {
         if (_exiting()) return;
         uint256 at = pool.lastRotateAt() + pool.rotateInterval();
         if (block.timestamp < at) vm.warp(at);
+        if (pool.rotateDue() == IPoolTypes.RotateTrigger.None) {
+            try pool.rotate() {
+                rotateGateBroken = true;
+            } catch {}
+            return;
+        }
         vm.recordLogs();
         uint256 balanceBefore = address(this).balance;
         pool.rotate();
@@ -345,19 +336,13 @@ contract PoolFwaHandler is ForkBase {
         if (received != _batchRefund) i6Broken = true;
         _checkPriced();
         _checkLiquidationStop(liquidatedItems - itemsBefore, liquidatedListed - listedBefore);
+        if (liquidatedItems != itemsBefore) ++liquidations;
         ++rotations;
     }
 
-    /// @dev Calls `growGrail` on a track that is ready: backing below target, bucket covering the
-    ///      step and its mint fees, and no unsettled acquisition at FWA.
-    function growGrail(uint8 trackSeed) external recorded {
-        if (_exiting()) return;
-        uint256 t = trackSeed % 2;
-        (uint256 bucket,, uint256 backing,, uint256 target,,,,,,,) = pool.grail(t);
-        if (backing >= target || bucket < _growthCost(t) || clone.unsettledAcquisitionCount() != 0) return;
-        uint256 at = pool.lastRotateAt() + pool.rotateInterval();
-        if (block.timestamp < at) vm.warp(at);
-        pool.growGrail(uint8(t));
+    /// @dev Pays queued claims from cash, in every lifecycle state.
+    function payClaims() external recorded {
+        pool.payClaims();
     }
 
     // ------------------------------------------------------------------ admin actions
@@ -639,7 +624,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         bytes4[] memory selectors = new bytes4[](31);
         selectors[0] = PoolFwaHandler.deposit.selector;
         selectors[1] = PoolFwaHandler.withdraw.selector;
-        selectors[2] = PoolFwaHandler.liquidate.selector;
+        selectors[2] = PoolFwaHandler.payClaims.selector;
         selectors[3] = PoolFwaHandler.warp.selector;
         selectors[4] = PoolFwaHandler.warpToResume.selector;
         selectors[5] = PoolFwaHandler.redeemAndDeposit.selector;
@@ -655,10 +640,10 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[15] = PoolFwaHandler.griefShapes.selector;
         selectors[16] = PoolFwaHandler.withdrawAfterProcess.selector;
         selectors[17] = PoolFwaHandler.directThenDeposit.selector;
-        selectors[18] = PoolFwaHandler.rotate.selector;
+        selectors[18] = PoolFwaHandler.rotateIfDue.selector;
         selectors[19] = PoolFwaHandler.loseCash.selector;
         selectors[20] = PoolFwaHandler.exitIntoQueue.selector;
-        selectors[21] = PoolFwaHandler.growGrail.selector;
+        selectors[21] = PoolFwaHandler.rotateIfDue.selector;
         // The exit actions are listed several times so a campaign usually reaches Exported.
         selectors[22] = PoolFwaHandler.startExitRetire.selector;
         selectors[23] = PoolFwaHandler.startExitRetire.selector;
@@ -699,9 +684,8 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             if (i % 4 == 3) handler.griefShapes(i);
             handler.deposit(uint96(i * 1e17), uint8(i));
             handler.withdraw(i * 1e18, uint8(i));
-            handler.liquidate();
-            handler.rotate();
-            handler.growGrail(uint8(i));
+            handler.payClaims();
+            handler.rotateIfDue();
             handler.redeemAndDeposit(uint8(i));
             handler.directThenDeposit(uint8(i), i, uint96(i * 1e17), uint8(i));
             handler.withdrawAfterProcess(uint8(i), i * 1e18, uint8(i));
@@ -773,7 +757,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
     }
 
     /// @dev Starts a retirement, exports in steps of up to 30 items, then lets holders withdraw
-    ///      and runs `liquidate` past the claim age.
+    ///      and pays the queued claims.
     function _retire() internal {
         handler.startExitRetire();
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exiting));
@@ -787,23 +771,22 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         handler.withdraw(type(uint256).max, 0);
         handler.withdraw(type(uint256).max, 1);
         handler.warp(3 hours);
-        handler.liquidate();
+        handler.payClaims();
         handler.pull(1, 1, 1, true);
         handler.deposit(1 ether, 0);
-        handler.rotate();
+        handler.rotateIfDue();
         assertEq(pool.listedCount() + pool.heldCount(), 0, "no restock after export");
     }
 
-    /// @dev Removes the cash, lets a depositor buy most shares and leave, and runs `liquidate` and
-    ///      `rotate` past the claim age. The exit queues a claim that only listed items can cover.
+    /// @dev Removes the cash, lets a depositor buy most shares and leave, and runs `rotateIfDue` past
+    ///      the claim age. The exit queues a claim that only listed items can cover.
     function _exitIntoLiquidation() internal {
         handler.loseCash(10_000);
         handler.deposit(type(uint96).max, 0);
         handler.loseCash(10_000);
         handler.withdraw(type(uint256).max, 0);
         handler.warp(3 hours);
-        handler.liquidate();
-        handler.rotate();
+        handler.rotateIfDue();
     }
 
     function afterInvariant() public {
@@ -994,12 +977,19 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertLe(pool.nextSequenceToBook(), clone.nextSequenceToProcess());
     }
 
-    /// @dev After a deposit, withdraw, liquidate or redeemAndDeposit the booking walk equals FWA's
+    /// @dev After a deposit, withdraw, rotate or redeemAndDeposit the booking walk equals FWA's
     ///      processing queue and every receivable has been harvested.
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_booksNeverBehindAfterPricing() public view {
         assertFalse(handler.booksBehindAfterPricing());
+    }
+
+    /// @dev `rotate` reverts whenever `rotateDue` is `None`.
+    /// forge-config: default.invariant.runs = 16
+    /// forge-config: default.invariant.depth = 40
+    function invariant_rotateRevertsWhileNotDue() public view {
+        assertFalse(handler.rotateGateBroken());
     }
 
     /// forge-config: default.invariant.runs = 16

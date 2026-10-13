@@ -66,6 +66,16 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     /// @notice Smallest GRAIL list price decrease, in bps of the current price, that `rotate` applies
     ///         as a reprice.
     uint256 public repriceMinBps;
+    /// @notice Ordinary selection weight missing since the last relist, in bps of
+    ///         `ordinaryWeightSnapshot`, at which `rotate` is due.
+    uint256 public restockTriggerBps;
+    /// @notice Seconds without an inventory change after which `rotate` is due. At least
+    ///         `rotateInterval`.
+    uint256 public quietIntervalSeconds;
+    /// @notice Ordinary selection weight after the last `rotate` that changed inventory, or after
+    ///         `open()` made the pool Live. Ordinary weight is FWA `totalWeight` minus the weight
+    ///         of the listed GRAIL tracks at their list prices.
+    uint256 public ordinaryWeightSnapshot;
 
     IFWAClone public fwaPool;
     uint256 public maxBatch;
@@ -330,6 +340,17 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     function _setRepriceMinBps(uint256 bps) internal {
         if (bps > BPS) revert RepriceBpsOutOfRange();
         repriceMinBps = bps;
+    }
+
+    function _setRestockTriggerBps(uint256 bps) internal {
+        if (bps > BPS) revert RestockTriggerBpsOutOfRange();
+        restockTriggerBps = bps;
+    }
+
+    /// @dev `seconds_` is at least `rotateInterval`.
+    function _setQuietInterval(uint256 seconds_) internal {
+        if (seconds_ < rotateInterval) revert LimitOutOfRange();
+        quietIntervalSeconds = seconds_;
     }
 
     /// @dev Replaces the mix table. Each row must have rungs inside the Shapes ladder. A row that

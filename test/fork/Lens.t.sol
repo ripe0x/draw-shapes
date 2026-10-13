@@ -185,7 +185,7 @@ contract LensForkTest is ForkBase, PoolFixture {
     function test_grailViewCarriesTheTrackAndItsWeight() public {
         _open(false);
         _warpPastRotateGate(pool);
-        pool.growGrail(0);
+        pool.growTrack(0);
         Lens.GrailView memory g = lens.grail(0);
         (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = pool.grail(0);
         assertEq(g.bucket, bucket);
@@ -244,11 +244,22 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(c.cash, pool.cash());
 
         pool.bookProceeds{value: first}();
-        pool.liquidate();
+        pool.payClaims();
         Lens.Claims memory after_ = lens.claims();
         assertEq(after_.head, 1, "the head claim was paid in full and the fresh claim waits");
         assertEq(after_.queue.length, 1);
         assertEq(after_.queue[0].to, player);
+    }
+
+    // ---------------------------------------------------------------- rotation
+
+    function test_rotateDuePassesThroughThePoolValue() public {
+        assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "not Live");
+        _open(false);
+        assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "inside the spacing");
+        vm.warp(pool.lastRotateAt() + pool.rotateInterval());
+        assertEq(uint8(lens.rotateDue()), uint8(pool.rotateDue()));
+        assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "the minor track is funded");
     }
 
     // ---------------------------------------------------------------- reopen guards and parameters
@@ -300,6 +311,8 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.openingDeadlineAt, pool.openingDeadlineAt());
         assertEq(p.minItems, 10);
         assertEq(p.grailProbCapBps, 2_000);
+        assertEq(p.restockTriggerBps, 1_000);
+        assertEq(p.quietIntervalSeconds, 12 hours);
         assertEq(p.maxBatch, pool.maxBatch());
         assertEq(p.concurrency, pool.concurrency());
         assertEq(p.lastRotateAt, pool.lastRotateAt());

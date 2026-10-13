@@ -33,7 +33,7 @@ ETHERSCAN_API_KEY=... script/deploy.sh mainnet
 - `.env` is untracked. `--slow` is always passed.
 
 `Deploy.s.sol` then checks the chain: mainnet pins Shapes, the factory, the fee split, the entry
-curve, `rotateInterval` 3600 and the 24 hour opening deadline. Draw Packs must have a minimum pack
+curve, `rotateInterval` 900 and the 24 hour opening deadline. Draw Packs must have a minimum pack
 value of two ladder units and wrap the same Shapes. After the broadcast it reads every constructor
 value back from the pool.
 
@@ -56,3 +56,10 @@ The pool is Opening and takes deposits at once. The admin then:
    routes purchases through the pool. `purchaseOperator()` on the FWA pool shows the state.
 3. Waits for `openingDeadlineAt`.
 4. Calls `open()` until `lifecycle()` returns Live. Each call runs one restock.
+
+## Rotation cron
+
+Run a keeper that reads `Lens.rotateDue()` (or `Pool.rotateDue()`) on a short interval and calls
+`Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the spacing since
+`lastRotateAt` has passed and a trigger holds. A rotate that leaves inventory unchanged keeps the
+trigger true, so the keeper simulates the call or backs off between attempts.

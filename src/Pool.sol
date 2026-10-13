@@ -45,9 +45,9 @@ contract Pool is PoolBooks {
     uint256 internal constant MAX_CLAIM_ITEMS = 20;
     uint256 internal constant MAX_MINTS_PER_RESTOCK = 20;
     uint256 internal constant SETTLE_BUDGET = 3;
-    uint256 internal constant MAX_LIQUIDATE_ITEMS = 10;
+    uint256 internal constant MAX_LIQUIDATE_ITEMS = 25;
     uint256 internal constant MAX_ACTIVATIONS = 20;
-    /// @dev Added to the refund of every `rotate` that changed state.
+    /// @dev Added to the refund of every `rotate` that changed inventory.
     uint256 internal constant ROTATE_TIP = 0.0005 ether;
     /// @dev Intrinsic transaction gas plus the refund transfer, added to the measured gas.
     uint256 internal constant ROTATE_GAS_OVERHEAD = 30_000;
@@ -80,6 +80,8 @@ contract Pool is PoolBooks {
         _setCurve(p.curve);
         _setProbCap(p.grailProbCapBps);
         _setRepriceMinBps(p.repriceMinBps);
+        _setRestockTriggerBps(p.restockTriggerBps);
+        _setQuietInterval(p.quietIntervalSeconds);
 
         _initGrail(MINOR, p.minor);
         _initGrail(MAJOR, p.major);
@@ -165,6 +167,7 @@ contract Pool is PoolBooks {
         if (_restock() < MAX_MINTS_PER_RESTOCK) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
+            ordinaryWeightSnapshot = _ordinaryWeight();
             emit Opened();
         }
     }
@@ -204,33 +207,21 @@ contract Pool is PoolBooks {
         if (paidNow != 0) SafeTransferLib.safeTransferETH(msg.sender, paidNow);
     }
 
-    /// @notice Pays queued claims in request order once the head claim is at least `rotateInterval`
-    ///         old. Pays from `cash`, then redeems up to `MAX_LIQUIDATE_ITEMS` held items and
-    ///         withdrawn listed items until the head claim is covered. Listed items are withdrawn
-    ///         only once `rotateInterval` has passed since `lastRotateAt`, and a withdrawal sets
-    ///         `lastRotateAt`. Does nothing when the queue is empty.
-    function liquidate() external nonReentrant {
-        _sync();
-        uint256 head = claimHead;
-        if (head == claimQueue.length) return;
-        if (block.timestamp < claimQueue[head].requestedAt + rotateInterval) revert ClaimNotDue();
-        uint256 listedBefore = listedCount;
-        _clearClaims(block.timestamp < lastRotateAt + rotateInterval);
-        if (listedCount < listedBefore) lastRotateAt = block.timestamp;
-    }
-
     /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, restocks
     ///         and lists the board, activates staged FWA listings, reprices or grows the GRAIL
-    ///         tracks, then refunds the caller from `maintenance`. Callable once `rotateInterval`
-    ///         has passed since `lastRotateAt`. The refund is paid once per `rotateInterval`.
+    ///         tracks, then refunds the caller from `maintenance`. Reverts `RotateTooSoon` until
+    ///         `rotateInterval` has passed since `lastRotateAt` and `RotateNotDue` while
+    ///         `rotateDue` is `None`. `lastRotateAt` and the weight snapshot move when the
+    ///         rotation changed inventory. The refund is paid only then, once per `rotateInterval`.
     function rotate() external nonReentrant {
         _requireLive();
-        if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
         uint256 gasStart = gasleft();
+        if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
+        if (_rotateTrigger() == RotateTrigger.None) revert RotateNotDue();
 
         bool changed = _settleAndHarvest();
         uint256 claimsBefore = claims;
-        bool inventoryChanged = _clearClaims(false);
+        bool inventoryChanged = _clearClaims();
         bool heldPending = _held.length != 0;
         bool minted = _restock() != 0;
         bool busy = _busy();
@@ -238,25 +229,22 @@ contract Pool is PoolBooks {
         bool grailChanged = _rotateGrail(MINOR, busy);
         grailChanged = _rotateGrail(MAJOR, busy) || grailChanged;
         inventoryChanged = inventoryChanged || heldPending || minted || grailChanged;
-        if (inventoryChanged) lastRotateAt = block.timestamp;
+        if (inventoryChanged) {
+            lastRotateAt = block.timestamp;
+            ordinaryWeightSnapshot = _ordinaryWeight();
+        }
         _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
     }
 
-    /// @notice Adds one `stepWei` of backing to GRAIL track `t` from `grail[t].bucket` and lists
-    ///         the pack at `backing * listBps / 10_000`. Books FWA results first and sets
-    ///         `lastRotateAt`. Reverts `RotateTooSoon` before `rotateInterval` has passed since
-    ///         `lastRotateAt`, `GrailNotReady` unless the bucket covers the step and its mint fees
-    ///         and `backing` is below `targetWei`, and `FwaBusy` while FWA holds unsettled
-    ///         acquisitions.
-    function growGrail(uint8 t) external nonReentrant {
-        _requireLive();
-        if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
-        if (t > MAJOR) revert GrailNotReady();
-        _sync();
-        uint256 status = _growGrail(t, _unsettled() != 0);
-        if (status == 1) revert GrailNotReady();
-        if (status == 2) revert FwaBusy();
-        lastRotateAt = block.timestamp;
+    /// @notice First reason `rotate` is due, in the order Weight, GrailCap, Claim, GrailStep,
+    ///         Restock, Quiet. `None` when no reason holds, when `rotateInterval` has not passed
+    ///         since `lastRotateAt`, and when the pool is not Live. `rotate` is callable exactly
+    ///         when this returns a value other than `None`.
+    function rotateDue() external view returns (RotateTrigger) {
+        if (lifecycle != Lifecycle.Live || block.timestamp < lastRotateAt + rotateInterval) {
+            return RotateTrigger.None;
+        }
+        return _rotateTrigger();
     }
 
     /// @notice FWA `acquire` through the pool: opens one acquisition for `purchaser`, which must be
@@ -365,6 +353,12 @@ contract Pool is PoolBooks {
         _processAndSettle(maxCount < MAX_SETTLE_ITEMS ? maxCount : MAX_SETTLE_ITEMS);
     }
 
+    /// @notice Pays queued claims from `cash` in request order, at most `MAX_CLAIM_ITEMS` entries.
+    ///         Callable in every lifecycle state, so claims left after an export are payable.
+    function payClaims() external nonReentrant {
+        _payClaims();
+    }
+
     /// @notice Accepts ETH from Shapes redemptions and FWA proceeds. The ETH is booked by the
     ///         function that triggered the transfer.
     receive() external payable {}
@@ -467,11 +461,11 @@ contract Pool is PoolBooks {
         }
     }
 
-    /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Listed items
-    ///      are withdrawn only when `gated` is false. Returns whether an item was redeemed.
-    function _clearClaims(bool gated) internal returns (bool redeemed) {
+    /// @dev Pays claims from `cash`, then liquidates for the head claim and pays again. Returns
+    ///      whether an item was redeemed.
+    function _clearClaims() internal returns (bool redeemed) {
         _payClaims();
-        redeemed = _liquidateForClaims(MAX_LIQUIDATE_ITEMS, gated);
+        redeemed = _liquidateForClaims(MAX_LIQUIDATE_ITEMS);
         if (redeemed) _payClaims();
     }
 
@@ -485,12 +479,12 @@ contract Pool is PoolBooks {
     }
 
     /// @dev Pays the caller `min(maintenance, gas cost + ROTATE_TIP)` when the rotation changed
-    ///      state and `rotateInterval` has passed since `lastRefundAt`. The transfer is the last
-    ///      step.
+    ///      inventory and `rotateInterval` has passed since `lastRefundAt`. The transfer is the
+    ///      last step.
     function _refund(uint256 gasStart, bool changed, bool inventoryChanged) internal {
         uint256 refund;
         uint256 bucket = maintenance;
-        if (changed && bucket != 0 && block.timestamp >= lastRefundAt + rotateInterval) {
+        if (inventoryChanged && bucket != 0 && block.timestamp >= lastRefundAt + rotateInterval) {
             lastRefundAt = block.timestamp;
             uint256 cost = (gasStart - gasleft() + ROTATE_GAS_OVERHEAD) * block.basefee + ROTATE_TIP;
             refund = cost < bucket ? cost : bucket;
@@ -503,18 +497,18 @@ contract Pool is PoolBooks {
     /// @dev Redeems up to `maxItems` ordinary items while `cash` is below the head claim, if the
     ///      head claim is at least `rotateInterval` old. Held items go first and need no FWA call.
     ///      Listed items follow, each the last listed item of the row most over its share. They are
-    ///      skipped when `gated`, while FWA holds unsettled acquisitions, which lock withdrawals, or
-    ///      while the booking walk is behind FWA's processing queue, which leaves captured listings
-    ///      in `_listed`. Stops when the head claim does not exceed the re-mint cost of the next
+    ///      skipped while FWA holds unsettled acquisitions, which lock withdrawals, and while the
+    ///      booking walk is behind FWA's processing queue, which leaves captured listings in
+    ///      `_listed`. Stops when the head claim does not exceed the re-mint cost of the next
     ///      item. Returns whether an item was redeemed.
-    function _liquidateForClaims(uint256 maxItems, bool gated) internal returns (bool redeemed) {
+    function _liquidateForClaims(uint256 maxItems) internal returns (bool redeemed) {
         uint256 head = claimHead;
         if (head == claimQueue.length || block.timestamp < claimQueue[head].requestedAt + rotateInterval) {
             return false;
         }
         if (_held.length == 0 && listedCount == 0) return false;
         uint256 mintFee = _mintFee();
-        bool locked = listedCount != 0 && (gated || _busy());
+        bool locked = listedCount != 0 && _busy();
         for (uint256 n; n < maxItems && cash < claimQueue[head].amount; ++n) {
             if (!_liquidateOne(head, mintFee, locked)) break;
             redeemed = true;
@@ -684,6 +678,69 @@ contract Pool is PoolBooks {
         return grailWeight * BPS > total * grailProbCapBps;
     }
 
+    /// @dev FWA `totalWeight` minus the weight at list price of each listed GRAIL track.
+    function _ordinaryWeight() internal view returns (uint256 weight) {
+        weight = _totalWeight();
+        for (uint256 t; t <= MAJOR; ++t) {
+            Grail storage g = grail[t];
+            if (g.listingId == 0) continue;
+            uint256 grailWeight = PricingLib.weightOf(g.notional);
+            weight = weight > grailWeight ? weight - grailWeight : 0;
+        }
+    }
+
+    /// @dev First reason `rotate` is due. The spacing since `lastRotateAt` is checked by the
+    ///      callers. Weight: ordinary weight is at least `restockTriggerBps` of
+    ///      `ordinaryWeightSnapshot` below the snapshot. GrailCap: listed GRAIL weight exceeds
+    ///      `grailProbCapBps` at current prices. Claim: the head claim is at least `rotateInterval`
+    ///      old. GrailStep: a track below `targetWei` holds a bucket that covers a step. Restock:
+    ///      `_restockDue`. Quiet: `quietIntervalSeconds` passed since `lastRotateAt`.
+    function _rotateTrigger() internal view returns (RotateTrigger) {
+        uint256 snapshot = ordinaryWeightSnapshot;
+        uint256 current = _ordinaryWeight();
+        if (snapshot > current && snapshot - current >= snapshot * restockTriggerBps / BPS) {
+            return RotateTrigger.Weight;
+        }
+        if (_grailCapExceeded(MAJOR + 1, 0)) return RotateTrigger.GrailCap;
+        uint256 head = claimHead;
+        if (head < claimQueue.length && block.timestamp >= claimQueue[head].requestedAt + rotateInterval) {
+            return RotateTrigger.Claim;
+        }
+        if (_growReady(MINOR) || _growReady(MAJOR)) return RotateTrigger.GrailStep;
+        if (_restockDue()) return RotateTrigger.Restock;
+        if (block.timestamp >= lastRotateAt + quietIntervalSeconds) return RotateTrigger.Quiet;
+        return RotateTrigger.None;
+    }
+
+    /// @dev True when track `t` is below `targetWei` and its bucket covers a step and its mint
+    ///      fees, the precondition of `_growGrail` other than `busy`.
+    function _growReady(uint256 t) internal view returns (bool) {
+        Grail storage g = grail[t];
+        if (g.backing >= g.targetWei) return false;
+        (, uint256 cost) = _growCost(g.stepWei);
+        return g.bucket >= cost;
+    }
+
+    /// @dev True when `_restock` would list or mint. A held item exists, or the cash left after
+    ///      queued claims covers the next queued replacement, or covers a row below its target
+    ///      depth with one step of the cheapest row in reserve (`_mintToDepth`).
+    function _restockDue() internal view returns (bool) {
+        if (_held.length != 0) return true;
+        uint256 spendable = cash > claims ? cash - claims : 0;
+        uint256 fee = _mintFee();
+        uint256 head = replacementHead;
+        if (head < replacementQueue.length) return spendable >= _rowCost(replacementQueue[head], fee);
+        uint256 reserve = _cheapestRowCost(fee);
+        uint256 pulls = trailingPulls();
+        for (uint256 r; r < _mix.length; ++r) {
+            if (
+                _rowCount[r] < PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps)
+                    && spendable >= reserve + _rowCost(r, fee)
+            ) return true;
+        }
+        return false;
+    }
+
     /// @dev Pays queued claims, mints replacements from the queue, then new inventory toward the
     ///      target depth of each row, then lists every held item. At most `MAX_MINTS_PER_RESTOCK`
     ///      mints per call. New inventory is minted only when the queue is empty and only from
@@ -710,11 +767,7 @@ contract Pool is PoolBooks {
     /// @dev Mints toward each row's target depth. Returns `mints` plus the tokens minted here.
     function _mintToDepth(uint256 fee, uint256 mints) internal returns (uint256) {
         uint256 rows = _mix.length;
-        uint256 reserve = type(uint256).max;
-        for (uint256 r; r < rows; ++r) {
-            uint256 cost = _rowCost(r, fee);
-            if (cost < reserve) reserve = cost;
-        }
+        uint256 reserve = _cheapestRowCost(fee);
         uint256 pulls = trailingPulls();
         for (uint256 r; r < rows; ++r) {
             uint256 target = PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps);
@@ -725,6 +778,15 @@ contract Pool is PoolBooks {
             }
         }
         return mints;
+    }
+
+    /// @dev Lowest `_rowCost` over the mix rows.
+    function _cheapestRowCost(uint256 fee) internal view returns (uint256 cheapest) {
+        cheapest = type(uint256).max;
+        for (uint256 r; r < _mix.length; ++r) {
+            uint256 cost = _rowCost(r, fee);
+            if (cost < cheapest) cheapest = cost;
+        }
     }
 
     /// @dev Row backing plus the mint fee of every Shape the row mints.
@@ -894,6 +956,17 @@ contract Pool is PoolBooks {
         if (price < g.notional) price = g.notional;
     }
 
+    /// @dev Mint makeup of a pack addition of `step` wei and its cost: `step` plus the mint fees of
+    ///      the Shapes in `defaultMakeup(step)`.
+    function _growCost(uint256 step) internal view returns (uint32[] memory counts, uint256 cost) {
+        counts = IShapePacks(drawPacks).defaultMakeup(step);
+        uint256 shapeCount;
+        for (uint256 i; i < counts.length; ++i) {
+            shapeCount += counts[i];
+        }
+        cost = step + _mintFee() * shapeCount;
+    }
+
     /// @dev Adds `stepWei` of backing to track `t`, paid from `grail[t].bucket` with the mint fees
     ///      of the Shapes in `defaultMakeup(stepWei)`, then lists the pack. The track's FWA listing
     ///      is withdrawn first. Returns 0 on success, 1 when the track is not ready and 2 when
@@ -906,12 +979,7 @@ contract Pool is PoolBooks {
         Grail storage g = grail[t];
         if (g.backing >= g.targetWei) return 1;
         uint256 step = g.stepWei;
-        uint32[] memory counts = IShapePacks(drawPacks).defaultMakeup(step);
-        uint256 shapeCount;
-        for (uint256 i; i < counts.length; ++i) {
-            shapeCount += counts[i];
-        }
-        uint256 cost = step + _mintFee() * shapeCount;
+        (uint32[] memory counts, uint256 cost) = _growCost(step);
         if (g.bucket < cost) return 1;
         if (busy) return 2;
         _unlistGrail(g);

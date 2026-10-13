@@ -10,7 +10,7 @@ import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
-///         the pool: `growGrail`, compose at native denominations, decay in `rotate`, capture and
+///         the pool: growth steps, compose at native denominations, decay in `rotate`, capture and
 ///         the selection probability lift.
 /// @dev Minor track: step 0.05 ETH, target 0.5 ETH, list at 80 percent, decay 0.001 ETH per pull,
 ///      floor 0.1 ETH. Its backing reaches a native denomination at 0.1 ETH and 0.5 ETH. Major
@@ -65,6 +65,11 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         if (block.timestamp < at) vm.warp(at);
     }
 
+    /// @dev Moves to the quiet floor, where `rotate` is due with no other trigger.
+    function _warpToQuiet() internal {
+        vm.warp(pool.lastRotateAt() + pool.quietIntervalSeconds());
+    }
+
     function _bucket(uint256 t) internal view returns (uint256 v) {
         (v,,,,,,,,,,,) = pool.grail(t);
     }
@@ -106,10 +111,17 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         (,,,,, price,, status) = clone.listings(listingId);
     }
 
+    /// @dev One growth step of track `t` alone, as the GRAIL step of `rotate` applies it.
     function _grow(uint256 t) internal {
         _warpPastRotateGate(pool);
         vm.prank(keeper);
-        pool.growGrail(uint8(t));
+        pool.growTrack(uint8(t));
+    }
+
+    function _rotateAsKeeper() internal {
+        _warpPastRotateGate(pool);
+        vm.prank(keeper);
+        pool.rotate();
     }
 
     function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
@@ -142,34 +154,25 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- guards
 
-    function test_revert_growGrailWhileOpening() public {
-        vm.expectRevert(IPoolTypes.NotLive.selector);
-        pool.growGrail(0);
-    }
-
-    function test_revert_growGrailForAnUnknownTrack() public {
-        _openReady();
-        _warpPastRotateGate(pool);
-        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
-        pool.growGrail(2);
-    }
-
-    function test_revert_growGrailWhenTheBucketIsShortByOneWei() public {
+    function test_growthStepIsDueOnlyOnceTheBucketCoversTheStep() public {
         _openReady();
         uint256 cost = _cost(0.05 ether);
         pool.loseGrailBucket(0, _bucket(0) - cost + 1);
+        pool.loseGrailBucket(1, _bucket(1));
         _warpPastRotateGate(pool);
-        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
-        pool.growGrail(0);
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "short by one wei");
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
 
         pool.addGrailBucket{value: 1}(0);
-        _warpPastRotateGate(pool);
-        pool.growGrail(0);
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
+        pool.rotate();
         assertEq(_bucket(0), 0, "the step spent the bucket exactly");
         assertEq(_backing(0), 0.05 ether);
+        assertEq(pool.lastRotateAt(), block.timestamp, "growth is an inventory change");
     }
 
-    function test_revert_growGrailWhileAcquisitionsAreUnsettled() public {
+    function test_rotateWaitsToGrowWhileAcquisitionsAreUnsettled() public {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
@@ -177,12 +180,17 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
         _warpPastRotateGate(pool);
-        vm.expectRevert(IPoolTypes.FwaBusy.selector);
-        pool.growGrail(0);
+        uint256 lastBefore = pool.lastRotateAt();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
+        pool.rotate();
+        assertEq(_backing(0), 0.05 ether, "locked while an acquisition is unsettled");
+        assertEq(_backing(1), 0, "locked while an acquisition is unsettled");
+        assertEq(pool.lastRotateAt(), lastBefore, "a rotate that grew nothing leaves the spacing alone");
 
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
-        _grow(0);
+        _rotateAsKeeper();
         assertEq(_backing(0), 0.1 ether, "grows once the acquisition settled");
+        assertEq(_backing(1), 0.15 ether);
     }
 
     // ---------------------------------------------------------------- growth
@@ -291,7 +299,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
         _warpPastRotateGate(pool);
         vm.expectRevert(IPoolTypes.GrailNotReady.selector);
-        pool.growGrail(0);
+        pool.growTrack(0);
         _assertI1();
     }
 
@@ -414,22 +422,23 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _assertI1();
     }
 
-    function test_revert_growGrailInsideTheRotateInterval() public {
+    function test_growthRunsInsideRotateAndRestartsTheSpacing() public {
         _openReady();
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.growGrail(0);
+        pool.rotate();
 
         _warpToRotation();
-        pool.growGrail(0);
-        assertEq(pool.lastRotateAt(), block.timestamp, "growth restarts the interval");
+        pool.rotate();
+        assertEq(_backing(0), 0.05 ether);
+        assertEq(pool.lastRotateAt(), block.timestamp, "growth restarts the spacing");
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.growGrail(0);
+        pool.rotate();
 
         vm.warp(block.timestamp + pool.rotateInterval() - 1);
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.growGrail(0);
+        pool.rotate();
         vm.warp(block.timestamp + 1);
-        pool.growGrail(0);
+        pool.rotate();
         assertEq(_backing(0), 0.1 ether);
     }
 
@@ -545,7 +554,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(drawPacks.valueOf(_packId(0)), 0.05 ether);
     }
 
-    function test_growGrailBooksACaptureBeforeItGrows() public {
+    function test_growthBooksACaptureBeforeItGrows() public {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
@@ -632,7 +641,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
         // Ten pulls decay the 0.04 ETH list price to 0.03 ETH, which the cap allows on the full board.
         pool.recordPulls(10);
-        _warpToRotation();
+        _warpToQuiet();
         vm.prank(keeper);
         pool.rotate();
         assertEq(_notional(0), 0.03 ether);

@@ -313,7 +313,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
         _warpPastRotateGate(pool);
-        pool.growGrail(0);
+        pool.growTrack(0);
         pool.recordPulls(3);
         uint256[12] memory before_ = _grailWords(0);
         assertGt(before_[1], 0, "pack");
@@ -411,6 +411,47 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setRotateInterval(cooldown);
         assertEq(pool.rotateInterval(), cooldown);
         vm.stopPrank();
+    }
+
+    function test_setRotateIntervalIsAtMostTheQuietInterval() public {
+        vm.startPrank(admin);
+        uint256 quiet = pool.quietIntervalSeconds();
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setRotateInterval(quiet + 1);
+        IPool(address(pool)).setRotateInterval(quiet);
+        assertEq(pool.rotateInterval(), quiet);
+        vm.stopPrank();
+    }
+
+    function test_setQuietIntervalBounds() public {
+        vm.startPrank(admin);
+        uint256 interval = pool.rotateInterval();
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        IPool(address(pool)).setQuietInterval(interval - 1);
+        _expectParamSet(IPool.setQuietInterval.selector);
+        IPool(address(pool)).setQuietInterval(interval);
+        assertEq(pool.quietIntervalSeconds(), interval);
+        IPool(address(pool)).setQuietInterval(1 days);
+        assertEq(pool.quietIntervalSeconds(), 1 days);
+        vm.stopPrank();
+
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setQuietInterval(1 days);
+    }
+
+    function test_setRestockTriggerBps() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.RestockTriggerBpsOutOfRange.selector);
+        IPool(address(pool)).setRestockTriggerBps(10_001);
+        _expectParamSet(IPool.setRestockTriggerBps.selector);
+        IPool(address(pool)).setRestockTriggerBps(10_000);
+        assertEq(pool.restockTriggerBps(), 10_000);
+        IPool(address(pool)).setRestockTriggerBps(0);
+        assertEq(pool.restockTriggerBps(), 0);
+        vm.stopPrank();
+
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setRestockTriggerBps(500);
     }
 
     function test_setMinItemsAndGrailProbCap() public {
@@ -512,7 +553,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
         _warpPastRotateGate(pool);
-        pool.growGrail(0);
+        pool.growTrack(0);
         (, uint256 packId,,,,,,,,,,) = pool.grail(0);
         assertGt(packId, 0);
         vm.prank(admin);

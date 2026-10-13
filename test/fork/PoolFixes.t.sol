@@ -103,7 +103,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     function _grow(uint256 t) internal {
         _warpPastRotateGate(pool);
         vm.prank(keeper);
-        pool.growGrail(uint8(t));
+        pool.growTrack(uint8(t));
     }
 
     function _notional(uint256 t) internal view returns (uint256 v) {
@@ -165,13 +165,6 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         vm.recordLogs();
         vm.prank(keeper);
         pool.rotate();
-        s = _summarize(vm.getRecordedLogs());
-    }
-
-    function _liquidate() internal returns (Summary memory s) {
-        vm.recordLogs();
-        vm.prank(keeper);
-        pool.liquidate();
         s = _summarize(vm.getRecordedLogs());
     }
 
@@ -237,27 +230,28 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
     function test_refundIsPaidOncePerRotateIntervalWhenEveryRotateBooks() public {
         _openLarge();
-        pool.loseCash(pool.cash());
+        // A 0.01 percent trigger makes every capture's lost weight due.
+        vm.prank(admin);
+        IPool(address(pool)).setRestockTriggerBps(1);
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
         _warpToRotation();
 
         _captureShape();
         Summary memory first = _rotate();
-        assertGt(first.refund, 0, "booking a capture pays the first refund");
+        assertGt(first.refund, 0, "relisting the replacement pays the first refund");
         assertEq(pool.lastRefundAt(), block.timestamp);
-        assertEq(pool.replacementLength(), 1, "replacement still waits for cash");
+        assertEq(pool.replacementLength(), 0, "replacement minted and listed");
 
         _pastCooldown();
         _captureShape();
         uint256 maintenanceBefore = pool.maintenance();
-        Summary memory second = _rotate();
-        assertEq(second.refund, 0, "no second refund inside the interval");
-        assertGe(pool.maintenance(), maintenanceBefore, "maintenance only grows");
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
+        pool.rotate();
+        assertEq(pool.maintenance(), maintenanceBefore, "a rejected rotate pays nothing");
 
         vm.warp(block.timestamp + pool.rotateInterval());
         _pastCooldown();
-        _captureShape();
         Summary memory third = _rotate();
         assertGt(third.refund, 0, "a refund is due again after the interval");
         assertEq(pool.lastRefundAt(), block.timestamp);
@@ -311,6 +305,9 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         vm.prank(saver);
         pool.deposit{value: 0.05 ether}();
         uint256 listedBefore = pool.listedCount();
+        // The quiet floor makes the rotation due while the claim is fresh.
+        pool.setLastRotateAt(block.timestamp - pool.quietIntervalSeconds());
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Quiet));
 
         Summary memory fresh = _rotate();
 
@@ -343,12 +340,12 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertLt(queued, 0.1 ether, "one Shape covers the claim");
         vm.warp(block.timestamp + pool.rotateInterval());
 
-        Summary memory s = _liquidate();
+        Summary memory s = _rotate();
 
         assertEq(s.liquidated, 1);
         assertEq(s.heldLiquidated, 1, "the held item went first");
         assertEq(pool.heldCount(), 0);
-        assertEq(pool.listedCount(), listedBefore, "no listing was withdrawn");
+        assertGe(pool.listedCount(), listedBefore, "no listing was withdrawn");
         assertEq(pool.claims(), 0);
         assertEq(clone.unsettledAcquisitionCount(), 1, "still busy: no FWA call was needed");
     }
@@ -364,7 +361,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         uint256 listedBefore = pool.listedCount();
         uint256 backingBefore = pool.backing();
 
-        Summary memory s = _liquidate();
+        Summary memory s = _rotate();
 
         assertEq(s.liquidated, 0);
         assertEq(pool.listedCount(), listedBefore);
@@ -372,7 +369,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertEq(pool.claims(), queued, "the claim waits for cash");
 
         pool.bookProceeds{value: queued}();
-        pool.liquidate();
+        pool.payClaims();
         assertEq(pool.claims(), 0, "cash pays it");
     }
 }

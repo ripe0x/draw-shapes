@@ -118,6 +118,8 @@ contract Lens {
         uint256 openingDeadlineAt;
         uint256 minItems;
         uint256 grailProbCapBps;
+        uint256 restockTriggerBps;
+        uint256 quietIntervalSeconds;
         uint256 maxBatch;
         uint256 concurrency;
         uint256 lastRotateAt;
@@ -302,6 +304,14 @@ contract Lens {
         r.boardDeep = r.listedCount >= r.unsettled + r.concurrency;
     }
 
+    // ------------------------------------------------------------------ rotation
+
+    /// @notice First reason `Pool.rotate` is due, or `None`. `None` includes the case where
+    ///         `rotateInterval` has not passed since `lastRotateAt`.
+    function rotateDue() external view returns (IPoolTypes.RotateTrigger) {
+        return pool.rotateDue();
+    }
+
     // ------------------------------------------------------------------ parameters
 
     /// @notice Constructor parameters and admin-set values of the pool, with its runtime state.
@@ -325,6 +335,8 @@ contract Lens {
         p.openingDeadlineAt = pool.openingDeadlineAt();
         p.minItems = pool.minItems();
         p.grailProbCapBps = pool.grailProbCapBps();
+        p.restockTriggerBps = pool.restockTriggerBps();
+        p.quietIntervalSeconds = pool.quietIntervalSeconds();
         p.maxBatch = pool.maxBatch();
         p.concurrency = pool.concurrency();
         p.lastRotateAt = pool.lastRotateAt();

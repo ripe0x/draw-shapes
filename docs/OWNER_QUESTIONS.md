@@ -72,7 +72,7 @@ No entry is open.
 
 1b. **Share pricing follows the books.** (decided, in SPEC) FWA processes acquisitions permissionlessly and VRF words
    are public once Ready, so a depositor could exit at a pre-loss NAV. Guess: `deposit`,
-   `withdraw`, `redeemAndDeposit` and `liquidate` first process, settle, require the walk to be
+   `withdraw` and `redeemAndDeposit` first process, settle, require the walk to be
    caught up, and harvest. SPEC 7 does not say this. Place: `Pool._sync`.
 
 2. **Mint line inside the margin split.** (decided, in SPEC) SPEC 9 step 2 reserves the mint line in cash and step 3
@@ -167,7 +167,7 @@ No entry is open.
    ticket plus VRF fee per interval keeps the gap closed. This follows from FWA and SPEC 7.
    Guess: accepted for v1; the admin can pause pulls to open a gap. Record for a SPEC note.
 
-19. **`growGrail` is public and each call relists, which restarts FWA's 300 s purchase cooldown.** (decided, in SPEC)
+19. **`growGrail` is public and each call relists, which restarts FWA's 300 s purchase cooldown.** (superseded by 37)
    Bounded by one bucket step per call. Guess: accepted; gate behind `rotateInterval` if abused.
 
 20. **I5 holds in the books, not in expectation.** (decided, in SPEC) A GRAIL listed above the harmonic mean raises
@@ -197,7 +197,7 @@ No entry is open.
 24. **`withdraw` is closed during a migration.** (decided, in SPEC) After `startExit(successor)` moved items leave the
    old pool's NAV before the successor has minted shares, so a withdrawal between export steps
    is underpaid and the remainder lands on migrators. Guess: `withdraw` reverts during a
-   migration; `migrateHolder` is the only exit, queued claims still pay through `liquidate`.
+   migration; `migrateHolder` is the only exit, queued claims still pay through `payClaims`.
    Retirement keeps `withdraw`. SPEC 13 should say so. Place: `Pool.withdraw`.
 
 25. **Deposits and withdrawals on a successor pause while an import is open.** (decided, in SPEC) Imported items
@@ -231,7 +231,7 @@ No entry is open.
    fee to `EXPECTED_CREATION_FEE`, lifts the beta gate and raises the wallet limit, anvil only.
    On mainnet the admin needs allowance and the FWA token fee before `createFwaPool`.
 
-32. **Purchase pause cadence.** (decided, in SPEC) FWA restarts its purchase pause on every inventory change
+32. **Purchase pause cadence.** (superseded by 37) FWA restarts its purchase pause on every inventory change
    (`listNFT`, `updatePrice`, `withdrawListing`). The pool restarts it at most once per
    interval: `rotate`, `growGrail` and the listing-withdrawing part of `liquidate` share the
    `rotateInterval` gate (`lastRotateAt`), so the pause restarts at most once per interval. The GRAIL
@@ -265,4 +265,25 @@ No entry is open.
 36. **Size plan for a future Pool change.** (decided) Pool is 23,711 B of 24,576. The first lever when
    a Pool change is required: move the views `rowCount`, `mixLength`, `listedRowCount` and `mixRow`
    into `PoolAdmin`, reachable through the fallback, which frees several hundred bytes with no ABI
-   change. Any Pool change is a redeploy, so the margin is accepted for v1.
+   change. Any Pool change is a redeploy, so the margin is accepted for v1. After entry 37 Pool is 24,129 B, 447 B under
+   the limit, and the views stay in `Pool`.
+
+37. **Demand-triggered rotate.** (decided, in SPEC) Owner decision 8. `rotate()` runs once `rotateInterval` (launch
+   900 s, the minimum spacing between inventory changes) has passed since `lastRotateAt` and a trigger holds: Weight,
+   GrailCap, Claim, GrailStep, Restock or Quiet, in that order. `rotateDue()` returns the first trigger that holds.
+   `liquidate()` and `growGrail()` are removed; claim liquidation and GRAIL growth run inside `rotate`. Reason: an
+   hourly relist let the GRAIL's selection share climb all hour, because captured listings left FWA's weight while
+   their replacements waited for the next relist, so late-hour play had better odds. The Weight trigger bounds the
+   drift to `restockTriggerBps` (launch 1,000) of the ordinary weight and follows demand; `quietIntervalSeconds`
+   (launch 43,200) bounds the idle gap. Griefing analysis: the Claim trigger needs a fully deployed pool, so a caller
+   must queue a claim by depositing and every setup deposit loses the entry contribution. The GrailStep trigger costs
+   about 0.11 ETH per FWA pause, a deposit large enough to fund one step through the contribution. A rotate whose
+   work is blocked or already done leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. The worst case is a large
+   legitimate exit, bounded by the spacing and the 25 item slice. Place: `Pool.rotate`, `Pool.rotateDue`,
+   `Pool._rotateTrigger`, `PoolAdmin.setRestockTriggerBps`, `PoolAdmin.setQuietInterval`, `script/env/*.env`
+   (`ROTATE_INTERVAL_SECONDS`, `RESTOCK_TRIGGER_BPS`, `QUIET_INTERVAL_SECONDS`). SPEC 5, 7, 9, 10, 11, 14.
+
+38. **`payClaims()` pays queued claims in every lifecycle state.** (proposed, pending owner confirmation) Removing
+   `liquidate()` was the only function that paid queued claims to an Exiting or Exported pool, because `rotate` requires
+   Live. `payClaims()` pays from `cash` in FIFO order, at most 20 entries per call, and leaves items alone. Place:
+   `Pool.payClaims`. SPEC 7 and 13.

@@ -122,9 +122,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.listedCount(), 60, "board");
 
         _warpPastRotateGate(pool);
-        pool.growGrail(0);
+        pool.growTrack(0);
         _warpPastRotateGate(pool);
-        pool.growGrail(1);
+        pool.growTrack(1);
         warpPastCooldown(clone);
 
         _captureRow(0);
@@ -274,8 +274,6 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.rotate();
-        vm.expectRevert(IPoolTypes.PoolExiting.selector);
-        pool.growGrail(0);
         vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.open();
     }
@@ -447,7 +445,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
     }
 
-    function test_retirementLiquidateStillPaysAQueuedClaim() public {
+    function test_retirementPayClaimsStillPaysAQueuedClaim() public {
         _buildA();
         uint256 queued = _queueClaim();
         uint256 balanceBefore = holderOne.balance;
@@ -458,10 +456,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertGe(pool.cash(), queued, "redeemed items cover the claim");
         assertEq(pool.claims(), queued);
 
-        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
-        pool.liquidate();
-        vm.warp(block.timestamp + pool.rotateInterval());
-        pool.liquidate();
+        pool.payClaims();
 
         assertEq(pool.claims(), 0, "claim paid");
         assertEq(holderOne.balance - balanceBefore, queued);
@@ -720,8 +715,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.exportedNav(), succ.importedNav());
         assertEq(pool.exportedNav(), aNav + aMaintenance);
 
-        vm.warp(block.timestamp + pool.rotateInterval());
-        pool.liquidate();
+        pool.payClaims();
         assertEq(pool.claims(), 0);
         assertEq(holderOne.balance - balanceBefore, queued);
         assertEq(address(pool).balance, 0);
@@ -976,7 +970,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         _buildB();
         _warpPastRotateGate(succ);
-        succ.growGrail(0);
+        succ.growTrack(0);
         (uint256 bucketBefore, uint256 packBefore, uint256 backingBefore,,) = _grail(succ, 0);
         assertTrue(packBefore != 0);
         (uint256 aBucket, uint256 aPack, uint256 aBacking,,) = _grail(pool, 0);
@@ -998,7 +992,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _buildA();
         _buildB();
         _warpPastRotateGate(succ);
-        succ.growGrail(0);
+        succ.growTrack(0);
         vm.deal(address(pool), 1 ether);
         (uint256 bucketBefore,,,,) = _grail(succ, 0);
         vm.prank(address(pool));

@@ -85,13 +85,20 @@ contract PoolAdmin is PoolBooks {
         concurrency = n;
     }
 
-    /// @dev `seconds_` is at least the FWA factory's `inventoryChangeCooldown`.
+    /// @dev `seconds_` is at least the FWA factory's `inventoryChangeCooldown` and at most
+    ///      `quietIntervalSeconds`.
     function setRotateInterval(uint256 seconds_) external onlyDelegated {
         _admin();
-        if (seconds_ < _read(fwaFactory, IFWACloneFactory.inventoryChangeCooldown.selector, 0)) {
-            revert LimitOutOfRange();
-        }
+        if (
+            seconds_ < _read(fwaFactory, IFWACloneFactory.inventoryChangeCooldown.selector, 0)
+                || seconds_ > quietIntervalSeconds
+        ) revert LimitOutOfRange();
         rotateInterval = seconds_;
+    }
+
+    function setQuietInterval(uint256 seconds_) external onlyDelegated {
+        _admin();
+        _setQuietInterval(seconds_);
     }
 
     function setMinItems(uint256 n) external onlyDelegated {
@@ -107,6 +114,11 @@ contract PoolAdmin is PoolBooks {
     function setRepriceMinBps(uint256 bps) external onlyDelegated {
         _admin();
         _setRepriceMinBps(bps);
+    }
+
+    function setRestockTriggerBps(uint256 bps) external onlyDelegated {
+        _admin();
+        _setRestockTriggerBps(bps);
     }
 
     function setPaused(bool pulls, bool deposits) external onlyDelegated {

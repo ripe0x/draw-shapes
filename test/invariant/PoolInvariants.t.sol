@@ -7,7 +7,7 @@ import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {IPoolTypes} from "../../src/interfaces/IPool.sol";
 
-/// @notice Drives deposits, withdrawals, liquidations and bucket moves, and records the ghost
+/// @notice Drives deposits, withdrawals, claim payments and bucket moves, and records the ghost
 ///         state the invariants compare against. Assertion failures inside the handler are
 ///         recorded in `i3Broken` and `i4Broken` because reverts of handler calls are discarded.
 ///         Pricing inputs (NAV, cash, claims) are read through `PoolHarness.previewSynced`, which
@@ -106,16 +106,13 @@ contract PoolHandler is Test {
         return true;
     }
 
-    /// @dev Returns whether `liquidate` was called and every log it emitted.
-    function liquidate() external returns (bool executed, Vm.Log[] memory logs) {
-        uint256 head = pool.claimHead();
-        if (head == _queuedTo.length) return (false, logs);
-        (, uint256 requestedAt,) = pool.claimQueue(head);
-        if (block.timestamp < requestedAt + pool.rotateInterval()) return (false, logs);
+    /// @dev Returns whether `payClaims` was called and every log it emitted.
+    function payClaims() external returns (bool executed, Vm.Log[] memory logs) {
+        if (pool.claimHead() == _queuedTo.length) return (false, logs);
 
         (, uint256 cashBefore, uint256 claimsBefore) = _preview();
         vm.recordLogs();
-        pool.liquidate();
+        pool.payClaims();
         logs = vm.getRecordedLogs();
         executed = true;
 

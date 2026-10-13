@@ -701,7 +701,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_directAcquireAdvancesPullsSinceListOfAListedGrail() public {
         _openReady();
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
-        pool.growGrail(0);
+        pool.growTrack(0);
         warpPastCooldown(clone);
         (,,,,,,,,, uint256 pullsBefore,, uint256 grailListing) = pool.grail(0);
         assertEq(pullsBefore, 0);
@@ -1303,7 +1303,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.nextSequenceToBook(), 2);
     }
 
-    function test_liquidateSyncsAndPaysFromTheHarvest() public {
+    function test_rotateSyncsAndPaysFromTheHarvest() public {
         _openReady();
         vm.deal(saver, 10 ether);
         vm.prank(saver);
@@ -1319,9 +1319,11 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         (uint256 fee, uint256 base) = _captureUnbooked(_listingOfRow(1, 0));
         vm.warp(block.timestamp + pool.rotateInterval());
         uint256 balance = saver.balance;
-        pool.liquidate();
+        assertTrue(pool.rotateDue() != IPoolTypes.RotateTrigger.None);
+        vm.prank(player);
+        pool.rotate();
 
-        assertEq(pool.nextSequenceToBook(), 2, "liquidate booked the capture");
+        assertEq(pool.nextSequenceToBook(), 2, "rotate booked the capture");
         uint256 paid = saver.balance - balance;
         assertGt(paid, _proceeds(fee, base), "claim paid from the harvest, then from liquidated listings");
         assertLe(pool.claims() + paid, queued, "liquidation fees reduce the claim");

@@ -73,6 +73,17 @@ interface IPoolTypes {
         uint192 count;
     }
 
+    /// @dev Reason `rotate` is due, in evaluation order. `None` when no reason holds.
+    enum RotateTrigger {
+        None,
+        Weight,
+        GrailCap,
+        Claim,
+        GrailStep,
+        Restock,
+        Quiet
+    }
+
     struct Params {
         address shapes;
         address drawPacks;
@@ -90,6 +101,8 @@ interface IPoolTypes {
         uint256 minItems;
         uint256 grailProbCapBps;
         uint256 repriceMinBps;
+        uint256 restockTriggerBps;
+        uint256 quietIntervalSeconds;
     }
 
     error ZeroAddress();
@@ -106,9 +119,9 @@ interface IPoolTypes {
     error PoolExiting();
     error ZeroShares();
     error InsufficientShares();
-    error ClaimNotDue();
     error GrailProbCapOutOfRange();
     error RepriceBpsOutOfRange();
+    error RestockTriggerBpsOutOfRange();
     error NotOpening();
     error FwaPoolExists();
     error FwaPoolMissing();
@@ -127,6 +140,7 @@ interface IPoolTypes {
     error BooksBehind();
     error NavZero();
     error RotateTooSoon();
+    error RotateNotDue();
     error RedeemMismatch();
     error GrailNotReady();
     error FwaBusy();
@@ -239,6 +253,9 @@ interface IPool is IPoolTypes {
     function minItems() external view returns (uint256);
     function grailProbCapBps() external view returns (uint256);
     function repriceMinBps() external view returns (uint256);
+    function restockTriggerBps() external view returns (uint256);
+    function quietIntervalSeconds() external view returns (uint256);
+    function ordinaryWeightSnapshot() external view returns (uint256);
     function fwaPool() external view returns (IFWAClone);
     function maxBatch() external view returns (uint256);
     function concurrency() external view returns (uint256);
@@ -275,9 +292,8 @@ interface IPool is IPoolTypes {
     function open() external;
     function deposit() external payable;
     function withdraw(uint256 shares) external;
-    function liquidate() external;
     function rotate() external;
-    function growGrail(uint8 t) external;
+    function rotateDue() external view returns (RotateTrigger);
     function acquire(
         address purchaser,
         uint256 maxAcquisitionFee,
@@ -302,6 +318,7 @@ interface IPool is IPoolTypes {
         payable;
     function redeemAndDeposit(uint256 tokenId) external;
     function settle(uint256 maxCount) external;
+    function payClaims() external;
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4);
 
     // ------------------------------------------------------------------ PoolAdmin
@@ -324,6 +341,8 @@ interface IPool is IPoolTypes {
     function setMinItems(uint256 n) external;
     function setGrailProbCap(uint256 bps) external;
     function setRepriceMinBps(uint256 bps) external;
+    function setRestockTriggerBps(uint256 bps) external;
+    function setQuietInterval(uint256 seconds_) external;
     function setPaused(bool pulls, bool deposits) external;
     function setPurchaseGate(bool on) external;
     function setAdmin(address newAdmin) external;

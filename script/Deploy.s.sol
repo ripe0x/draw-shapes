@@ -99,6 +99,8 @@ contract Deploy is Script {
         p.minItems = vm.envUint("MIN_ITEMS");
         p.grailProbCapBps = vm.envUint("GRAIL_PROB_CAP_BPS");
         p.repriceMinBps = vm.envUint("REPRICE_MIN_BPS");
+        p.restockTriggerBps = vm.envUint("RESTOCK_TRIGGER_BPS");
+        p.quietIntervalSeconds = vm.envUint("QUIET_INTERVAL_SECONDS");
     }
 
     /// @dev Rows are separated by `;`, each row is `rung,rung,...:shareBps`.
@@ -130,7 +132,7 @@ contract Deploy is Script {
             if (p.shapes != MAINNET_SHAPES) revert GuardFailed("SHAPES is not the mainnet Shapes");
             if (p.fwaFactory != MAINNET_FWA_FACTORY) revert GuardFailed("FWA_FACTORY is not the mainnet factory");
             if (p.openingDeadline != 86_400) revert GuardFailed("opening deadline is not 86400");
-            if (p.rotateInterval != 3_600) revert GuardFailed("rotate interval is not 3600");
+            if (p.rotateInterval != 900) revert GuardFailed("rotate interval is not 900");
             if (p.feeSplit.premiumBps != 200 || p.feeSplit.maintenanceBps != 100 || p.feeSplit.feedBps != 400) {
                 revert GuardFailed("fee split is not 200/100/400");
             }
@@ -181,6 +183,8 @@ contract Deploy is Script {
         require(pool.minItems() == p.minItems, "minItems");
         require(pool.grailProbCapBps() == p.grailProbCapBps, "grailProbCapBps");
         require(pool.repriceMinBps() == p.repriceMinBps, "repriceMinBps");
+        require(pool.restockTriggerBps() == p.restockTriggerBps, "restockTriggerBps");
+        require(pool.quietIntervalSeconds() == p.quietIntervalSeconds, "quietIntervalSeconds");
 
         (uint16 premium, uint16 maint, uint16 feed, uint16 minorShare) = pool.feeSplit();
         require(

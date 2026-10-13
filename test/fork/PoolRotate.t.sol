@@ -6,9 +6,9 @@ import {Pool} from "../../src/Pool.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
-import {IPoolTypes} from "../../src/interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
-/// @notice `rotate` and `liquidate` against deployed Shapes, a Draw Packs deployment and a FWA
+/// @notice `rotate`, claim liquidation inside it and `payClaims` against deployed Shapes, a Draw Packs deployment and a FWA
 ///         clone created by the pool.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
 ///      2 x 0.01 ETH (3,000 bps). A 100 ETH deposit builds a board of 7 + 3 items, or 42 + 18
@@ -77,6 +77,11 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
     function _warpInterval() internal {
         vm.warp(block.timestamp + pool.rotateInterval());
+    }
+
+    /// @dev Moves to the quiet floor, where `rotate` is due with no other trigger.
+    function _warpToQuiet() internal {
+        vm.warp(pool.lastRotateAt() + pool.quietIntervalSeconds());
     }
 
     function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
@@ -210,13 +215,6 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         s = _summarize(vm.getRecordedLogs());
     }
 
-    function _liquidateAsKeeper() internal returns (Liq memory s) {
-        vm.recordLogs();
-        vm.prank(keeper);
-        pool.liquidate();
-        s = _summarize(vm.getRecordedLogs());
-    }
-
     // ---------------------------------------------------------------- guards
 
     function test_revert_rotateWhileOpening() public {
@@ -231,6 +229,8 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
         pool.rotate();
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None));
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
         pool.rotate();
     }
 
@@ -238,7 +238,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _openReady();
         pool.setPullsPaused(true);
         pool.pauseDeposits();
-        _warpToRotation();
+        _warpToQuiet();
         pool.rotate();
     }
 
@@ -286,8 +286,9 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _openReady();
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
-        _warpToRotation();
+        _warpToQuiet();
         uint256 lastBefore = pool.lastRotateAt();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Quiet));
 
         vm.recordLogs();
         vm.prank(keeper);
@@ -308,18 +309,24 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _openReady();
         uint256[] memory ids = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(0, 0));
-        // The Shape capture returns less than the replacement costs, and cash is empty.
+        // The Shape capture returns less than the replacement costs, and cash is empty. A 1 percent
+        // trigger makes the lost weight due.
         pool.loseCash(pool.cash());
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setRestockTriggerBps(100);
         _warpToRotation();
         uint256 lastBefore = pool.lastRotateAt();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Weight));
+        uint256 snapshotBefore = pool.ordinaryWeightSnapshot();
 
         Liq memory s = _rotateAsKeeper();
 
         assertEq(pool.nextSequenceToBook(), 2);
-        assertGt(s.refund, 0, "booking a capture changes state");
+        assertEq(s.refund, 0, "no inventory change, no refund");
         assertEq(pool.lastRotateAt(), lastBefore, "inventory unchanged");
+        assertEq(pool.ordinaryWeightSnapshot(), snapshotBefore, "snapshot moves with inventory only");
         assertEq(pool.replacementLength(), 1, "replacement waits for cash");
     }
 
@@ -391,7 +398,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         assertEq(values[1], 0.02 ether, "then the pack row is overweight");
     }
 
-    function test_liquidateIsBoundedByMaxLiquidateItems() public {
+    function test_rotateLiquidationIsBoundedByMaxLiquidateItems() public {
         _openLarge();
         _drainCash(400 ether, 0.3 ether);
         uint256 queued = _exiterLeaves();
@@ -401,34 +408,22 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         _warpInterval();
         uint256 listedBefore = pool.listedCount();
 
-        Liq memory s = _liquidateAsKeeper();
+        Liq memory s = _rotateAsKeeper();
 
-        assertEq(s.count, 10, "exactly MAX_LIQUIDATE_ITEMS");
-        assertEq(pool.listedCount(), listedBefore - 10);
+        assertEq(s.count, 25, "exactly MAX_LIQUIDATE_ITEMS");
+        assertEq(pool.listedCount(), listedBefore - 25);
         assertLt(s.firstPaidAt, s.firstLiqAt, "cash pays before any item is liquidated");
         assertEq(pool.claimHead(), 0, "head claim still open");
         (,, uint256 headAmount) = pool.claimQueue(0);
         assertEq(headAmount, pool.claims());
         assertEq(pool.claims(), queued - s.paid - s.fees, "claims fell by payouts and fees");
         assertEq(pool.cash(), 0);
-        assertEq(s.refund, 0, "liquidate pays no refund");
+        assertEq(s.refund, 0, "maintenance is empty");
         _assertRegistry();
         _assertI1();
     }
 
-    function test_revert_liquidateBeforeTheInterval() public {
-        _openReady();
-        _drainCash(400 ether, 0.3 ether);
-        _exiterLeaves();
-        vm.warp(block.timestamp + pool.rotateInterval() - 1);
-        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
-        pool.liquidate();
-        vm.warp(block.timestamp + 1);
-        pool.liquidate();
-        assertEq(pool.claims(), 0);
-    }
-
-    function test_liquidateNeedsNoItemsWhenCashCoversTheClaim() public {
+    function test_rotateNeedsNoItemsWhenCashCoversTheClaim() public {
         _openReady();
         _drainCash(400 ether, 0.3 ether);
         _exiterLeaves();
@@ -437,15 +432,16 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         pool.deposit{value: 5 ether}();
         _warpInterval();
         uint256 listedBefore = pool.listedCount();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Claim));
 
-        Liq memory s = _liquidateAsKeeper();
+        Liq memory s = _rotateAsKeeper();
 
         assertEq(s.count, 0);
         assertEq(pool.listedCount(), listedBefore);
         assertEq(pool.claims(), 0);
     }
 
-    function test_liquidateInsideTheRotateIntervalPaysFromCashAndWithdrawsNothing() public {
+    function test_rotateInsideTheSpacingRevertsAndPayClaimsPaysFromCash() public {
         _openReady();
         _drainCash(400 ether, 0.3 ether);
         uint256 queued = _exiterLeaves();
@@ -455,25 +451,27 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         uint256 cashBefore = pool.cash();
         assertGt(cashBefore, 0);
         _warpInterval();
-        // A restart of the interval after the head claim became due.
+        // A restart of the spacing after the head claim became due.
         pool.setLastRotateAt(block.timestamp);
         uint256 rotatedAt = pool.lastRotateAt();
         uint256 listedBefore = pool.listedCount();
 
-        pool.liquidate();
+        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
+        pool.rotate();
+        pool.payClaims();
 
         assertEq(pool.cash(), 0, "cash paid the head claim");
         assertEq(pool.claims(), queued - cashBefore, "claims fell by the cash payment only");
-        assertEq(pool.listedCount(), listedBefore, "no FWA withdrawal inside the interval");
+        assertEq(pool.listedCount(), listedBefore, "no FWA withdrawal inside the spacing");
         assertEq(pool.lastRotateAt(), rotatedAt);
         _assertRegistry();
         _assertI1();
 
         _warpInterval();
-        pool.liquidate();
+        pool.rotate();
 
-        assertLt(pool.listedCount(), listedBefore, "withdraws once the interval has passed");
-        assertEq(pool.lastRotateAt(), block.timestamp, "the withdrawal restarts the interval");
+        assertLt(pool.listedCount(), listedBefore, "withdraws once the spacing has passed");
+        assertEq(pool.lastRotateAt(), block.timestamp, "the withdrawal restarts the spacing");
         _assertRegistry();
         _assertI1();
     }
@@ -485,15 +483,19 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         uint256 queued = _exiterLeaves();
         _warpInterval();
         assertEq(clone.unsettledAcquisitionCount(), 1);
+        uint256 lastBefore = pool.lastRotateAt();
+        uint256 resumeBefore = clone.purchasesResumeAt();
 
-        Liq memory locked = _liquidateAsKeeper();
+        Liq memory locked = _rotateAsKeeper();
 
         assertEq(locked.count, 0, "FWA withdrawals are locked");
         assertEq(pool.listedCount(), 10);
         assertEq(pool.claims(), queued, "nothing to pay from cash");
+        assertEq(pool.lastRotateAt(), lastBefore, "no inventory change");
+        assertEq(clone.purchasesResumeAt(), resumeBefore, "the FWA pause did not restart");
 
         _capture(ids[0], _listingOfRow(1, 0));
-        Liq memory open_ = _liquidateAsKeeper();
+        Liq memory open_ = _rotateAsKeeper();
 
         assertEq(clone.unsettledAcquisitionCount(), 0);
         assertGt(open_.count, 0, "liquidates once the lock lifts");

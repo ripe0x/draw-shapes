@@ -91,6 +91,18 @@ contract PoolHarness is Pool {
         lifecycle = state;
     }
 
+    /// @dev Setup helper for one track: books FWA results, then runs the growth step `rotate`
+    ///      applies to the track, without the spacing check, and restarts the spacing. Reverts
+    ///      `GrailNotReady` when the track cannot grow and `FwaBusy` while acquisitions are
+    ///      unsettled.
+    function growTrack(uint8 t) external {
+        _sync();
+        uint256 status = _growGrail(t, _unsettled() != 0);
+        if (status == 1) revert GrailNotReady();
+        if (status == 2) revert FwaBusy();
+        lastRotateAt = block.timestamp;
+    }
+
     function restock() external returns (uint256) {
         return _restock();
     }
@@ -244,10 +256,12 @@ abstract contract PoolFixture is Test {
         p.minItems = 10;
         p.grailProbCapBps = 2_000;
         p.repriceMinBps = 0;
+        p.restockTriggerBps = 1_000;
+        p.quietIntervalSeconds = 12 hours;
     }
 
-    /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `growGrail`
-    ///      and the listed-item part of `liquidate` wait for. A later timestamp is kept.
+    /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `rotate`
+    ///      waits for. A later timestamp is kept.
     function _warpPastRotateGate(Pool target) internal {
         uint256 at = target.lastRotateAt() + target.rotateInterval();
         if (block.timestamp < at) vm.warp(at);
@@ -363,6 +377,30 @@ contract PoolConstructorTest is PoolFixture {
         p.repriceMinBps = 10_001;
         vm.expectRevert(IPoolTypes.RepriceBpsOutOfRange.selector);
         new PoolHarness(p);
+    }
+
+    function test_revert_restockTriggerBpsTooHigh() public {
+        IPoolTypes.Params memory p = _params();
+        p.restockTriggerBps = 10_001;
+        vm.expectRevert(IPoolTypes.RestockTriggerBpsOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_quietIntervalBelowRotateInterval() public {
+        IPoolTypes.Params memory p = _params();
+        p.quietIntervalSeconds = p.rotateInterval - 1;
+        vm.expectRevert(IPoolTypes.LimitOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_constructorStoresRotationTriggerParams() public {
+        IPoolTypes.Params memory p = _params();
+        p.restockTriggerBps = 10_000;
+        p.quietIntervalSeconds = p.rotateInterval;
+        PoolHarness pool = _deploy(p);
+        assertEq(pool.restockTriggerBps(), 10_000);
+        assertEq(pool.quietIntervalSeconds(), pool.rotateInterval());
+        assertEq(pool.ordinaryWeightSnapshot(), 0);
     }
 
     function test_constructorStoresRepriceMinBps() public {
@@ -631,29 +669,25 @@ contract PoolTest is PoolFixture {
         assertEq(amount, 0.55 ether);
     }
 
-    // ---------------------------------------------------------------- liquidate
+    // ---------------------------------------------------------------- claim payment
 
-    function test_liquidateNoopWhenQueueEmpty() public {
-        pool.liquidate();
+    function test_payClaimsNoopWhenQueueEmpty() public {
+        pool.payClaims();
         assertEq(pool.claimHead(), 0);
     }
 
-    function test_revert_liquidateBeforeInterval() public {
+    function test_payClaimsPaysCashToTheHeadClaim() public {
         _deposit(alice, 10 ether);
         pool.spendOnBacking(8.9 ether);
         vm.prank(alice);
         pool.withdraw(8.9 ether);
         pool.bookProceeds{value: 1 ether}();
 
-        vm.warp(block.timestamp + 3_599);
-        vm.expectRevert(IPoolTypes.ClaimNotDue.selector);
-        pool.liquidate();
-        vm.warp(block.timestamp + 1);
-        pool.liquidate();
+        pool.payClaims();
         assertEq(alice.balance, 1_000 ether - 10 ether + 1 ether);
     }
 
-    function test_liquidatePaysHeadPartially() public {
+    function test_payClaimsPaysHeadPartially() public {
         _deposit(alice, 10 ether);
         pool.spendOnBacking(8.9 ether);
         vm.prank(alice);
@@ -666,7 +700,7 @@ contract PoolTest is PoolFixture {
         uint256 before = alice.balance;
         vm.expectEmit(true, false, false, true, address(pool));
         emit IPoolTypes.ClaimPaid(alice, 3 ether);
-        pool.liquidate();
+        pool.payClaims();
 
         assertEq(alice.balance - before, 3 ether);
         assertEq(pool.claimHead(), 0);
@@ -676,7 +710,7 @@ contract PoolTest is PoolFixture {
         assertEq(pool.cash(), 0);
     }
 
-    function test_twoClaimsPaidInOrderAcrossLiquidations() public {
+    function test_twoClaimsPaidInOrderAcrossPayments() public {
         _deposit(alice, 10 ether);
         _deposit(bob, 10 ether);
         pool.spendOnBacking(pool.cash());
@@ -698,13 +732,13 @@ contract PoolTest is PoolFixture {
         vm.warp(block.timestamp + 3_600);
 
         pool.bookProceeds{value: claimA / 2}();
-        pool.liquidate();
+        pool.payClaims();
         assertEq(alice.balance - aliceBefore, claimA / 2);
         assertEq(bob.balance, bobBefore);
         assertEq(pool.claimHead(), 0);
 
         pool.bookProceeds{value: claimA - claimA / 2 + 1 ether}();
-        pool.liquidate();
+        pool.payClaims();
         assertEq(alice.balance - aliceBefore, claimA);
         assertEq(bob.balance - bobBefore, 1 ether);
         assertEq(pool.claimHead(), 1);
@@ -713,14 +747,14 @@ contract PoolTest is PoolFixture {
         assertEq(pool.claims(), claimB - 1 ether);
 
         pool.bookProceeds{value: claimB}();
-        pool.liquidate();
+        pool.payClaims();
         assertEq(bob.balance - bobBefore, claimB);
         assertEq(pool.claimHead(), 2);
         assertEq(pool.claims(), 0);
         assertEq(pool.cash(), 1 ether);
     }
 
-    function test_liquidateBoundedByItemLimit() public {
+    function test_payClaimsBoundedByClaimLimit() public {
         _deposit(alice, 100 ether);
         pool.spendOnBacking(pool.cash());
         uint256 shares = pool.sharesOf(alice);
@@ -730,9 +764,9 @@ contract PoolTest is PoolFixture {
         }
         pool.bookProceeds{value: 100 ether}();
         vm.warp(block.timestamp + 3_600);
-        pool.liquidate();
+        pool.payClaims();
         assertEq(pool.claimHead(), 20);
-        pool.liquidate();
+        pool.payClaims();
         assertEq(pool.claimHead(), 25);
     }
 
@@ -744,7 +778,7 @@ contract PoolTest is PoolFixture {
         rejecter.withdrawAll(pool);
         pool.bookProceeds{value: 20 ether}();
         vm.warp(block.timestamp + 3_600);
-        pool.liquidate();
+        pool.payClaims();
         assertEq(pool.claimHead(), 1);
         assertEq(pool.claims(), 0);
         assertEq(address(rejecter).balance, 8.9 ether);
@@ -804,7 +838,7 @@ contract PoolTest is PoolFixture {
 
         pool.bookProceeds{value: 30 ether}();
         vm.warp(block.timestamp + 3_600);
-        pool.liquidate();
+        pool.payClaims();
 
         assertEq(probe.calls(), 1);
         assertEq(pool.claimHead(), 2);
