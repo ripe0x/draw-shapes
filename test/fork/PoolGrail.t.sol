@@ -1,0 +1,585 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {Vm} from "forge-std/Test.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {Pool} from "../../src/Pool.sol";
+import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
+import {ForkBase} from "./ForkBase.sol";
+import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
+
+/// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
+///         the pool: `growGrail`, compose at native denominations, decay in `rotate`, capture and
+///         the selection probability guard.
+/// @dev Minor track: step 0.05 ETH, target 0.5 ETH, list at 80 percent, decay 0.001 ETH per pull,
+///      floor 0.1 ETH. Its backing reaches a native denomination at 0.1 ETH and 0.5 ETH. Major
+///      track: step 0.15 ETH, target 1 ETH, list at 90 percent, no native backing below 1.05 ETH.
+///      A 100 ETH deposit routes about 11 ETH to the two buckets.
+contract PoolGrailForkTest is ForkBase, PoolFixture {
+    PoolHarness internal pool;
+    IFWAClone internal clone;
+    address internal player = makeAddr("player");
+    address internal keeper = makeAddr("keeper");
+    uint256 internal mintFee;
+
+    function setUp() public {
+        setUpFork();
+        openFactory();
+        deployDrawPacks(admin);
+        mintFee = shapes.mintFee();
+        vm.deal(alice, 10_000 ether);
+
+        Pool.Params memory p = _params();
+        p.shapes = SHAPES_ADDR;
+        p.drawPacks = address(drawPacks);
+        p.fwaFactory = FACTORY_ADDR;
+        p.mix[1].rungs[0] = 0;
+        p.mix[1].rungs[1] = 0;
+        p.minor = Pool.GrailParams({
+            targetWei: 0.5 ether, stepWei: 0.05 ether, listBps: 8_000, decayWeiPerPull: 0.001 ether, floorWei: 0.1 ether
+        });
+        p.major = Pool.GrailParams({
+            targetWei: 1 ether, stepWei: 0.15 ether, listBps: 9_000, decayWeiPerPull: 0.002 ether, floorWei: 0.3 ether
+        });
+        pool = new PoolHarness(p);
+        vm.prank(admin);
+        pool.createFwaPool(0);
+        clone = pool.fwaPool();
+        vm.prank(address(pool));
+        clone.setBool(41, true);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    function _openReady() internal {
+        vm.prank(alice);
+        pool.deposit{value: 100 ether}();
+        vm.warp(pool.openingDeadlineAt());
+        pool.open();
+        warpPastCooldown(clone);
+    }
+
+    function _warpToRotation() internal {
+        uint256 at = pool.lastRotateAt() + pool.rotateInterval();
+        if (block.timestamp < at) vm.warp(at);
+    }
+
+    function _bucket(uint256 t) internal view returns (uint256 v) {
+        (v,,,,,,,,,,,) = pool.grail(t);
+    }
+
+    function _packId(uint256 t) internal view returns (uint256 v) {
+        (, v,,,,,,,,,,) = pool.grail(t);
+    }
+
+    function _backing(uint256 t) internal view returns (uint256 v) {
+        (,, v,,,,,,,,,) = pool.grail(t);
+    }
+
+    function _notional(uint256 t) internal view returns (uint256 v) {
+        (,,, v,,,,,,,,) = pool.grail(t);
+    }
+
+    function _pulls(uint256 t) internal view returns (uint256 v) {
+        (,,,,,,,,, v,,) = pool.grail(t);
+    }
+
+    function _receivable(uint256 t) internal view returns (uint256 v) {
+        (,,,,,,,,,, v,) = pool.grail(t);
+    }
+
+    function _listing(uint256 t) internal view returns (uint256 v) {
+        (,,,,,,,,,,, v) = pool.grail(t);
+    }
+
+    /// @dev Step plus the mint fees of the Shapes `defaultMakeup(step)` mints.
+    function _cost(uint256 step) internal view returns (uint256 cost) {
+        uint32[] memory counts = drawPacks.defaultMakeup(step);
+        for (uint256 i; i < counts.length; ++i) {
+            cost += counts[i] * mintFee;
+        }
+        cost += step;
+    }
+
+    function _price(uint256 listingId) internal view returns (uint256 price, IFWAClone.ListingStatus status) {
+        (,,,,, price,, status) = clone.listings(listingId);
+    }
+
+    function _grow(uint256 t) internal {
+        vm.prank(keeper);
+        pool.growGrail(uint8(t));
+    }
+
+    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
+        vm.deal(who, who.balance + total);
+        uint64 last = clone.lastIssuedSequence();
+        vm.prank(who);
+        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
+        ids = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
+        }
+    }
+
+    function _assertI1() internal view {
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + _bucket(0) + _bucket(1), "I1");
+    }
+
+    /// @dev Number of `topic` logs emitted by the pool, and the data of the last one.
+    function _count(Vm.Log[] memory logs, bytes32 topic) internal view returns (uint256 n, bytes memory last) {
+        return _countTrack(logs, topic, type(uint256).max);
+    }
+
+    /// @dev As `_count`, restricted to logs whose first indexed argument is `track`. A `track` of
+    ///      `type(uint256).max` matches every log.
+    function _countTrack(Vm.Log[] memory logs, bytes32 topic, uint256 track)
+        internal
+        view
+        returns (uint256 n, bytes memory last)
+    {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(pool) || logs[i].topics[0] != topic) continue;
+            if (track != type(uint256).max && uint256(logs[i].topics[1]) != track) continue;
+            ++n;
+            last = logs[i].data;
+        }
+    }
+
+    // ---------------------------------------------------------------- guards
+
+    function test_revert_growGrailWhileOpening() public {
+        vm.expectRevert(Pool.NotLive.selector);
+        pool.growGrail(0);
+    }
+
+    function test_revert_growGrailForAnUnknownTrack() public {
+        _openReady();
+        vm.expectRevert(Pool.GrailNotReady.selector);
+        pool.growGrail(2);
+    }
+
+    function test_revert_growGrailWhenTheBucketIsShortByOneWei() public {
+        _openReady();
+        uint256 cost = _cost(0.05 ether);
+        pool.loseGrailBucket(0, _bucket(0) - cost + 1);
+        vm.expectRevert(Pool.GrailNotReady.selector);
+        pool.growGrail(0);
+
+        pool.addGrailBucket{value: 1}(0);
+        pool.growGrail(0);
+        assertEq(_bucket(0), 0, "the step spent the bucket exactly");
+        assertEq(_backing(0), 0.05 ether);
+    }
+
+    function test_revert_growGrailWhileAcquisitionsAreUnsettled() public {
+        _openReady();
+        _grow(0);
+        warpPastCooldown(clone);
+        uint256[] memory ids = _pullAs(player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+
+        vm.expectRevert(Pool.FwaBusy.selector);
+        pool.growGrail(0);
+
+        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
+        _grow(0);
+        assertEq(_backing(0), 0.1 ether, "grows once the acquisition settled");
+    }
+
+    // ---------------------------------------------------------------- growth
+
+    function test_firstGrowthCreatesTheTrackPackAndListsItAtTheNotional() public {
+        _openReady();
+        uint256 cost = _cost(0.05 ether);
+        uint256 bucketBefore = _bucket(0);
+        uint256 balanceBefore = address(pool).balance;
+        uint256 cashBefore = pool.cash();
+        uint256 backingBefore = pool.backing();
+        uint256 expectedPack = drawPacks.totalMinted() + 1;
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit Pool.GrailGrown(0, expectedPack, 0.05 ether, 0.04 ether);
+        _grow(0);
+
+        assertEq(cost, 0.05 ether + mintFee, "defaultMakeup(0.05) is one Shape");
+        assertEq(bucketBefore - _bucket(0), cost, "the bucket paid the step and the mint fee");
+        assertEq(balanceBefore - address(pool).balance, cost, "the ETH left the pool");
+        assertEq(pool.cash(), cashBefore, "ordinary cash untouched");
+        assertEq(pool.backing(), backingBefore, "ordinary backing untouched");
+        assertEq(_packId(0), expectedPack);
+        assertEq(_backing(0), 0.05 ether);
+        assertEq(drawPacks.valueOf(expectedPack), _backing(0), "pack value equals track backing");
+        assertEq(drawPacks.contentsOf(expectedPack).length, 1);
+        assertEq(_notional(0), 0.04 ether, "80 percent of the backing");
+        assertEq(_pulls(0), 0);
+        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
+        assertEq(price, 0.04 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(drawPacks.ownerOf(expectedPack), address(clone), "FWA holds the pack");
+        assertEq(_packId(1), 0, "the other track is untouched");
+        _assertI1();
+    }
+
+    function test_secondGrowthWithdrawsTheListingAddsToThePackAndRelists() public {
+        _openReady();
+        _grow(1);
+        uint256 packId = _packId(1);
+        uint256 firstListing = _listing(1);
+        assertEq(_backing(1), 0.15 ether);
+        assertEq(drawPacks.contentsOf(packId).length, 2, "0.1 and 0.05");
+        uint256 cost = _cost(0.15 ether);
+        uint256 bucketBefore = _bucket(1);
+
+        _grow(1);
+
+        assertEq(_packId(1), packId, "same pack");
+        assertEq(_backing(1), 0.3 ether);
+        assertEq(drawPacks.valueOf(packId), 0.3 ether);
+        assertEq(drawPacks.contentsOf(packId).length, 4);
+        assertEq(bucketBefore - _bucket(1), cost);
+        assertEq(_notional(1), 0.27 ether);
+        assertTrue(_listing(1) != firstListing, "relisted under a new id");
+        (, IFWAClone.ListingStatus oldStatus) = _price(firstListing);
+        assertEq(uint8(oldStatus), uint8(IFWAClone.ListingStatus.Withdrawn));
+        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(1));
+        assertEq(price, 0.27 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(drawPacks.ownerOf(packId), address(clone));
+        _assertI1();
+    }
+
+    function test_composeAtANativeDenominationLeavesOnePackOfOneShape() public {
+        _openReady();
+        _grow(0);
+        uint256 firstPack = _packId(0);
+        uint256 survivor = drawPacks.contentsOf(firstPack)[0];
+        uint256 bucketBefore = _bucket(0);
+
+        _grow(0);
+
+        assertEq(_backing(0), 0.1 ether, "0.05 twice is the 0.1 rung");
+        uint256 packId = _packId(0);
+        assertTrue(packId != firstPack, "a fresh pack");
+        assertFalse(drawPacks.exists(firstPack), "the opened pack is burned");
+        uint256[] memory contents = drawPacks.contentsOf(packId);
+        assertEq(contents.length, 1, "one composed Shape");
+        assertEq(contents[0], survivor, "the first Shape survives");
+        assertEq(shapes.backingOf(survivor), 0.1 ether);
+        assertEq(shapes.denomIndexOf(survivor), 2);
+        assertEq(drawPacks.valueOf(packId), 0.1 ether);
+        assertEq(bucketBefore - _bucket(0), _cost(0.05 ether));
+        assertEq(_notional(0), 0.08 ether);
+        assertEq(drawPacks.ownerOf(packId), address(clone));
+        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
+        assertEq(price, 0.08 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(shapes.ownerOf(survivor), address(drawPacks), "the pack custodies the Shape");
+        _assertI1();
+    }
+
+    function test_growthStopsAtTheTargetAfterComposingTheHalfEthShape() public {
+        _openReady();
+        uint256 bucketBefore = _bucket(0);
+        for (uint256 i = 1; i <= 10; ++i) {
+            _grow(0);
+            assertEq(_backing(0), i * 0.05 ether);
+            assertEq(drawPacks.valueOf(_packId(0)), _backing(0), "pack value equals track backing");
+            uint256 expectedShapes = i <= 2 || i == 10 ? 1 : i - 1;
+            assertEq(drawPacks.contentsOf(_packId(0)).length, expectedShapes, "composed at 0.1 and 0.5 only");
+        }
+        assertEq(bucketBefore - _bucket(0), 10 * _cost(0.05 ether), "I5: ten steps, ten costs");
+        assertEq(_notional(0), 0.4 ether);
+
+        vm.expectRevert(Pool.GrailNotReady.selector);
+        pool.growGrail(0);
+        _assertI1();
+    }
+
+    function test_majorTrackGrowsInItsOwnStep() public {
+        _openReady();
+        _grow(1);
+        assertEq(_backing(1), 0.15 ether);
+        assertEq(_notional(1), 0.135 ether);
+        assertEq(drawPacks.valueOf(_packId(1)), 0.15 ether);
+        assertEq(_backing(0), 0, "minor untouched");
+    }
+
+    // ---------------------------------------------------------------- rotate
+
+    function test_rotateGrowsFundedTracks() public {
+        _openReady();
+        _warpToRotation();
+
+        vm.recordLogs();
+        vm.prank(keeper);
+        pool.rotate();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        (uint256 grown,) = _count(logs, Pool.GrailGrown.selector);
+        assertEq(grown, 2, "both tracks grew");
+        assertEq(_backing(0), 0.05 ether);
+        assertEq(_backing(1), 0.15 ether);
+        assertTrue(_listing(0) != 0 && _listing(1) != 0);
+        assertEq(pool.lastRotateAt(), block.timestamp, "a GRAIL listing change is an inventory change");
+        _assertI1();
+    }
+
+    function test_rotateSkipsTracksThatAreNotReady() public {
+        _openReady();
+        pool.loseGrailBucket(0, _bucket(0));
+        _warpToRotation();
+
+        vm.recordLogs();
+        pool.rotate();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        (uint256 grown,) = _count(logs, Pool.GrailGrown.selector);
+        assertEq(grown, 1, "only the funded track grew");
+        assertEq(_backing(0), 0);
+        assertEq(_backing(1), 0.15 ether);
+    }
+
+    function test_decayInRotateLowersThePriceByPullsTimesDecayDownToTheFloor() public {
+        _openReady();
+        for (uint256 i; i < 10; ++i) {
+            _grow(0);
+        }
+        uint256 listingId = _listing(0);
+        assertEq(_notional(0), 0.4 ether);
+
+        pool.recordPulls(100);
+        assertEq(_pulls(0), 100, "listed track counts pulls");
+        _warpToRotation();
+        vm.recordLogs();
+        pool.rotate();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        assertEq(_listing(0), listingId, "repriced in place");
+        assertEq(_notional(0), 0.3 ether, "100 pulls at 0.001 ETH");
+        (uint256 price,) = _price(listingId);
+        assertEq(price, 0.3 ether);
+        assertEq(_pulls(0), 0, "the reprice restarts the count");
+        (uint256 listed,) = _count(logs, Pool.GrailListed.selector);
+        assertGe(listed, 1);
+
+        pool.recordPulls(5_000);
+        _warpToRotation();
+        pool.rotate();
+        (price,) = _price(listingId);
+        assertEq(price, 0.1 ether, "never below the floor");
+        assertEq(_notional(0), 0.1 ether);
+
+        pool.recordPulls(10);
+        _warpToRotation();
+        vm.recordLogs();
+        pool.rotate();
+        logs = vm.getRecordedLogs();
+        (price,) = _price(listingId);
+        assertEq(price, 0.1 ether, "at the floor there is nothing to reprice");
+        assertEq(_pulls(0), 10, "pulls keep counting");
+        (listed,) = _countTrack(logs, Pool.GrailListed.selector, 0);
+        assertEq(listed, 0, "no reprice event for the minor track at its floor");
+        _assertI1();
+    }
+
+    function test_growthRelistResetsThePullCount() public {
+        _openReady();
+        _grow(0);
+        warpPastCooldown(clone);
+        uint256[] memory ids = _pullAs(player, 2);
+        assertEq(_pulls(0), 2, "pulls count towards decay");
+        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
+        fulfill(clone, ids[1], wordAvoiding(clone, _listing(0)));
+        _grow(0);
+        assertEq(_pulls(0), 0, "relisting restarts the count");
+    }
+
+    function test_decayWaitsWhileAcquisitionsAreUnsettled() public {
+        _openReady();
+        for (uint256 i; i < 10; ++i) {
+            _grow(0);
+        }
+        warpPastCooldown(clone);
+        uint256[] memory ids = _pullAs(player, 1);
+        pool.recordPulls(100);
+        _warpToRotation();
+
+        vm.prank(keeper);
+        pool.rotate();
+
+        assertEq(_notional(0), 0.4 ether, "locked while an acquisition is unsettled");
+        assertEq(_pulls(0), 101, "the pulls keep accruing");
+
+        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
+        _warpToRotation();
+        vm.prank(keeper);
+        pool.rotate();
+        assertEq(_notional(0), 0.4 ether - 101 * 0.001 ether, "repriced once settled");
+    }
+
+    function test_rotateListsAPackThatIsNoLongerListed() public {
+        _openReady();
+        for (uint256 i; i < 10; ++i) {
+            _grow(0);
+        }
+        uint256 packId = _packId(0);
+        pool.unlistGrail(0);
+        assertEq(_listing(0), 0);
+        assertEq(drawPacks.ownerOf(packId), address(pool));
+        _warpToRotation();
+
+        pool.rotate();
+
+        assertTrue(_listing(0) != 0, "listed again");
+        assertEq(_packId(0), packId);
+        assertEq(drawPacks.ownerOf(packId), address(clone));
+        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
+        assertEq(price, 0.4 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+    }
+
+    // ---------------------------------------------------------------- capture
+
+    function test_captureBooksProceedsToTheTrackAndRegrowsFromItsBucket() public {
+        _openReady();
+        _grow(0);
+        _grow(0);
+        warpPastCooldown(clone);
+        uint256 packId = _packId(0);
+        uint256 listingId = _listing(0);
+        uint256 backingBefore = pool.backing();
+        int256 marginBefore = pool.margin();
+        uint256 receivableBefore = pool.receivable();
+        uint256 bucketBefore = _bucket(0);
+
+        uint256[] memory ids = _pullAs(player, 1);
+        fulfill(clone, ids[0], wordFor(clone, listingId));
+        (,, uint256 paid,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(ids[0]);
+        assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Fulfilled));
+        (uint256 base, bool recorded) = pool.baseOf(ids[0]);
+        assertTrue(recorded);
+        uint256 proceeds = paid - (paid - base) / 2;
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.GrailCaptured(0, ids[0], proceeds);
+        pool.settle(5);
+
+        assertEq(drawPacks.ownerOf(packId), player, "the player received the pack");
+        assertEq(_receivable(0), proceeds, "proceeds booked to the track");
+        assertEq(_packId(0), 0);
+        assertEq(_backing(0), 0);
+        assertEq(_notional(0), 0);
+        assertEq(_listing(0), 0);
+        assertEq(_pulls(0), 0);
+        assertEq(pool.backing(), backingBefore, "ordinary backing untouched");
+        assertEq(pool.margin(), marginBefore, "no ordinary margin");
+        assertEq(pool.receivable(), receivableBefore, "no ordinary receivable");
+        assertEq(pool.replacementLength(), 0, "no replacement");
+        assertEq(_bucket(0), bucketBefore, "the bucket receives the proceeds at harvest");
+
+        assertTrue(pool.harvest());
+        assertEq(_receivable(0), 0);
+        assertEq(_bucket(0), bucketBefore + proceeds);
+        _assertI1();
+
+        // I5: the track regrows from its own bucket.
+        uint256 beforeRegrow = _bucket(0);
+        warpPastCooldown(clone);
+        _grow(0);
+        assertEq(beforeRegrow - _bucket(0), _cost(0.05 ether));
+        assertTrue(_packId(0) != packId && _packId(0) != 0, "a new pack");
+        assertEq(_backing(0), 0.05 ether);
+        assertEq(drawPacks.valueOf(_packId(0)), 0.05 ether);
+    }
+
+    function test_growGrailBooksACaptureBeforeItGrows() public {
+        _openReady();
+        _grow(0);
+        warpPastCooldown(clone);
+        uint256 oldPack = _packId(0);
+        uint256[] memory ids = _pullAs(player, 1);
+        fulfill(clone, ids[0], wordFor(clone, _listing(0)));
+        assertEq(_packId(0), oldPack, "the capture is not booked yet");
+
+        warpPastCooldown(clone);
+        _grow(0);
+
+        assertEq(drawPacks.ownerOf(oldPack), player);
+        assertTrue(_packId(0) != oldPack, "a new pack");
+        assertEq(_backing(0), 0.05 ether, "the track restarted");
+        assertEq(_receivable(0), 0, "proceeds harvested into the bucket");
+        _assertI1();
+    }
+
+    function test_bucketAccountingAcrossGrowthCaptureAndRegrowth() public {
+        _openReady();
+        uint256 start = _bucket(0);
+        uint256 spent;
+        for (uint256 i; i < 3; ++i) {
+            _grow(0);
+            spent += _cost(0.05 ether);
+        }
+        warpPastCooldown(clone);
+        uint256[] memory ids = _pullAs(player, 1);
+        fulfill(clone, ids[0], wordFor(clone, _listing(0)));
+        vm.recordLogs();
+        pool.settle(5);
+        (, bytes memory data) = _count(vm.getRecordedLogs(), Pool.GrailCaptured.selector);
+        uint256 proceeds = abi.decode(data, (uint256));
+        assertGt(proceeds, 0);
+        pool.harvest();
+        warpPastCooldown(clone);
+        for (uint256 i; i < 2; ++i) {
+            _grow(0);
+            spent += _cost(0.05 ether);
+        }
+        assertEq(_bucket(0) + _receivable(0), start + proceeds - spent, "I5: bucket = in + proceeds - spent");
+        assertEq(_backing(0), 0.1 ether);
+        _assertI1();
+    }
+
+    function test_writtenOffGrailListingResetsTheTrackWithoutProceeds() public {
+        _openReady();
+        _grow(0);
+        uint256 listingId = _listing(0);
+        int256 marginBefore = pool.margin();
+        uint256 backingBefore = pool.backing();
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Pool.GrailCaptured(0, 77, 0);
+        pool.writeOff(77, listingId);
+
+        assertEq(_packId(0), 0);
+        assertEq(_backing(0), 0);
+        assertEq(_listing(0), 0);
+        assertEq(_receivable(0), 0);
+        assertEq(pool.margin(), marginBefore);
+        assertEq(pool.backing(), backingBefore);
+    }
+
+    // ---------------------------------------------------------------- selection probability
+
+    function test_revert_pullWhenAListedGrailExceedsTheProbabilityCap() public {
+        _openReady();
+        _grow(0);
+        warpPastCooldown(clone);
+        pool.setGrailProbCap(1);
+        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        vm.deal(player, total);
+
+        vm.prank(player);
+        vm.expectRevert(Pool.GrailProbTooHigh.selector);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+
+        pool.setGrailProbCap(10_000);
+        vm.prank(player);
+        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    }
+
+    function test_unlistedGrailAddsNoSelectionWeight() public {
+        _openReady();
+        pool.setGrailProbCap(1);
+        _pullAs(player, 1);
+    }
+}

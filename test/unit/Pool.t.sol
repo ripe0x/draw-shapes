@@ -134,6 +134,31 @@ contract PoolHarness is Pool {
         g.notional = notional;
     }
 
+    function setGrailProbCap(uint256 bps) external {
+        grailProbCapBps = bps;
+    }
+
+    /// @dev Credits `msg.value` to track `track`'s bucket.
+    function addGrailBucket(uint256 track) external payable {
+        grail[track].bucket += msg.value;
+    }
+
+    /// @dev Sends `amount` of track `track`'s bucket out of the pool, as a loss of GRAIL ETH.
+    function loseGrailBucket(uint256 track, uint256 amount) external {
+        grail[track].bucket -= amount;
+        SafeTransferLib.safeTransferETH(SINK, amount);
+    }
+
+    /// @dev Withdraws the track's pack from FWA and leaves it unlisted, as a refunded delivery does.
+    function unlistGrail(uint256 track) external {
+        fwaPool.withdrawListing(grail[track].listingId);
+        grail[track].listingId = 0;
+    }
+
+    function writeOff(uint256 requestId, uint256 listingId) external {
+        _writeOff(requestId, listingId);
+    }
+
     function setPullsPaused(bool paused) external {
         pullsPaused = paused;
     }
@@ -250,6 +275,20 @@ contract PoolConstructorTest is PoolFixture {
         Pool.Params memory p = _params();
         p.major.listBps = 10_001;
         vm.expectRevert(Pool.ListBpsOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_grailStepZero() public {
+        Pool.Params memory p = _params();
+        p.minor.stepWei = 0;
+        vm.expectRevert(Pool.GrailStepInvalid.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_grailStepNotAUnitMultiple() public {
+        Pool.Params memory p = _params();
+        p.major.stepWei = 1 ether + 1;
+        vm.expectRevert(Pool.GrailStepInvalid.selector);
         new PoolHarness(p);
     }
 

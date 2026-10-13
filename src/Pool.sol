@@ -125,6 +125,7 @@ contract Pool is ReentrancyGuard {
     error CurveCapTooHigh();
     error CurveReferenceZero();
     error ListBpsOutOfRange();
+    error GrailStepInvalid();
     error NotAdmin();
     error DepositsPaused();
     error NavCapReached();
@@ -153,6 +154,8 @@ contract Pool is ReentrancyGuard {
     error NavZero();
     error RotateTooSoon();
     error RedeemMismatch();
+    error GrailNotReady();
+    error FwaBusy();
 
     // ------------------------------------------------------------------ events
 
@@ -171,6 +174,12 @@ contract Pool is ReentrancyGuard {
     /// @dev `fee` is the amount deducted from the head claim for the mint fees of the redeemed Shapes.
     event Liquidated(uint256 indexed listingId, uint256 value, uint256 fee);
     event Rotated(bool changed, bool inventoryChanged, uint256 refund);
+    /// @dev `backing` is the track's backing after the step. `notional` is the list price after it.
+    event GrailGrown(uint256 indexed track, uint256 packId, uint256 backing, uint256 notional);
+    /// @dev Emitted when a track's pack is listed and when its list price decays.
+    event GrailListed(uint256 indexed track, uint256 listingId, uint256 notional);
+    /// @dev `proceeds` is zero for a write-off of a pending delivery.
+    event GrailCaptured(uint256 indexed track, uint256 indexed requestId, uint256 proceeds);
 
     // ------------------------------------------------------------------ constants and immutables
 
@@ -424,8 +433,8 @@ contract Pool is ReentrancyGuard {
     }
 
     /// @notice Runs one rotation: settles, harvests, pays or liquidates for queued claims, restocks
-    ///         and lists the board, then refunds the caller from `maintenance`. Callable once
-    ///         `rotateInterval` has passed since `lastRotateAt`.
+    ///         and lists the board, reprices or grows the GRAIL tracks, then refunds the caller
+    ///         from `maintenance`. Callable once `rotateInterval` has passed since `lastRotateAt`.
     function rotate() external nonReentrant {
         if (lifecycle != Lifecycle.Live) revert NotLive();
         if (block.timestamp < lastRotateAt + rotateInterval) revert RotateTooSoon();
@@ -436,9 +445,25 @@ contract Pool is ReentrancyGuard {
         bool inventoryChanged = _clearClaims();
         bool heldPending = _held.length != 0;
         bool minted = _restock() != 0;
-        inventoryChanged = inventoryChanged || heldPending || minted;
+        bool busy = _busy();
+        bool grailChanged = _rotateGrail(MINOR, busy);
+        grailChanged = _rotateGrail(MAJOR, busy) || grailChanged;
+        inventoryChanged = inventoryChanged || heldPending || minted || grailChanged;
         if (inventoryChanged) lastRotateAt = block.timestamp;
         _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
+    }
+
+    /// @notice Adds one `stepWei` of backing to GRAIL track `t` from `grail[t].bucket` and lists
+    ///         the pack at `backing * listBps / 10_000`. Books FWA results first. Reverts
+    ///         `GrailNotReady` unless the bucket covers the step and its mint fees and `backing`
+    ///         is below `targetWei`, and `FwaBusy` while FWA holds unsettled acquisitions.
+    function growGrail(uint8 t) external nonReentrant {
+        if (lifecycle != Lifecycle.Live) revert NotLive();
+        if (t > MAJOR) revert GrailNotReady();
+        _sync();
+        uint256 status = _growGrail(t, _unsettled() != 0);
+        if (status == 1) revert GrailNotReady();
+        if (status == 2) revert FwaBusy();
     }
 
     // ------------------------------------------------------------------ player paths
@@ -492,11 +517,9 @@ contract Pool is ReentrancyGuard {
     ///      queue, then harvests. FWA processes acquisitions permissionlessly, so share pricing
     ///      must follow the books, never lead them. No-op before the FWA pool exists.
     function _sync() internal {
-        IFWAClone fwa = fwaPool;
-        if (address(fwa) == address(0)) return;
-        fwa.processAcquisitions(MAX_SETTLE_ITEMS);
-        _settle(MAX_SETTLE_ITEMS);
-        if (nextSequenceToBook != fwa.nextSequenceToProcess()) revert BooksBehind();
+        if (address(fwaPool) == address(0)) return;
+        _processAndSettle(MAX_SETTLE_ITEMS);
+        if (nextSequenceToBook != _nextToProcess()) revert BooksBehind();
         _harvest();
     }
 
@@ -604,8 +627,8 @@ contract Pool is ReentrancyGuard {
         uint256 head = claimHead;
         if (head == claimQueue.length || listedCount == 0) return false;
         IFWAClone fwa = fwaPool;
-        if (fwa.unsettledAcquisitionCount() != 0 || nextSequenceToBook != fwa.nextSequenceToProcess()) return false;
-        uint256 mintFee = IShapes(shapes).mintFee();
+        if (_busy()) return false;
+        uint256 mintFee = _mintFee();
         for (uint256 n; n < maxItems && listedCount != 0 && cash < claimQueue[head].amount; ++n) {
             _liquidateOne(fwa, head, mintFee);
             withdrawn = true;
@@ -690,7 +713,7 @@ contract Pool is ReentrancyGuard {
     ///      reserves staged listings without activating them, so `weightedBackingTotal` and
     ///      `totalWeight` read after the call equal their values at every request.
     function _recordBases(IFWAClone fwa, uint256 fee, uint256[] memory ids) internal {
-        uint256 base = fwa.weightedBackingTotal() / fwa.totalWeight();
+        uint256 base = fwa.weightedBackingTotal() / _totalWeight();
         if (base > fee) base = fee;
         for (uint256 i; i < ids.length; ++i) {
             _basePlusOne[ids[i]] = base + 1;
@@ -707,7 +730,7 @@ contract Pool is ReentrancyGuard {
         _payClaims(MAX_CLAIM_ITEMS);
         uint256 head = replacementHead;
         if (head == replacementQueue.length) return;
-        uint256 mintFee = IShapes(shapes).mintFee();
+        uint256 mintFee = _mintFee();
         uint256 row = replacementQueue[head];
         if (cash < _rowCost(row, mintFee)) return;
         replacementHead = head + 1;
@@ -724,14 +747,14 @@ contract Pool is ReentrancyGuard {
         if (address(this).balance < incoming + cash + maintenance + grail[MINOR].bucket + grail[MAJOR].bucket) {
             revert Insolvent();
         }
-        if (listedCount < fwa.unsettledAcquisitionCount() + concurrency) revert BoardTooThin();
+        if (listedCount < _unsettled() + concurrency) revert BoardTooThin();
 
         uint256 grailWeight;
         for (uint256 t; t < 2; ++t) {
             Grail storage g = grail[t];
-            if (g.packId != 0 && g.listingId != 0) grailWeight += PricingLib.weightOf(g.notional);
+            if (g.listingId != 0) grailWeight += PricingLib.weightOf(g.notional);
         }
-        if (grailWeight * BPS > fwa.totalWeight() * grailProbCapBps) revert GrailProbTooHigh();
+        if (grailWeight * BPS > _totalWeight() * grailProbCapBps) revert GrailProbTooHigh();
     }
 
     // ------------------------------------------------------------------ settlement
@@ -746,8 +769,8 @@ contract Pool is ReentrancyGuard {
     ///      opened outside `pull` once the walk has reached FWA's processing queue.
     function _settle(uint256 maxItems) internal {
         IFWAClone fwa = fwaPool;
-        uint64 end = fwa.nextSequenceToProcess();
-        if (_walk(fwa, end, maxItems) == end) _bookSurplus(fwa.ownerProceeds());
+        uint64 end = _nextToProcess();
+        if (_walk(fwa, end, maxItems) == end) _bookSurplus(_ownerProceeds());
     }
 
     /// @dev Books up to `maxItems` FWA acquisitions in sequence order from `nextSequenceToBook`
@@ -765,20 +788,12 @@ contract Pool is ReentrancyGuard {
         if (seq >= end) return seq;
 
         uint64 start = seq;
-        uint256 mintFee = IShapes(shapes).mintFee();
+        uint256 mintFee = _mintFee();
         for (uint256 n; seq < end && n < maxItems; ++n) {
             uint256 requestId = fwa.requestIdAtSequence(seq);
             (,, uint256 paid, uint256 listingId, IFWAClone.AcquisitionStatus status) = fwa.acquisitions(requestId);
             if (status == IFWAClone.AcquisitionStatus.Fulfilled) {
-                Item memory it = _removeListed(listingId);
-                uint256 stored = _basePlusOne[requestId];
-                uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
-                receivable += proceeds;
-                margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
-                mintLineOwed += mintFee * _mix[it.row].rungs.length;
-                replacementQueue.push(it.row);
-                emit Captured(requestId, listingId, it.row, it.value, proceeds);
-                _splitMargin();
+                _capture(requestId, listingId, paid, mintFee);
             } else if (status == IFWAClone.AcquisitionStatus.DeliveryRefunded) {
                 _recoverRefunded(fwa, listingId);
             } else if (status == IFWAClone.AcquisitionStatus.DeliveryPending) {
@@ -797,20 +812,69 @@ contract Pool is ReentrancyGuard {
         }
     }
 
-    /// @dev Removes the listed item from backing and charges its value to `margin`.
+    /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the track's
+    ///      receivable and resets the track. An ordinary item leaves backing, its proceeds join
+    ///      `receivable` and `margin`, and its row is queued for a replacement.
+    function _capture(uint256 requestId, uint256 listingId, uint256 paid, uint256 mintFee) internal {
+        uint256 stored = _basePlusOne[requestId];
+        uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
+        uint256 t = _grailTrack(listingId);
+        if (t <= MAJOR) {
+            _closeGrail(t, requestId, proceeds);
+            return;
+        }
+        Item memory it = _removeListed(listingId);
+        receivable += proceeds;
+        margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
+        mintLineOwed += mintFee * _mix[it.row].rungs.length;
+        replacementQueue.push(it.row);
+        emit Captured(requestId, listingId, it.row, it.value, proceeds);
+        _splitMargin();
+    }
+
+    /// @dev Track whose pack is listed under `listingId`, or 2 when none is.
+    function _grailTrack(uint256 listingId) internal view returns (uint256 t) {
+        while (t <= MAJOR && grail[t].listingId != listingId) ++t;
+    }
+
+    /// @dev Clears track `t` after its pack left the pool. `proceeds` joins the track's receivable.
+    function _closeGrail(uint256 t, uint256 requestId, uint256 proceeds) internal {
+        Grail storage g = grail[t];
+        g.receivable += proceeds;
+        g.packId = 0;
+        g.backing = 0;
+        g.notional = 0;
+        g.listingId = 0;
+        g.pullsSinceList = 0;
+        emit GrailCaptured(t, requestId, proceeds);
+    }
+
+    /// @dev Removes the listed item from backing and charges its value to `margin`. A GRAIL
+    ///      listing is cleared with no proceeds.
     function _writeOff(uint256 requestId, uint256 listingId) internal {
+        uint256 t = _grailTrack(listingId);
+        if (t <= MAJOR) {
+            _closeGrail(t, requestId, 0);
+            return;
+        }
         Item memory it = _removeListed(listingId);
         margin -= SafeCastLib.toInt256(it.value);
         emit WrittenOff(requestId, listingId, it.value);
     }
 
     /// @dev Takes back a token that FWA quarantined after a refunded delivery and holds it
-    ///      unlisted. Backing is unchanged.
+    ///      unlisted. Backing is unchanged. A GRAIL pack stays the track's pack and is listed again
+    ///      by the next `rotate`.
     function _recoverRefunded(IFWAClone fwa, uint256 listingId) internal {
-        Item memory it = _removeListed(listingId);
+        uint256 t = _grailTrack(listingId);
+        if (t <= MAJOR) {
+            grail[t].listingId = 0;
+        } else {
+            Item memory it = _removeListed(listingId);
+            it.listingId = 0;
+            _addItem(it);
+        }
         fwa.recoverRefundedNFT(listingId);
-        it.listingId = 0;
-        _addItem(it);
     }
 
     /// @dev Splits positive `margin`. The mint line owed is covered first and stays in ordinary
@@ -866,10 +930,9 @@ contract Pool is ReentrancyGuard {
     ///      the booking walk is behind FWA's processing queue or no proceeds are held. Proceeds
     ///      above the booked receivables enter as margin through `_bookSurplus`.
     function _harvest() internal returns (bool) {
-        IFWAClone fwa = fwaPool;
-        if (nextSequenceToBook < fwa.nextSequenceToProcess() || fwa.ownerProceeds() == 0) return false;
+        if (nextSequenceToBook < _nextToProcess() || _ownerProceeds() == 0) return false;
 
-        uint256 received = fwa.withdrawOwnerProceeds();
+        uint256 received = fwaPool.withdrawOwnerProceeds();
         uint256 expected = _bookedReceivables();
         if (received < expected) revert HarvestShortfall(received, expected);
 
@@ -940,6 +1003,10 @@ contract Pool is ReentrancyGuard {
         uint256 current = slot.hour == hour ? slot.count : 0;
         slot.hour = hour;
         slot.count = SafeCastLib.toUint192(current + count);
+        for (uint256 t; t <= MAJOR; ++t) {
+            Grail storage g = grail[t];
+            if (g.listingId != 0) g.pullsSinceList += count;
+        }
     }
 
     /// @dev Pulls in the current hour and the four hours before it.
@@ -959,7 +1026,7 @@ contract Pool is ReentrancyGuard {
     ///      `cash` above one step of the cheapest row. Returns the number of tokens minted.
     function _restock() internal returns (uint256 mints) {
         _payClaims(MAX_CLAIM_ITEMS);
-        uint256 fee = IShapes(shapes).mintFee();
+        uint256 fee = _mintFee();
 
         uint256 head = replacementHead;
         uint256 queued = replacementQueue.length;
@@ -1020,10 +1087,52 @@ contract Pool is ReentrancyGuard {
             for (uint256 i; i < rungs.length; ++i) {
                 ++counts[rungs[i]];
             }
-            tokenId = IShapePacks(collection).createPack{value: cost}(new uint256[](0), counts);
-            if (IShapePacks(collection).valueOf(tokenId) != value) revert PackValueMismatch();
+            tokenId = _createPack(new uint256[](0), counts, cost, value);
         }
         _addItem(Item(collection, uint16(row), tokenId, value, 0));
+    }
+
+    /// @dev FWA and Shapes reads used at several call sites. Each is one function so the external
+    ///      call is compiled once.
+    function _mintFee() internal view returns (uint256) {
+        return IShapes(shapes).mintFee();
+    }
+
+    function _totalWeight() internal view returns (uint256) {
+        return fwaPool.totalWeight();
+    }
+
+    function _ownerProceeds() internal view returns (uint256) {
+        return fwaPool.ownerProceeds();
+    }
+
+    function _nextToProcess() internal view returns (uint64) {
+        return fwaPool.nextSequenceToProcess();
+    }
+
+    /// @dev True while FWA holds unsettled acquisitions or the booking walk is behind its processing queue.
+    function _busy() internal view returns (bool) {
+        return _unsettled() != 0 || nextSequenceToBook != _nextToProcess();
+    }
+
+    function _unsettled() internal view returns (uint256) {
+        return fwaPool.unsettledAcquisitionCount();
+    }
+
+    /// @dev Creates a Draw Pack owned by this contract from the Shapes `shapeIds` it owns and the
+    ///      Shapes minted by `counts`, paying `value`. Reverts unless the pack's value is
+    ///      `expected`.
+    function _createPack(uint256[] memory shapeIds, uint32[] memory counts, uint256 value, uint256 expected)
+        internal
+        returns (uint256 packId)
+    {
+        packId = IShapePacks(drawPacks).createPack{value: value}(shapeIds, counts);
+        _checkPackValue(packId, expected);
+    }
+
+    /// @dev Reverts `PackValueMismatch` unless Draw Pack `packId` holds `expected` wei of backing.
+    function _checkPackValue(uint256 packId, uint256 expected) internal view {
+        if (IShapePacks(drawPacks).valueOf(packId) != expected) revert PackValueMismatch();
     }
 
     /// @dev Lists every held item on the FWA pool in chunks of `MAX_INVENTORY_BATCH` and moves
@@ -1062,8 +1171,107 @@ contract Pool is ReentrancyGuard {
         );
     }
 
+    // ------------------------------------------------------------------ GRAIL
+
+    /// @dev One rotation step for track `t`: grows it when ready, otherwise lists an unlisted pack
+    ///      or lowers the list price by the decay accrued since the last listing or reprice. The
+    ///      new price is `PricingLib.decayedNotional`, which is at least `floorWei`; a listed
+    ///      track is repriced only when that price is below the current one. Returns whether the
+    ///      FWA listing changed. `busy` is true while FWA holds unsettled acquisitions, which lock
+    ///      repricing and withdrawal.
+    function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
+        if (_growGrail(t, busy) == 0) return true;
+        Grail storage g = grail[t];
+        if (g.packId == 0 || busy) return false;
+        uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
+        if (g.listingId != 0 && next >= g.notional) return false;
+        _priceGrail(t, g, next);
+        return true;
+    }
+
+    /// @dev Adds `stepWei` of backing to track `t`, paid from `grail[t].bucket` with the mint fees
+    ///      of the Shapes in `defaultMakeup(stepWei)`, then lists the pack. The track's FWA listing
+    ///      is withdrawn first. Returns 0 on success, 1 when the track is not ready and 2 when
+    ///      `busy`. A listing made while acquisitions are unsettled is staged and cannot be
+    ///      repriced or withdrawn, so the busy check applies whether or not the pack is listed.
+    ///      When the new `backing` equals a native denomination, the pack is opened, its Shapes
+    ///      (ids from `contentsOf` before `open`) are composed into the first one, and that Shape
+    ///      is packed again.
+    function _growGrail(uint256 t, bool busy) internal returns (uint256) {
+        Grail storage g = grail[t];
+        if (g.backing >= g.targetWei) return 1;
+        uint256 step = g.stepWei;
+        uint32[] memory counts = IShapePacks(drawPacks).defaultMakeup(step);
+        uint256 shapeCount;
+        for (uint256 i; i < counts.length; ++i) {
+            shapeCount += counts[i];
+        }
+        uint256 cost = step + _mintFee() * shapeCount;
+        if (g.bucket < cost) return 1;
+        if (busy) return 2;
+        if (g.listingId != 0) {
+            fwaPool.withdrawListing(g.listingId);
+            g.listingId = 0;
+        }
+
+        g.bucket -= cost;
+        uint256 total = g.backing + step;
+        g.backing = total;
+        uint256 packId = g.packId;
+        uint256[] memory shapeIds = new uint256[](0);
+        if (packId != 0) {
+            IShapePacks(drawPacks).addToPack{value: cost}(packId, shapeIds, counts);
+            if (Denominations.isSupported(total)) {
+                shapeIds = _composePack(packId);
+                counts = new uint32[](Denominations.COUNT);
+                cost = 0;
+                packId = 0;
+            } else {
+                _checkPackValue(packId, total);
+            }
+        }
+        if (packId == 0) g.packId = _createPack(shapeIds, counts, cost, total);
+
+        uint256 notional = PricingLib.grailNotional(total, g.listBps);
+        _priceGrail(t, g, notional);
+        emit GrailGrown(t, g.packId, total, notional);
+        return 0;
+    }
+
+    /// @dev Opens pack `packId`, composes its Shapes into the first one and returns that Shape's
+    ///      id in a one element array.
+    function _composePack(uint256 packId) internal returns (uint256[] memory survivor) {
+        IShapePacks packs = IShapePacks(drawPacks);
+        uint256[] memory ids = packs.contentsOf(packId);
+        packs.open(packId);
+        uint256[] memory burn = new uint256[](ids.length - 1);
+        for (uint256 i; i < burn.length; ++i) {
+            burn[i] = ids[i + 1];
+        }
+        IShapes(shapes).compose(ids[0], burn);
+        IShapes(shapes).approve(address(packs), ids[0]);
+        survivor = new uint256[](1);
+        survivor[0] = ids[0];
+    }
+
+    /// @dev Sets track `t`'s FWA list price to `notional`: lists the pack when it is unlisted,
+    ///      otherwise reprices the listing. Restarts the decay count.
+    function _priceGrail(uint256 t, Grail storage g, uint256 notional) internal {
+        uint256 id = g.listingId;
+        if (id == 0) {
+            id = fwaPool.listNFT(drawPacks, g.packId, notional);
+        } else {
+            fwaPool.updatePrice(id, notional);
+        }
+        g.listingId = id;
+        g.notional = notional;
+        g.pullsSinceList = 0;
+        emit GrailListed(t, id, notional);
+    }
+
     function _initGrail(uint256 track, GrailParams memory g) internal {
         if (g.listBps == 0 || g.listBps > BPS) revert ListBpsOutOfRange();
+        if (g.stepWei == 0 || g.stepWei % Denominations.UNIT != 0) revert GrailStepInvalid();
         Grail storage t = grail[track];
         t.targetWei = g.targetWei;
         t.stepWei = g.stepWei;

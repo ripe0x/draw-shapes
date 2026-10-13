@@ -35,6 +35,9 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
+        // Targets of zero keep `rotate` from growing the GRAIL tracks; PoolGrail.t.sol covers growth.
+        p.minor.targetWei = 0;
+        p.major.targetWei = 0;
         pool = new PoolHarness(p);
         vm.prank(admin);
         pool.createFwaPool(0);
