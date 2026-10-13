@@ -123,6 +123,7 @@ contract Lens {
         uint256 maxBatch;
         uint256 concurrency;
         uint256 lastRotateAt;
+        uint256 lastRotateCallAt;
         uint256 lastRefundAt;
     }
 
@@ -340,6 +341,7 @@ contract Lens {
         p.maxBatch = pool.maxBatch();
         p.concurrency = pool.concurrency();
         p.lastRotateAt = pool.lastRotateAt();
+        p.lastRotateCallAt = pool.lastRotateCallAt();
         p.lastRefundAt = pool.lastRefundAt();
     }
 }

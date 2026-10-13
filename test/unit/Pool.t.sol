@@ -171,6 +171,10 @@ contract PoolHarness is Pool {
         lastRotateAt = timestamp;
     }
 
+    function setLastRotateCallAt(uint256 timestamp) external {
+        lastRotateCallAt = timestamp;
+    }
+
     function setNextSequenceToBook(uint64 sequence) external {
         nextSequenceToBook = sequence;
     }

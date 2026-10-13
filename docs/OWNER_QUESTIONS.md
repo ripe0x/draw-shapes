@@ -265,7 +265,7 @@ No entry is open.
 36. **Size plan for a future Pool change.** (decided) Pool is 23,711 B of 24,576. The first lever when
    a Pool change is required: move the views `rowCount`, `mixLength`, `listedRowCount` and `mixRow`
    into `PoolAdmin`, reachable through the fallback, which frees several hundred bytes with no ABI
-   change. Any Pool change is a redeploy, so the margin is accepted for v1. After entry 37 Pool is 24,129 B, 447 B under
+   change. Any Pool change is a redeploy, so the margin is accepted for v1. After entry 37 Pool is 24,330 B, 246 B under
    the limit, and the views stay in `Pool`.
 
 37. **Demand-triggered rotate.** (decided, in SPEC) Owner decision 8. `rotate()` runs once `rotateInterval` (launch
@@ -278,7 +278,9 @@ No entry is open.
    (launch 43,200) bounds the idle gap. Griefing analysis: the Claim trigger needs a fully deployed pool, so a caller
    must queue a claim by depositing and every setup deposit loses the entry contribution. The GrailStep trigger costs
    about 0.11 ETH per FWA pause, a deposit large enough to fund one step through the contribution. A rotate whose
-   work is blocked or already done leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. The worst case is a large
+   work is blocked or already done leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. Restock fires
+   when the listed count is `restockTriggerBps` below the target depth and a held item or spendable cash exists. Quiet
+   measures from `lastRotateCallAt`, which every successful `rotate` call sets. The worst case is a large
    legitimate exit, bounded by the spacing and the 25 item slice. Place: `Pool.rotate`, `Pool.rotateDue`,
    `Pool._rotateTrigger`, `PoolAdmin.setRestockTriggerBps`, `PoolAdmin.setQuietInterval`, `script/env/*.env`
    (`ROTATE_INTERVAL_SECONDS`, `RESTOCK_TRIGGER_BPS`, `QUIET_INTERVAL_SECONDS`). SPEC 5, 7, 9, 10, 11, 14.

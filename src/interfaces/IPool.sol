@@ -266,6 +266,7 @@ interface IPool is IPoolTypes {
     function mintLineOwed() external view returns (uint256);
     function listedCount() external view returns (uint256);
     function lastRotateAt() external view returns (uint256);
+    function lastRotateCallAt() external view returns (uint256);
     function lastRefundAt() external view returns (uint256);
     function exitDest() external view returns (address);
     function exportedShares() external view returns (uint256);

@@ -167,6 +167,7 @@ contract Pool is PoolBooks {
         if (_restock() < MAX_MINTS_PER_RESTOCK) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
+            lastRotateCallAt = block.timestamp;
             ordinaryWeightSnapshot = _ordinaryWeight();
             emit Opened();
         }
@@ -212,7 +213,8 @@ contract Pool is PoolBooks {
     ///         tracks, then refunds the caller from `maintenance`. Reverts `RotateTooSoon` until
     ///         `rotateInterval` has passed since `lastRotateAt` and `RotateNotDue` while
     ///         `rotateDue` is `None`. `lastRotateAt` and the weight snapshot move when the
-    ///         rotation changed inventory. The refund is paid only then, once per `rotateInterval`.
+    ///         rotation changed inventory. `lastRotateCallAt` moves on every call. The refund is
+    ///         paid only when inventory changed, once per `rotateInterval`.
     function rotate() external nonReentrant {
         _requireLive();
         uint256 gasStart = gasleft();
@@ -233,6 +235,7 @@ contract Pool is PoolBooks {
             lastRotateAt = block.timestamp;
             ordinaryWeightSnapshot = _ordinaryWeight();
         }
+        lastRotateCallAt = block.timestamp;
         _refund(gasStart, changed || inventoryChanged || claims != claimsBefore, inventoryChanged);
     }
 
@@ -694,7 +697,7 @@ contract Pool is PoolBooks {
     ///      `ordinaryWeightSnapshot` below the snapshot. GrailCap: listed GRAIL weight exceeds
     ///      `grailProbCapBps` at current prices. Claim: the head claim is at least `rotateInterval`
     ///      old. GrailStep: a track below `targetWei` holds a bucket that covers a step. Restock:
-    ///      `_restockDue`. Quiet: `quietIntervalSeconds` passed since `lastRotateAt`.
+    ///      `_restockDue`. Quiet: `quietIntervalSeconds` passed since `lastRotateCallAt`.
     function _rotateTrigger() internal view returns (RotateTrigger) {
         uint256 snapshot = ordinaryWeightSnapshot;
         uint256 current = _ordinaryWeight();
@@ -708,7 +711,7 @@ contract Pool is PoolBooks {
         }
         if (_growReady(MINOR) || _growReady(MAJOR)) return RotateTrigger.GrailStep;
         if (_restockDue()) return RotateTrigger.Restock;
-        if (block.timestamp >= lastRotateAt + quietIntervalSeconds) return RotateTrigger.Quiet;
+        if (block.timestamp >= lastRotateCallAt + quietIntervalSeconds) return RotateTrigger.Quiet;
         return RotateTrigger.None;
     }
 
@@ -721,17 +724,25 @@ contract Pool is PoolBooks {
         return g.bucket >= cost;
     }
 
-    /// @dev True when `_restock` would list or mint. A held item exists, or the cash left after
-    ///      queued claims covers the next queued replacement, or covers a row below its target
-    ///      depth with one step of the cheapest row in reserve (`_mintToDepth`).
+    /// @dev True when the listed count is `restockTriggerBps` of the target depth below it, and a
+    ///      held item exists or the cash left after queued claims covers the next queued
+    ///      replacement, or a row below its target depth with one step of the cheapest row in
+    ///      reserve (`_mintToDepth`). The target depth is the sum of `PricingLib.rowDepth` over
+    ///      the mix rows.
     function _restockDue() internal view returns (bool) {
+        uint256 pulls = trailingPulls();
+        uint256 target;
+        for (uint256 r; r < _mix.length; ++r) {
+            target += PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps);
+        }
+        uint256 listed = listedCount;
+        if (listed >= target || (target - listed) * BPS < target * restockTriggerBps) return false;
         if (_held.length != 0) return true;
         uint256 spendable = cash > claims ? cash - claims : 0;
         uint256 fee = _mintFee();
         uint256 head = replacementHead;
         if (head < replacementQueue.length) return spendable >= _rowCost(replacementQueue[head], fee);
         uint256 reserve = _cheapestRowCost(fee);
-        uint256 pulls = trailingPulls();
         for (uint256 r; r < _mix.length; ++r) {
             if (
                 _rowCount[r] < PricingLib.rowDepth(minItems, pulls, _mix[r].shareBps)

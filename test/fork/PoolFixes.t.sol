@@ -307,6 +307,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         uint256 listedBefore = pool.listedCount();
         // The quiet floor makes the rotation due while the claim is fresh.
         pool.setLastRotateAt(block.timestamp - pool.quietIntervalSeconds());
+        pool.setLastRotateCallAt(block.timestamp - pool.quietIntervalSeconds());
         assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Quiet));
 
         Summary memory fresh = _rotate();

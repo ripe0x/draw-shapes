@@ -131,6 +131,9 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     mapping(address holder => bool) public migrated;
     /// @notice True while the token is a held or listed ordinary item of this pool.
     mapping(address collection => mapping(uint256 tokenId => bool)) public registered;
+    /// @notice Timestamp of the last successful `rotate` call, or of `open()` going Live. The Quiet
+    ///         trigger measures from it.
+    uint256 public lastRotateCallAt;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();

@@ -69,7 +69,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
     }
 
     function _warpToQuiet() internal {
-        vm.warp(pool.lastRotateAt() + pool.quietIntervalSeconds());
+        vm.warp(pool.lastRotateCallAt() + pool.quietIntervalSeconds());
     }
 
     function _due() internal view returns (IPoolTypes.RotateTrigger) {
@@ -108,6 +108,15 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         warpPastCooldown(clone);
         uint256 requestId = acquireAs(alice, alice, clone, block.timestamp + 1 hours);
         _capture(requestId, listingId);
+    }
+
+    /// @dev One pooled acquisition fulfilled on the last listed item of `row`, then settled.
+    function _pooledCapture(uint256 row) internal {
+        warpPastCooldown(clone);
+        uint256[] memory ids = _acquire(player, 1);
+        uint256[] memory listed = pool.listedIds(row);
+        _capture(ids[0], listed[listed.length - 1]);
+        pool.settle(20);
     }
 
     function _gateOff() internal {
@@ -257,7 +266,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         _assertDue(IPoolTypes.RotateTrigger.None);
     }
 
-    function test_restockTriggerFiresWhenAHeldItemExists() public {
+    function test_heldItemAloneIsNotARestockTrigger() public {
         _open(60);
         assertEq(pool.listedCount(), 60);
         uint256[] memory ids = _acquire(player, 1);
@@ -268,7 +277,41 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         _acquire(player, 1);
         assertEq(pool.heldCount(), 1, "the second pull mints the replacement and holds it");
         _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.None);
+    }
+
+    function test_restockTriggerNeedsCashOrAHeldItemBesideTheShortfall() public {
+        _openReady();
+        _warpToSpacing();
+        vm.prank(admin);
+        IPool(address(pool)).setMinItems(20);
         _assertDue(IPoolTypes.RotateTrigger.Restock);
+        pool.loseCash(pool.cash());
+        _assertDue(IPoolTypes.RotateTrigger.None);
+    }
+
+    function test_restockTriggerIgnoresAShortfallBelowTheThreshold() public {
+        _open(100);
+        assertEq(pool.listedCount(), 100, "100 item board");
+        _pooledCapture(0);
+        assertGt(pool.cash(), 0, "cash is available");
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.None);
+    }
+
+    function test_restockOrWeightTriggerFiresAfterTenCapturesOnA100ItemBoard() public {
+        _open(100);
+        assertEq(pool.listedCount(), 100, "100 item board");
+        for (uint256 i; i < 10; ++i) {
+            _pooledCapture(0);
+        }
+        assertGt(pool.cash(), 0, "cash is available");
+        _warpToSpacing();
+        IPoolTypes.RotateTrigger due = _due();
+        assertTrue(
+            due == IPoolTypes.RotateTrigger.Weight || due == IPoolTypes.RotateTrigger.Restock,
+            "ten captures cross a threshold"
+        );
     }
 
     function test_quietTriggerFiresAfterTheQuietIntervalWithNothingElseDue() public {
@@ -400,8 +443,13 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         assertEq(keeper.balance, 0);
         assertEq(pool.maintenance(), 1 ether);
         assertEq(pool.lastRotateAt(), lastBefore, "the spacing keeps running");
+        assertEq(pool.lastRotateCallAt(), block.timestamp, "the quiet clock restarts");
         assertEq(pool.ordinaryWeightSnapshot(), snapshotBefore);
         assertEq(clone.purchasesResumeAt(), resumeBefore, "the FWA pause did not restart");
+        _assertDue(IPoolTypes.RotateTrigger.None);
+        vm.warp(block.timestamp + pool.quietIntervalSeconds() - 1);
+        _assertDue(IPoolTypes.RotateTrigger.None);
+        vm.warp(block.timestamp + 1);
         _assertDue(IPoolTypes.RotateTrigger.Quiet);
     }
 

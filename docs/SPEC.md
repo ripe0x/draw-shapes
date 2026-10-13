@@ -35,7 +35,7 @@ Shares are nontransferable. There is one admin role.
 | FWA V2 clone | Created by the pool through the factory. `listNFT`, `listNFTs`, `updatePrice`, `withdrawListingTo`, `processAcquisitions`, `withdrawOwnerProceeds`, `acquire`, `acquireBatch`, `setPurchaseOperator`, `retirePool`. |
 
 `Pool` and `PoolAdmin` compile with via_ir. The `PoolAdmin` module is the only delegatecall target. Pure math is in
-internal libraries (`PricingLib`). Measured runtime sizes: `Pool` 24,129 B, `PoolAdmin` 18,058 B, `Lens` 12,536 B,
+internal libraries (`PricingLib`). Measured runtime sizes: `Pool` 24,330 B, `PoolAdmin` 18,098 B, `Lens` 12,689 B,
 against the EIP-170 limit of 24,576 B.
 
 ## 4. Buckets and invariants
@@ -212,12 +212,16 @@ purchase pause restarts at most once per interval. Triggers, in evaluation order
 2. GrailCap: the listed GRAIL weight exceeds `grailProbCapBps` at current prices.
 3. Claim: the head queued claim is at least `rotateInterval` old.
 4. GrailStep: a track below `targetWei` holds a bucket that covers a step and its mint fees.
-5. Restock: a held item exists, or cash after queued claims covers the next replacement or a row below target depth.
-6. Quiet: `quietIntervalSeconds` have passed since `lastRotateAt`.
+5. Restock: the listed count is `restockTriggerBps` or more below the target depth, the sum of each row's depth for the
+   current `minItems` and trailing pulls, and a held item exists or cash after queued claims covers the next replacement
+   or a row below target depth. Captures lower the listed count, so replacements and demand growth fall under this one
+   threshold. Held items are listed by any `rotate` call.
+6. Quiet: `quietIntervalSeconds` have passed since `lastRotateCallAt`, the time of the last successful `rotate` call or
+   of `open()` going Live.
 
 `rotateDue()` returns the first trigger that holds as a `RotateTrigger`, and `None` before the spacing ends, outside the
 Live state and while every trigger is false. A trigger can hold while its work is blocked, such as Claim while FWA holds
-unsettled acquisitions. That call keeps `lastRotateAt`, the FWA pause and `maintenance` as they were. Steps, each
+unsettled acquisitions. That call keeps `lastRotateAt`, the FWA pause and `maintenance` as they were and moves `lastRotateCallAt`. Steps, each
 bounded: (1) settle and harvest; (2) pay queued claims, then liquidate for the head claim when due; (3) restock
 (`open()` runs this step only): pay claims again, mint queued replacements while `cash` covers the row cost, mint toward
 target depth from `cash` above one step of the cheapest row once the queue is empty, then list every held item with
