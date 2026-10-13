@@ -1,0 +1,198 @@
+<title>Draw Shapes Play Week</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of sections, each a short headline, one chart or table, and a plain reading of it. */
+:root {
+  --bg: #f7f6f2; --fg: #1c1b18; --muted: #6b675c; --line: #dcd8cd; --card: #ffffff;
+  --ink: #1f4e79; --ink2: #b8572c; --pos: #2f7d4f; --neg: #b03a2e; --grid: #e9e6de;
+  --display: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15171a; --fg: #ecebe6; --muted: #a39f94; --line: #2c3035; --card: #1d2024;
+  --ink: #7fb3e6; --ink2: #e8956a; --pos: #6cc08b; --neg: #e07a6e; --grid: #262a2f; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #15171a; --fg: #ecebe6; --muted: #a39f94; --line: #2c3035; --card: #1d2024;
+  --ink: #7fb3e6; --ink2: #e8956a; --pos: #6cc08b; --neg: #e07a6e; --grid: #262a2f; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 16px; line-height: 1.5; margin: 0; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 32px 64px; padding-inline: 20px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 20px; margin: 48px 0 6px; text-wrap: balance; }
+h3 { font-size: 15px; margin: 24px 0 6px; }
+p { max-width: 68ch; margin: 6px 0; }
+.sub { color: var(--muted); max-width: 70ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 20px 0; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.tile .k { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.tile .v { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.tile .n { font-size: 12px; color: var(--muted); }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+figure { margin: 14px 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
+.legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 14px; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.tablewrap { overflow-x: auto; margin: 12px 0; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.grid2 > * { min-width: 0; }
+.note { font-size: 13px; color: var(--muted); }
+.flag { border-left: 3px solid var(--ink2); padding: 8px 12px; background: var(--card); margin: 12px 0; max-width: 72ch; }
+.flag b { color: var(--ink2); }
+.svgtext { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+a { color: var(--ink); }
+code { font-family: var(--mono); font-size: 0.92em; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<div class="wrap">
+<div class="eyebrow">Draw Shapes v1 · scenario runner on the real contracts · mainnet fork block 26,170,000</div>
+<h1>One week of play at 500 tickets a day</h1>
+<p class="sub">3,413 tickets, 50 ETH opening cohort, launch parameters from <code>script/env/mainnet.env</code>, played against the deployed Shapes and FWA V2 contracts. Compared with a live FWA V2 pool of similar ticket size. Every figure comes from <code>evidence/play/</code> CSVs committed on the branch.</p>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="flag"><b>Two things to look at first.</b> Replacement mint fees take half of the pool's gross margin at this ticket size, because the mainnet Shapes mint fee is 0.001 ETH per Shape and the median capture is a 0.01 ETH Shape. And the board relists about every 41 minutes, so FWA's 5 minute purchase pause covers 14 percent of the day.</div>
+
+<h2>Players</h2>
+<p>What a ticket buys. For Draw Shapes the value received is the Shape or pack backing, redeemable for ETH. For the FWA pool it is the listing price of the delivered item, which is a claim on a market, so the two columns are not the same kind of value.</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">Draw Shapes</span><span style="--c:var(--ink2)">FWA pool 0xfac9…c62a</span></div><svg id="hist" viewBox="0 0 460 260"></svg><figcaption>Share of tickets by value received over ticket paid. Buckets on the x axis.</figcaption></figure>
+<div class="tablewrap"><table id="ptable"></table></div>
+</div>
+<p class="note">The FWA pool has 125 active listings priced 0.01 to 0.5 ETH and quotes a 0.0208 ETH ticket at the block, close to the pool's 0.0209. The largest FWA pool at the block (9,923 identical 0.001 ETH listings) returns 0.952x on every ticket and is left out as uninformative.</p>
+
+<h2>Depositors</h2>
+<p>Depositors are the house. NAV per share starts at 0.996 after the opening cohort pays its entry contribution to the GRAIL buckets and the first board is minted, and ends the week at 1.035. The FWA pool has no depositor side: its owner lists their own inventory and keeps 97.6 percent of every ticket.</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">500 a day</span><span style="--c:var(--ink2)">100 a day</span></div><svg id="nav" viewBox="0 0 460 240"></svg><figcaption>NAV per share by hour. Deposits of 2 ETH a day and a 2 percent withdrawal every other day are in the runner.</figcaption></figure>
+<figure><svg id="exits" viewBox="0 0 460 240"></svg><figcaption>Withdrawals in the week: amount paid at once and queue wait. All three paid from cash with no wait.</figcaption></figure>
+</div>
+
+<h2>Where each ticket goes</h2>
+<p>Per 1 ETH of tickets, derived from the recorded tickets and captures and the fee split in SPEC 9. VRF is zero at the fork block and is paid by the player on top on mainnet.</p>
+<figure><svg id="rev" viewBox="0 0 900 190"></svg><figcaption>Draw Shapes: backing returned to players, Shapes mint fees (operator revenue), FWA protocol fee, depositor premium, maintenance, GRAIL feed. FWA pool: owner proceeds and protocol fee.</figcaption></figure>
+<div class="tablewrap"><table id="rtable"></table></div>
+
+<h2>Board and pauses</h2>
+<p>Each inventory change restarts FWA's 300 second purchase pause. The Weight trigger fired 246 times in the week; one capture of a 0.5 ETH Shape removes 10 percent of the board's weight on its own.</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">listed items</span><span style="--c:var(--ink2)">tickets per hour</span></div><svg id="board" viewBox="0 0 460 240"></svg><figcaption>Listed items and tickets by hour, 500 a day.</figcaption></figure>
+<figure><svg id="trig" viewBox="0 0 460 240"></svg><figcaption>Rotate calls by trigger, 500 a day. Every rotate changed inventory.</figcaption></figure>
+</div>
+
+<h2>GRAIL</h2>
+<p>Two tracks fed by the entry contribution and the feed share. The minor track reached 0.6 ETH of backing and was captured twice, the first time at hour 80. Odds are the listing's share of FWA selection weight at that hour.</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">minor odds (bps)</span><span style="--c:var(--ink2)">major odds (bps)</span></div><svg id="odds" viewBox="0 0 460 240"></svg><figcaption>Selection odds per ticket in basis points of total weight.</figcaption></figure>
+<figure><div class="legend"><span style="--c:var(--ink)">minor backing</span><span style="--c:var(--ink2)">major backing</span></div><svg id="gb" viewBox="0 0 460 240"></svg><figcaption>Track backing in ETH. Drops are captures.</figcaption></figure>
+</div>
+
+<h2>Method and caveats</h2>
+<p class="note">Runner: <code>test/scenario/PlayMonth.t.sol</code>, deterministic for seed 1, VRF fulfilled by impersonating the coordinator, 20 rotating players buying 1 to 5 tickets, rotate called whenever <code>rotateDue()</code> is not None. Report script: <code>script/report.py</code>. The 2,000 a day run did not complete and is open. The revenue split is computed from the recorded tickets and captures with the SPEC 9 formula; the runner does not log the buckets directly. The FWA snapshot was read once with <code>cast</code>; the next version reads it inside a fork test so the Foundry RPC cache serves it.</p>
+</div>
+<script>
+const D = {"ours": {"backing": 0.8383542588922225, "mint": 0.06935003556044798, "protocol": 0.023809523809523808, "prem": 0.0195674804965159, "maint": 0.00978374024825795, "feed": 0.0391349609930318}, "fwa": {"owner": 0.9761904761904762, "protocol": 0.023809523809523808}, "r": {"n": 3413, "P": 71.17516177331316, "B": 59.67, "ticket": 0.020854134712368345, "ev": 0.8383542588922225, "median": 0.48478240180290283, "p5": 0.4716771748604727, "p95": 1.455876357567841, "atOrAbove": 0.15294462349838853, "belowHalf": 0.6205684148842661, "kinds": {"Shape": 2262, "Pack": 1149, "Grail": 2}, "hist": [0.0, 0.6205684148842661, 0.0, 0.22648696161734544, 0.0, 0.11016700849692353, 0.0, 0.034280691473776735, 0.007031936712569587, 0.0, 0.001464986815118664], "edges": [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 5, 10], "nav": [0.995988497136367, 0.9964826982699716, 0.9975174034898379, 0.9977902540485301, 0.9983624237926749, 0.99862852465353, 0.9976822109085922, 0.9992419986633149, 0.9973121324861886, 0.9966843455547956, 0.9988000506598191, 0.9981098119716627, 0.9992683083856929, 0.9975843099977983, 0.9990412295077002, 0.9988533321448596, 1.000291183339986, 0.9977791966092202, 0.9989368832708775, 1.0005500019910976, 1.0014128740255392, 1.0013686407870295, 1.0013080109126713, 1.002095635173479, 1.0013328770030352, 1.0025456775043764, 1.0028557537447687, 1.0034507516533506, 1.003495913949435, 1.0030536857156453, 1.0039136154013948, 1.0054556969368802, 1.0064175184929451, 1.0067832662825626, 1.007030907473418, 1.0078902850880076, 1.0089263405089604, 1.0088940521616525, 1.0077115926345055, 1.0076126223625292, 1.0097002117333653, 1.0101587001091608, 1.0105352528660583, 1.0105880004539987, 1.0113086505419895, 1.0117021496746657, 1.0122977772107318, 1.0127183628305925, 1.0132261809168595, 1.0136025941156992, 1.0137773704690576, 1.01433559881006, 1.0147601421847436, 1.0152385178957457, 1.0152285250696869, 1.015602723910787, 1.016009749318542, 1.0141973946097258, 1.0142330093459717, 1.0170641477248548, 1.0173727990535406, 1.0173582056508743, 1.0171614565064138, 1.0163365998083989, 1.0183135502999294, 1.0183764997306968, 1.018711021508479, 1.0187759264342973, 1.0196192710232153, 1.0191543554066298, 1.0188213202339225, 1.0199395282926813, 1.0203784392650517, 1.0207649936861498, 1.0207775689784122, 1.021046315358089, 1.0200906075864178, 1.0216996083187018, 1.0216768836510006, 1.0225498814283316, 1.023031919152763, 1.0227986050201299, 1.0217369389501358, 1.0230653541685941, 1.0240641890419953, 1.0239593559683413, 1.024487125215321, 1.022550779945183, 1.0223071511062263, 1.0242703191004405, 1.0256104136684814, 1.026004949271741, 1.0262949532614054, 1.0267157088703023, 1.0268241355407006, 1.0267848297549262, 1.0270080559986838, 1.0276866100479587, 1.0275406893678427, 1.028344939032422, 1.0285153487679992, 1.0272189792864201, 1.028035669113681, 1.0284490919774851, 1.0291443177706412, 1.0282708359631085, 1.0300105671224697, 1.0299442263048826, 1.0303803490146464, 1.030571191799186, 1.0317456685324489, 1.0314993564465653, 1.031300582832402, 1.0317851381859475, 1.0323033683056235, 1.0328683376404826, 1.0331220663778313, 1.0337057348174168, 1.0345295772137415, 1.0345448938627215, 1.0355063982693355, 1.036190891746582, 1.0357989163422519, 1.0360846966085016, 1.0365470876489797, 1.036913285843157, 1.0369332319104152, 1.0375252792432932, 1.0360502594463163, 1.0357880500421515, 1.0380075275446117, 1.0382755637614034, 1.038103960577365, 1.0376644566838997, 1.0369411652249845, 1.0278814044778537, 1.0189993286153365, 1.0208967248054817, 1.0219876816072975, 1.0234677439995898, 1.024503835315065, 1.0239405488019468, 1.0249946387249078, 1.0271450115782699, 1.0282650149239214, 1.029540239501695, 1.0284992022924462, 1.0278652538300888, 1.0274261482744267, 1.028590989446191, 1.0302164381051093, 1.0284094156311172, 1.026076846884125, 1.0272045654975885, 1.0289230229557347, 1.0306070174355986, 1.0317186754916075, 1.0335048477208097, 1.0332037932886695, 1.0339272625173326, 1.0361877666675006, 1.0288793420175746, 1.0307638227756075, 1.0306060891187971, 1.0300354690268878, 1.0322014487346254, 1.0328008495178742, 1.035361025653776, 1.034541108396012], "listed": [100, 100, 95, 100, 94, 108, 122, 114, 111, 124, 117, 133, 128, 130, 133, 128, 126, 130, 131, 136, 123, 135, 136, 125, 135, 129, 128, 129, 131, 126, 132, 129, 124, 125, 132, 119, 129, 125, 129, 128, 128, 130, 128, 130, 127, 128, 135, 136, 132, 133, 128, 131, 129, 135, 136, 129, 133, 134, 128, 126, 129, 129, 127, 130, 132, 125, 130, 136, 131, 129, 123, 123, 127, 136, 134, 136, 136, 136, 126, 128, 129, 133, 136, 135, 129, 132, 128, 128, 123, 135, 119, 130, 132, 124, 136, 130, 137, 137, 138, 130, 137, 136, 134, 134, 136, 129, 132, 132, 130, 141, 125, 135, 133, 136, 135, 137, 140, 133, 134, 137, 136, 131, 138, 133, 136, 135, 138, 138, 129, 138, 131, 139, 135, 132, 141, 136, 138, 125, 134, 136, 141, 136, 135, 135, 133, 135, 123, 129, 129, 141, 140, 139, 141, 140, 132, 131, 141, 138, 139, 139, 141, 137, 137, 134, 139, 123, 131, 141, 138], "odds0": [0.0, 6.3953, 3.4847, 2.5974, 2.8604, 2.6273, 2.3541, 2.6497, 2.7194, 2.6431, 2.8967, 2.6819, 2.9475, 2.9393, 3.0319, 3.3065, 3.5903, 3.6165, 3.7752, 3.8506, 4.448, 4.2286, 4.5931, 5.3549, 5.2583, 5.8092, 6.1428, 6.1564, 5.8622, 6.3191, 5.9589, 6.1564, 6.4411, 6.3675, 5.8622, 6.8363, 6.1025, 6.3283, 6.0318, 6.0891, 6.1025, 6.1159, 6.1838, 6.0759, 6.2432, 6.2392, 5.738, 5.6679, 5.9589, 5.8834, 6.0103, 5.9589, 6.1332, 5.738, 5.6679, 6.0495, 5.8463, 5.7262, 6.1975, 6.3675, 6.0364, 6.1025, 6.1429, 6.0058, 5.9083, 6.2814, 5.9717, 5.6679, 5.9589, 6.0759, 6.3386, 6.4711, 6.2673, 5.6679, 5.7144, 5.6679, 5.6679, 5.6679, 6.1838, 6.1294, 20.2098, 3.9154, 2.1167, 1.9547, 2.1103, 2.1415, 2.2791, 2.3129, 2.4961, 2.4027, 2.8905, 2.7379, 2.8477, 3.205, 3.0641, 3.3243, 3.2737, 3.4096, 3.5533, 3.923, 3.854, 4.1188, 4.2825, 4.7208, 5.0018, 5.6976, 6.0194, 6.0066, 6.1017, 5.4899, 6.3893, 5.8113, 5.8233, 5.7483, 5.8319, 5.7601, 5.5114, 5.9305, 5.981, 5.7133, 5.7958, 6.0584, 5.6444, 5.8685, 5.7483, 0.0, 4.7041, 2.3573, 1.9938, 1.971, 2.1944, 2.0581, 2.1974, 2.3588, 2.258, 2.4068, 2.4302, 2.8622, 2.8095, 2.8349, 2.8074, 3.0455, 3.1972, 3.3688, 3.517, 3.7682, 4.3039, 4.2635, 4.4227, 4.4135, 4.6296, 4.8454, 5.0461, 5.321, 6.0979, 6.0529, 5.4899, 5.6901, 5.6218, 5.555, 5.4899, 5.6976, 5.6786, 5.8354, 5.5692, 6.6352, 5.9305, 5.4899, 5.6557], "odds1": [0.0, 1.279, 0.6969, 0.4265, 0.3982, 0.3448, 0.3048, 0.3334, 0.3317, 0.3079, 0.3278, 0.2867, 0.3006, 0.2934, 0.2912, 0.3097, 0.3195, 0.3022, 0.3018, 0.291, 0.3362, 0.2946, 0.2539, 0.2846, 0.2598, 0.2745, 0.2782, 0.2788, 0.2686, 0.2896, 0.2731, 0.2852, 0.2705, 0.2674, 0.2317, 0.2702, 0.2437, 0.2527, 0.2409, 0.2432, 0.2463, 0.2469, 0.2496, 0.2478, 0.2546, 0.2544, 0.2366, 0.2338, 0.2458, 0.2426, 0.2243, 0.2224, 0.2289, 0.2142, 0.2141, 0.2285, 0.2208, 0.2163, 0.2368, 0.2433, 0.2306, 0.2356, 0.2372, 0.2319, 0.2306, 0.2452, 0.2112, 0.2004, 0.2107, 0.2148, 0.2265, 0.2313, 0.224, 0.2048, 0.2064, 0.2048, 0.2048, 0.2048, 0.2234, 0.2059, 0.202, 0.1957, 0.1924, 0.1948, 0.2071, 0.201, 0.2099, 0.2059, 0.2178, 0.1969, 0.2343, 0.2076, 0.205, 0.2229, 0.2016, 0.1933, 0.1795, 0.1814, 0.1795, 0.1947, 0.1799, 0.1839, 0.1851, 0.1883, 0.1849, 0.1944, 0.1952, 0.1968, 0.1999, 0.1663, 0.1936, 0.1684, 0.1687, 0.1666, 0.169, 0.1688, 0.1615, 0.1737, 0.1752, 0.1674, 0.1718, 0.1796, 0.1673, 0.1757, 0.1721, 0.1758, 0.1568, 0.1571, 0.1661, 0.1581, 0.1719, 0.1559, 0.1628, 0.1681, 0.1464, 0.1527, 0.1508, 0.1728, 0.1601, 0.1543, 0.1479, 0.1549, 0.1581, 0.1585, 0.1605, 0.1588, 0.1743, 0.1643, 0.1654, 0.151, 0.1528, 0.153, 0.151, 0.1528, 0.1694, 0.1681, 0.1525, 0.1581, 0.1562, 0.1543, 0.1544, 0.1602, 0.1597, 0.1641, 0.1583, 0.1887, 0.1686, 0.1561, 0.1608], "gb0": [0.0, 0.4, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.5, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.4, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "gb1": [0.0, 2.0, 4.0, 6.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 8.0, 8.0, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 10.5, 11.0, 11.0, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5], "pause": 200.71428571428572, "trig": {"rotWeight": 246, "rotGrailCap": 0, "rotClaim": 0, "rotGrailStep": 33, "rotRestock": 2, "rotQuiet": 0}, "claims": [{"hour": 39, "wait": 0, "enq": 0.0, "paid": 0.030027662150823305}, {"hour": 92, "wait": 0, "enq": 0.0, "paid": 0.17600088899807442}, {"hour": 143, "wait": 0, "enq": 0.0, "paid": 0.030707811198860072}], "pph": [0, 15, 29, 16, 19, 31, 16, 27, 23, 26, 24, 30, 30, 12, 22, 17, 30, 23, 17, 21, 13, 17, 30, 23, 14, 18, 12, 11, 29, 20, 17, 24, 29, 11, 26, 29, 29, 21, 20, 14, 28, 11, 15, 21, 25, 11, 28, 27, 16, 11, 15, 11, 14, 19, 28, 20, 22, 23, 19, 23, 19, 25, 26, 11, 31, 19, 16, 22, 15, 14, 21, 27, 19, 17, 14, 11, 13, 23, 10, 23, 23, 19, 25, 11, 17, 29, 17, 30, 18, 27, 29, 27, 26, 31, 20, 21, 19, 13, 20, 19, 16, 17, 13, 26, 24, 29, 14, 24, 15, 14, 29, 14, 28, 31, 12, 21, 19, 24, 22, 20, 31, 16, 26, 31, 12, 13, 16, 20, 16, 19, 31, 15, 19, 28, 18, 18, 11, 29, 28, 22, 11, 22, 14, 27, 15, 30, 27, 12, 14, 17, 12, 14, 13, 12, 21, 29, 15, 14, 11, 13, 30, 30, 29, 19, 10, 16, 22, 29, 15], "contrib": 8.618999999999996, "navStart": 41.215, "mintline": 4.935999999999906, "margin": 9.810515064424749, "prem": 1.3927185898356693, "maint": 0.6963592949178347, "feed": 2.7854371796713386, "protocol": 1.6946467088884085}, "r100": {"n": 690, "ev": 0.8878356434936039, "median": 0.48647479519635617, "nav": [0.995988497136367, 0.9961129551974464, 0.9960185455190866, 0.9956590942454425, 0.9961323167507106, 0.9965246794295209, 0.9964608886229154, 0.9967441925336908, 0.9964199070735325, 0.9961831995306999, 0.9961487025336629, 0.9963857424019569, 0.9970102890882957, 0.9968066967597149, 0.996988759462958, 0.9971252632579373, 0.9972349911678638, 0.9975396012047559, 0.9978613590849221, 0.9976340610652018, 0.9981465436539251, 0.9979823103944947, 0.9982510483929568, 0.997921003392027, 0.9983110508055323, 0.9983009625006741, 0.998431124705524, 0.9987396650273883, 0.9990225208228553, 0.9991915629278394, 0.9994564778592779, 0.9987883725187506, 0.999369056068034, 0.9989591360308184, 0.9982558900131234, 0.9986488490033161, 0.9992799168216746, 0.9998136361610164, 0.9999688722927439, 1.0002004869991574, 1.0005269973119835, 0.9990802250990766, 0.9993872987272758, 1.000313731588828, 1.0002595239620649, 1.0003429179989882, 0.9999190899211584, 0.9996273130536604, 0.9994014006854745, 0.9998391093127688, 1.0000655396896425, 1.0007348109525092, 1.0005257137287842, 1.0004564710650097, 1.0009335170887774, 1.0010479068988054, 1.0006865971682968, 1.0012551109803611, 1.0012940814053648, 1.0002358638877913, 1.0005897129846533, 1.000818779381472, 1.0014280408022738, 1.00138496927002, 1.0015532647694378, 1.0016619097274961, 1.0008081230614179, 1.000302070926687, 1.0009624003667295, 1.0007535671586427, 1.0010073858828508, 1.0014294075090262, 1.0017151234545225, 1.0012834726410011, 1.0012399591695682, 1.0013757047103329, 1.0020106714740677, 1.002086956842155, 1.0018594965343801, 1.0015348156817687, 1.0019826956242612, 1.002142330171383, 1.0022993688377533, 1.0024981258795602, 1.002226652634025, 1.0026652610763642, 1.0027180761515595, 1.0029116185345535, 1.002919304579996, 1.0032742243330182, 1.0027483236269887, 1.002313896369956, 1.0026810822287466, 1.0032317391733343, 1.003445178477942, 1.003150571292661, 1.003530010469556, 1.003526969600014, 1.0036674561671468, 1.0036607076836646, 1.0037821211555922, 1.0039164286262603, 1.003313180544876, 1.0039705266123458, 1.0037682620735344, 1.0040257078239117, 1.004262192972824, 1.0042287202117224, 1.0043831994849546, 1.0042343875481503, 1.0022634124785648, 1.0023860699843496, 1.002185753735379, 1.002522960670765, 1.0026301713573296, 1.0025876158899993, 1.002407024290767, 1.002806718116968, 1.002990898435819, 1.003730015624911, 1.0038776128517835, 1.004104174472484, 1.0046956345529063, 1.0048436896162416, 1.0050214329657343, 1.0052064051375489, 1.0053360267156193, 1.0055055319165578, 1.0037686582616179, 1.0037315357582388, 1.0034945321539692, 1.0023851289813086, 1.0027775123458005, 1.0029814027991086, 1.003805956585844, 1.00419855880497, 1.0037367357301241, 1.003145129248323, 1.0033132733459442, 1.0025807543590575, 1.00337640666793, 1.0037814321931664, 1.0038373208644429, 1.0042399017545423, 1.0043340169705308, 1.0047000116286546, 1.004498682469345, 1.004455059250327, 1.004860325774743, 1.005000857406598, 1.0056832094462815, 1.005712127231494, 1.0057989141989836, 1.0058717051398778, 1.0043453093126837, 1.0051193103491922, 1.0053266972073034, 1.005896240664421, 1.0061056050395007, 1.0039006440694986, 1.0030437037936997, 1.0034283783295819, 1.004041641643612, 1.004378649138748, 1.0044566229191485, 1.0050429032117014, 1.005059344969393, 1.004870362226527, 1.005413357969517], "pause": 67.85714285714286, "listed": [100, 100, 100, 100, 100, 95, 100, 97, 100, 97, 94, 100, 96, 100, 98, 95, 100, 94, 97, 98, 93, 97, 92, 96, 93, 99, 97, 99, 100, 97, 94, 99, 96, 99, 95, 100, 94, 96, 100, 94, 89, 96, 93, 98, 93, 99, 94, 99, 94, 98, 93, 94, 99, 96, 99, 95, 100, 96, 100, 96, 100, 98, 95, 100, 94, 98, 95, 100, 97, 94, 100, 97, 100, 96, 94, 100, 95, 99, 96, 92, 100, 100, 98, 95, 100, 96, 98, 93, 100, 95, 90, 98, 93, 98, 95, 98, 94, 100, 97, 92, 97, 95, 99, 93, 100, 97, 99, 95, 100, 97, 91, 100, 96, 90, 97, 94, 99, 97, 95, 99, 94, 100, 95, 100, 97, 94, 96, 100, 95, 100, 97, 91, 100, 97, 100, 95, 91, 97, 94, 100, 96, 94, 100, 98, 100, 97, 94, 100, 96, 91, 94, 98, 95, 100, 98, 92, 95, 99, 93, 91, 100, 96, 100, 96, 100, 97, 100, 96, 93], "trig": {"rotWeight": 70, "rotGrailCap": 0, "rotClaim": 0, "rotGrailStep": 24, "rotRestock": 1, "rotQuiet": 0}}, "mixed": {"ticket": 0.02078811144521447, "listings": 125, "mean": 0.9523809523809539, "median": 0.7215662682746043, "p5": 0.48104417884973627, "p95": 2.6457429836735495, "atOrAbove": 0.20327797907751427, "belowHalf": 0.06335424440446316, "hist": [0.0, 0.06335424440446316, 0.6357892728921428, 0.09757850362588001, 0.07358208541365159, 0.0, 0.03620242537397895, 0.0650321043968864, 0.024831502353688494, 0.002644351070794984, 0.0009855104685138714], "pool": "0xfac9af47a396ec1085d3940e2ed16e9b11c62a10"}};
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const pct = x => (x*100).toFixed(1) + '%';
+const fx = (x,d=2) => x.toFixed(d);
+function tiles(){
+  const r=D.r, m=D.mixed;
+  const t=[['tickets','3,413','7 days, 500 a day'],['ticket','0.0209 ETH','harmonic mean × 1.05'],['median return','0.49×','FWA pool 0.72×'],['expected return','0.84×','FWA pool 0.95×'],['NAV per share','0.996 → 1.035',(((r.nav[r.nav.length-1]/r.nav[0])-1)*100).toFixed(1)+'% in a week'],['purchase pause','201 min/day','14% of the day'],['GRAIL hits','2 minor, 0 major','first at hour 80'],['mint fees','6.9% of tickets','half of gross margin']];
+  $('tiles').innerHTML=t.map(x=>`<div class="tile"><div class="k">${x[0]}</div><div class="v">${x[1]}</div><div class="n">${x[2]}</div></div>`).join('');
+}
+function axisY(svg,x0,y0,y1,vmin,vmax,fmt,ticks=4){
+  let s='';
+  for(let i=0;i<=ticks;i++){const v=vmin+(vmax-vmin)*i/ticks;const y=y0-(y0-y1)*i/ticks;
+    s+=`<line x1="${x0}" x2="${svg.w-10}" y1="${y}" y2="${y}" stroke="${css('--grid')}"/>`;
+    s+=`<text class="svgtext" x="${x0-6}" y="${y+4}" text-anchor="end">${fmt(v)}</text>`;}
+  return s;
+}
+function line(svg,xs,ys,x0,x1,y0,y1,vmin,vmax,color){
+  const n=xs.length; const px=i=>x0+(x1-x0)*i/(n-1); const py=v=>y0-(y0-y1)*(v-vmin)/(vmax-vmin);
+  let d='';ys.forEach((v,i)=>{d+=(i?'L':'M')+px(i).toFixed(1)+' '+py(v).toFixed(1)+' ';});
+  const last=ys[n-1];
+  return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/><circle cx="${px(n-1)}" cy="${py(last)}" r="3" fill="${color}"/>`;
+}
+function hist(){
+  const s={w:460}; const labels=['<¼','¼-½','½-¾','¾-1','1-1¼','1¼-1½','1½-2','2-3','3-5','5-10','10+'];
+  const a=D.r.hist, b=D.mixed.hist; const vmax=0.7; const x0=44,x1=450,y0=220,y1=20; const bw=(x1-x0)/labels.length;
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>pct(v).replace('.0',''),7);
+  labels.forEach((l,i)=>{const bx=x0+i*bw; const ha=(y0-y1)*a[i]/vmax, hb=(y0-y1)*b[i]/vmax;
+    out+=`<rect x="${bx+3}" y="${y0-ha}" width="${bw/2-4}" height="${ha}" fill="${css('--ink')}"/>`;
+    out+=`<rect x="${bx+bw/2+1}" y="${y0-hb}" width="${bw/2-4}" height="${hb}" fill="${css('--ink2')}"/>`;
+    out+=`<text class="svgtext" x="${bx+bw/2}" y="${y0+14}" text-anchor="middle">${l}</text>`;});
+  out+=`<text class="svgtext" x="${(x0+x1)/2}" y="${y0+30}" text-anchor="middle">value received ÷ ticket paid</text>`;
+  $('hist').innerHTML=out;
+}
+function ptable(){
+  const r=D.r,m=D.mixed;
+  const rows=[['tickets in sample',r.n.toLocaleString(),'125 listings'],['ticket (ETH)',fx(r.ticket,4),fx(m.ticket,4)],['expected return',fx(r.ev,3)+'×',fx(m.mean,3)+'×'],['median return',fx(r.median,2)+'×',fx(m.median,2)+'×'],['p5 return',fx(r.p5,2)+'×',fx(m.p5,2)+'×'],['p95 return',fx(r.p95,2)+'×',fx(m.p95,2)+'×'],['at or above ticket',pct(r.atOrAbove),pct(m.atOrAbove)],['below half the ticket',pct(r.belowHalf),pct(m.belowHalf)],['value received','Shape or pack backing, redeemable','listing price of the delivered item']];
+  $('ptable').innerHTML='<tr><th></th><th>Draw Shapes</th><th>FWA pool</th></tr>'+rows.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td></tr>`).join('');
+}
+function nav(){
+  const s={w:460}; const a=D.r.nav,b=D.r100.nav; const x0=52,x1=450,y0=210,y1=16; const vmin=0.99,vmax=1.04;
+  let out=axisY(s,x0,y0,y1,vmin,vmax,v=>v.toFixed(3),5);
+  out+=line(s,a,a,x0,x1,y0,y1,vmin,vmax,css('--ink'))+line(s,b,b,x0,x1,y0,y1,vmin,vmax,css('--ink2'));
+  [0,24,48,72,96,120,144,168].forEach(h=>{const x=x0+(x1-x0)*h/(a.length-1);out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${h/24}d</text>`;});
+  $('nav').innerHTML=out;
+}
+function exits(){
+  const s={w:460}; const c=D.r.claims; const x0=52,x1=450,y0=200,y1=20; const vmax=0.2;
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>v.toFixed(2)+' ETH',4);
+  c.forEach((e,i)=>{const bx=x0+(x1-x0)*e.hour/168; const h=(y0-y1)*e.paid/vmax;
+    out+=`<rect x="${bx-9}" y="${y0-h}" width="18" height="${h}" fill="${css('--pos')}"/>`;
+    out+=`<text class="svgtext" x="${bx}" y="${y0-h-6}" text-anchor="middle">h${e.hour} · wait ${e.wait}s</text>`;});
+  [0,24,48,72,96,120,144,168].forEach(h=>{const x=x0+(x1-x0)*h/168;out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${h/24}d</text>`;});
+  $('exits').innerHTML=out;
+}
+function rev(){
+  const o=D.ours,f=D.fwa; const cols=[css('--ink'),css('--ink2'),css('--neg'),css('--pos'),'#8a7f6a','#c9a227'];
+  const ours=[['backing to players',o.backing],['Shapes mint fees',o.mint],['FWA protocol',o.protocol],['depositor premium',o.prem],['maintenance',o.maint],['GRAIL feed',o.feed]];
+  const fwa=[['owner proceeds',f.owner],['FWA protocol',f.protocol]];
+  const x0=130,x1=880; let out='';
+  function bar(y,segs,colors){let x=x0;segs.forEach((sg,i)=>{const w=(x1-x0)*sg[1];out+=`<rect x="${x}" y="${y}" width="${w}" height="40" fill="${colors[i]}"/>`;if(w>46)out+=`<text x="${x+w/2}" y="${y+25}" text-anchor="middle" font-family="${css('--mono')}" font-size="12" fill="#fff">${pct(sg[1])}</text>`;x+=w;});}
+  bar(20,ours,cols); bar(110,fwa,[css('--ink2'),css('--neg')]);
+  out+=`<text class="svgtext" x="${x0-8}" y="45" text-anchor="end" font-size="13">Draw Shapes</text><text class="svgtext" x="${x0-8}" y="135" text-anchor="end" font-size="13">FWA pool</text>`;
+  let lx=x0; ours.forEach((sg,i)=>{out+=`<rect x="${lx}" y="72" width="10" height="10" fill="${cols[i]}"/><text class="svgtext" x="${lx+14}" y="81">${sg[0]}</text>`;lx+=120;});
+  lx=x0; fwa.forEach((sg,i)=>{out+=`<rect x="${lx}" y="162" width="10" height="10" fill="${[css('--ink2'),css('--neg')][i]}"/><text class="svgtext" x="${lx+14}" y="171">${sg[0]}</text>`;lx+=140;});
+  $('rev').innerHTML=out;
+  const r=D.r; const rows=[['tickets paid',fx(r.P,2),'71.18 ETH over the week'],['backing delivered to players',fx(r.B,2),pct(o.backing)],['FWA protocol fee (half the 5% edge)',fx(r.protocol,2),pct(o.protocol)],['Shapes mint fees for replacements (operator revenue)',fx(r.mintline,2),pct(o.mint)+' · 0.001 ETH per Shape minted'],['depositor premium (stays in NAV)',fx(r.prem,2),pct(o.prem)],['maintenance (rotate refunds)',fx(r.maint,2),pct(o.maint)],['GRAIL feed',fx(r.feed,2),pct(o.feed)],['entry contributions to GRAIL from the 50 ETH opening',fx(r.contrib,2),'separate from tickets']];
+  $('rtable').innerHTML='<tr><th>Draw Shapes, 500 a day</th><th>ETH</th><th>share of tickets</th></tr>'+rows.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td></tr>`).join('');
+}
+function board(){
+  const s={w:460}; const a=D.r.listed,b=D.r.pph; const x0=52,x1=450,y0=210,y1=16;
+  let out=axisY(s,x0,y0,y1,0,160,v=>v.toFixed(0),4);
+  out+=line(s,a,a,x0,x1,y0,y1,0,160,css('--ink'))+line(s,b,b,x0,x1,y0,y1,0,160,css('--ink2'));
+  [0,24,48,72,96,120,144,168].forEach(h=>{const x=x0+(x1-x0)*h/(a.length-1);out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${h/24}d</text>`;});
+  $('board').innerHTML=out;
+}
+function trig(){
+  const t=D.r.trig; const rows=[['Weight',t.rotWeight],['GrailStep',t.rotGrailStep],['Restock',t.rotRestock],['GrailCap',t.rotGrailCap],['Claim',t.rotClaim],['Quiet',t.rotQuiet]];
+  const x0=100,x1=440; const vmax=260; let out='';
+  rows.forEach((r,i)=>{const y=20+i*34; const w=(x1-x0)*r[1]/vmax; out+=`<text class="svgtext" x="${x0-8}" y="${y+15}" text-anchor="end" font-size="12">${r[0]}</text><rect x="${x0}" y="${y}" width="${Math.max(w,1)}" height="22" fill="${css('--ink')}"/><text class="svgtext" x="${x0+w+6}" y="${y+15}">${r[1]}</text>`;});
+  $('trig').innerHTML=out;
+}
+function odds(){
+  const s={w:460}; const a=D.r.odds0,b=D.r.odds1; const x0=52,x1=450,y0=210,y1=16; const vmax=24;
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>v.toFixed(0)+' bps',4);
+  out+=line(s,a,a,x0,x1,y0,y1,0,vmax,css('--ink'))+line(s,b,b,x0,x1,y0,y1,0,vmax,css('--ink2'));
+  [0,24,48,72,96,120,144,168].forEach(h=>{const x=x0+(x1-x0)*h/(a.length-1);out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${h/24}d</text>`;});
+  $('odds').innerHTML=out;
+}
+function gb(){
+  const s={w:460}; const a=D.r.gb0,b=D.r.gb1; const x0=52,x1=450,y0=210,y1=16; const vmax=Math.max(...a,...b,0.1)*1.1;
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>v.toFixed(2),4);
+  out+=line(s,a,a,x0,x1,y0,y1,0,vmax,css('--ink'))+line(s,b,b,x0,x1,y0,y1,0,vmax,css('--ink2'));
+  [0,24,48,72,96,120,144,168].forEach(h=>{const x=x0+(x1-x0)*h/(a.length-1);out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${h/24}d</text>`;});
+  $('gb').innerHTML=out;
+}
+function draw(){tiles();hist();ptable();nav();exits();rev();board();trig();odds();gb();}
+draw();
+if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+</script>
