@@ -122,7 +122,7 @@ interface IPoolTypes {
     error PurchasesCoolingDown();
     error Insolvent();
     error BoardTooThin();
-    error GrailProbTooHigh();
+    error PurchaserMismatch();
     error UnknownListing(uint256 listingId);
     error BooksBehind();
     error NavZero();
@@ -278,7 +278,25 @@ interface IPool is IPoolTypes {
     function liquidate() external;
     function rotate() external;
     function growGrail(uint8 t) external;
-    function pull(uint256 count, uint256 maxFee, uint256 deadline) external payable;
+    function acquire(
+        address purchaser,
+        uint256 maxAcquisitionFee,
+        uint256 minWeightedValue,
+        uint256 maxNegativeSlippageBps,
+        uint256 expectedInventoryVersion,
+        uint256 deadline
+    ) external payable returns (uint256 requestId);
+    function acquireBatch(
+        address purchaser,
+        uint256 count,
+        uint256 maxAcquisitionFee,
+        uint256 minWeightedValue,
+        uint256 maxNegativeSlippageBps,
+        uint256 expectedInventoryVersion,
+        uint256 deadline
+    ) external payable returns (uint256[] memory requestIds);
+    function quoteAcquisitionPrice(uint256 count) external view returns (uint256 fee, uint256 vrf, uint256 total);
+    function canPurchase(address wallet) external view returns (bool);
     function pullWithShapes(uint256[] calldata tokenIds, uint256 count, uint256 maxFee, uint256 deadline)
         external
         payable;
@@ -307,6 +325,7 @@ interface IPool is IPoolTypes {
     function setGrailProbCap(uint256 bps) external;
     function setRepriceMinBps(uint256 bps) external;
     function setPaused(bool pulls, bool deposits) external;
+    function setPurchaseGate(bool on) external;
     function setAdmin(address newAdmin) external;
     function sweep(address token, uint256 id, address to) external;
     function adminCall(address target, bytes calldata data, uint256 value) external payable;

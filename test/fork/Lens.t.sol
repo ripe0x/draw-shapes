@@ -62,16 +62,8 @@ contract LensForkTest is ForkBase, PoolFixture {
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
     }
 
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
-        vm.deal(who, who.balance + total);
-        uint64 last = clone.lastIssuedSequence();
-        vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
-        }
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
+        return acquirePooled(address(pool), clone, who, count);
     }
 
     function _price(uint256 listingId) internal view returns (uint256 price) {
@@ -107,9 +99,10 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertTrue(q.purchasable);
         assertEq(uint8(q.reason), uint8(Lens.Reason.None));
 
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, q.total);
         vm.prank(player);
-        pool.pull{value: q.total}(2, q.fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: q.total}(player, 2, q.fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_quoteNamesTheFirstFailingGuard() public {
@@ -125,14 +118,6 @@ contract LensForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).setPaused(false, false);
 
-        vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(1);
-        pool.setGrailListing(0, 1, 1, 0.04 ether);
-        assertEq(uint8(lens.quote(1).reason), uint8(Lens.Reason.GrailProbTooHigh));
-        pool.setGrailListing(0, 0, 0, 0);
-        vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(2_000);
-
         pool.loseCash(pool.cash());
         vm.deal(address(pool), 0);
         assertEq(uint8(lens.quote(1).reason), uint8(Lens.Reason.Insolvent));
@@ -146,7 +131,7 @@ contract LensForkTest is ForkBase, PoolFixture {
     function test_quoteReportsBoardTooThin() public {
         _open(false);
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         fulfill(clone, ids[0], wordFor(clone, pool.listedIds(0)[0]));
         pool.settle(20);
         assertEq(pool.listedCount(), 9);
@@ -281,9 +266,6 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(r.listedCount, 10);
         assertEq(r.unsettled, 0);
         assertEq(r.concurrency, pool.concurrency());
-        assertTrue(r.grailWithinCap);
-        assertEq(r.totalWeight, clone.totalWeight());
-        assertEq(r.grailProbCapBps, 2_000);
 
         warpPastCooldown(clone);
         assertTrue(lens.reopenStatus().cooldownPassed);

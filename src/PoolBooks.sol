@@ -28,7 +28,7 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Books up to `maxItems` FWA acquisitions, then books the owner proceeds of requests
-    ///      opened outside `pull` once the walk has reached FWA's processing queue.
+    ///      opened directly at the FWA pool once the walk has reached FWA's processing queue.
     function _settle(uint256 maxItems) internal {
         IFWAClone fwa = fwaPool;
         uint64 end = _nextToProcess();
@@ -169,8 +169,8 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Books `actual` FWA owner proceeds above the booked receivables as `receivable` and
-    ///      `margin`, then splits the margin. The excess is the proceeds of requests opened outside
-    ///      `pull`, whose captures booked zero proceeds. Callers pass a value read while the
+    ///      `margin`, then splits the margin. The excess is the proceeds of requests opened directly
+    ///      at the FWA pool, whose captures booked zero proceeds. Callers pass a value read while the
     ///      booking walk is level with FWA's processing queue. Returns the excess.
     function _bookSurplus(uint256 actual) internal returns (uint256 surplus) {
         uint256 booked = _bookedReceivables();

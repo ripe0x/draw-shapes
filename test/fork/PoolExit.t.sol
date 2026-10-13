@@ -48,6 +48,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- helpers
 
+    /// @dev Clears the purchase operator of the FWA pool so wallets can acquire from it directly.
+    function _gateOff() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setPurchaseGate(false);
+    }
+
     function _forkParams(address oldPool_) internal returns (IPoolTypes.Params memory p) {
         p = _params();
         p.shapes = SHAPES_ADDR;
@@ -93,21 +99,13 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         (bucket, packId, backing_, notional,,,,,,,, listingId) = p_.grail(t);
     }
 
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
-        vm.deal(who, who.balance + total);
-        uint64 last = clone.lastIssuedSequence();
-        vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
-        }
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
+        return acquirePooled(address(pool), clone, who, count);
     }
 
     /// @dev Pulls one acquisition and fulfills it with the last listed ordinary item of `row`.
     function _captureRow(uint256 row) internal {
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         uint256[] memory listed = pool.listedIds(row);
         fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
         pool.settle(20);
@@ -259,10 +257,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).startExit(address(pool));
 
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total + 1 ether);
         vm.startPrank(player);
         vm.expectRevert(IPoolTypes.PoolExiting.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
         uint256[] memory none = new uint256[](0);
         vm.expectRevert(IPoolTypes.PoolExiting.selector);
         pool.pullWithShapes(none, 1, fee, block.timestamp + 1 hours);
@@ -283,7 +282,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     function test_revert_exportStepWhileAnAcquisitionIsUnsettled() public {
         _buildA();
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
         vm.prank(admin);
         IPool(address(pool)).startExit(address(pool));
@@ -349,7 +348,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     function test_exportMovesListingsMadeWhileAcquisitionsWereUnsettled() public {
         _buildA();
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         vm.prank(keeper);
         pool.rotate();
@@ -967,6 +966,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice();
         uint256 version = clone.inventoryVersion();
         vm.deal(player, total);
+        _gateOff();
         vm.prank(player);
         vm.expectRevert();
         clone.acquire{value: total}(player, fee, 0, 10_000, version, block.timestamp + 1 hours);

@@ -79,16 +79,8 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         vm.warp(block.timestamp + pool.rotateInterval());
     }
 
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
-        vm.deal(who, who.balance + total);
-        uint64 last = clone.lastIssuedSequence();
-        vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
-        }
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
+        return acquirePooled(address(pool), clone, who, count);
     }
 
     function _listingOfRow(uint256 row, uint256 nth) internal view returns (uint256) {
@@ -254,7 +246,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
     function test_rotateSettlesHarvestsRestocksListsAndRefunds() public {
         _openReady();
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         assertEq(pool.listedCount(), 10);
         pool.setMaintenance(1 ether);
@@ -314,7 +306,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
     function test_rotateAfterHarvestOnlyKeepsLastRotateAt() public {
         _openReady();
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(0, 0));
         // The Shape capture returns less than the replacement costs, and cash is empty.
         pool.loseCash(pool.cash());
@@ -489,7 +481,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
     function test_unsettledAcquisitionLocksLiquidationUntilFulfilment() public {
         _openReady();
         _drainCash(400 ether, 0.3 ether);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         uint256 queued = _exiterLeaves();
         _warpInterval();
         assertEq(clone.unsettledAcquisitionCount(), 1);

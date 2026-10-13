@@ -78,21 +78,13 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         if (block.timestamp < at) vm.warp(at);
     }
 
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
-        vm.deal(who, who.balance + total);
-        uint64 last = clone.lastIssuedSequence();
-        vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
-        }
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
+        return acquirePooled(address(pool), clone, who, count);
     }
 
     /// @dev Pulls once and fulfills the request with the last listed Shape of row 0.
     function _captureShape() internal {
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
     }
@@ -221,7 +213,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         // List the pack while an acquisition is unsettled: FWA stages the listing.
         pool.unlistGrail(0);
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         vm.prank(address(pool));
         uint256 stagedId = clone.listNFT(address(drawPacks), pack, notional);
         (, IFWAClone.ListingStatus status) = _price(stagedId);
@@ -295,7 +287,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertEq(_pulls(0), 100, "pulls keep counting");
 
         _pastCooldown();
-        _pullAs(player, 1);
+        _acquire(player, 1);
 
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);
@@ -341,7 +333,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         _captureShape();
         pool.settle(20);
         _pastCooldown();
-        _pullAs(player, 1);
+        _acquire(player, 1);
         assertEq(pool.heldCount(), 1, "the second pull mints the replacement and holds it");
         assertEq(clone.unsettledAcquisitionCount(), 1, "FWA is busy");
         uint256 listedBefore = pool.listedCount();

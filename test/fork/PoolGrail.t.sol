@@ -11,7 +11,7 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
 ///         the pool: `growGrail`, compose at native denominations, decay in `rotate`, capture and
-///         the selection probability guard.
+///         the selection probability lift.
 /// @dev Minor track: step 0.05 ETH, target 0.5 ETH, list at 80 percent, decay 0.001 ETH per pull,
 ///      floor 0.1 ETH. Its backing reaches a native denomination at 0.1 ETH and 0.5 ETH. Major
 ///      track: step 0.15 ETH, target 1 ETH, list at 90 percent, no native backing below 1.05 ETH.
@@ -112,16 +112,8 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.growGrail(uint8(t));
     }
 
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids) {
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(count);
-        vm.deal(who, who.balance + total);
-        uint64 last = clone.lastIssuedSequence();
-        vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
-        }
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
+        return acquirePooled(address(pool), clone, who, count);
     }
 
     function _assertI1() internal view {
@@ -181,7 +173,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
         _warpPastRotateGate(pool);
@@ -445,7 +437,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _openReady();
         _grow(0);
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 2);
+        uint256[] memory ids = _acquire(player, 2);
         assertEq(_pulls(0), 0, "pulls count towards decay when booked");
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
         fulfill(clone, ids[1], wordAvoiding(clone, _listing(0)));
@@ -461,7 +453,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
             _grow(0);
         }
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         pool.recordPulls(100);
         _warpToRotation();
 
@@ -513,7 +505,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         uint256 receivableBefore = pool.receivable();
         uint256 bucketBefore = _bucket(0);
 
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         fulfill(clone, ids[0], wordFor(clone, listingId));
         (,, uint256 paid,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(ids[0]);
         assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Fulfilled));
@@ -558,7 +550,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         _grow(0);
         warpPastCooldown(clone);
         uint256 oldPack = _packId(0);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         fulfill(clone, ids[0], wordFor(clone, _listing(0)));
         assertEq(_packId(0), oldPack, "the capture is not booked yet");
 
@@ -581,7 +573,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
             spent += _cost(0.05 ether);
         }
         warpPastCooldown(clone);
-        uint256[] memory ids = _pullAs(player, 1);
+        uint256[] memory ids = _acquire(player, 1);
         fulfill(clone, ids[0], wordFor(clone, _listing(0)));
         vm.recordLogs();
         pool.settle(5);
@@ -620,30 +612,68 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- selection probability
 
-    function test_revert_pullWhenAListedGrailExceedsTheProbabilityCap() public {
-        _openReady();
-        _grow(0);
-        warpPastCooldown(clone);
-        vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(1);
-        (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
-        vm.deal(player, total);
-
-        vm.prank(player);
-        vm.expectRevert(IPoolTypes.GrailProbTooHigh.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
-
-        vm.prank(admin);
-
-        IPool(address(pool)).setGrailProbCap(10_000);
-        vm.prank(player);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+    function _capExceeded() internal view returns (bool) {
+        (uint256 price,) = _price(_listing(0));
+        return (1e36 / price) * 10_000 > clone.totalWeight() * pool.grailProbCapBps();
     }
 
-    function test_unlistedGrailAddsNoSelectionWeight() public {
+    function test_rotateLiftsAGrailPriceWhoseWeightExceedsTheProbabilityCap() public {
         _openReady();
+        pool.loseGrailBucket(1, _bucket(1));
+        vm.startPrank(admin);
+        IPool(address(pool)).setConcurrency(0);
+        IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.01 ether);
+        vm.stopPrank();
+        _grow(0);
+        pool.loseGrailBucket(0, _bucket(0));
+        uint256 listingId = _listing(0);
+        uint256 ceiling = _backing(0) * 8_000 / 10_000;
+        assertEq(_notional(0), ceiling);
+
+        // Ten pulls decay the 0.04 ETH list price to 0.03 ETH, which the cap allows on the full board.
+        pool.recordPulls(10);
+        _warpToRotation();
+        vm.prank(keeper);
+        pool.rotate();
+        assertEq(_notional(0), 0.03 ether);
+        assertFalse(_capExceeded());
+
+        // A cap between the GRAIL weight share at 0.03 ETH and at the ceiling puts the track above the
+        // cap now and within it once lifted.
+        uint256 rest = clone.totalWeight() - 1e36 / _notional(0);
+        uint256 shareAtCeiling = (1e36 / ceiling) * 10_000 / (rest + 1e36 / ceiling);
+        assertLt(shareAtCeiling + 1, (1e36 / _notional(0)) * 10_000 / (rest + 1e36 / _notional(0)));
         vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(1);
-        _pullAs(player, 1);
+        IPool(address(pool)).setGrailProbCap(shareAtCeiling + 1);
+        assertTrue(_capExceeded(), "the GRAIL weight is above the cap");
+
+        // Acquisitions open above the cap. The request expires so the board keeps its weight.
+        warpPastCooldown(clone);
+        uint256[] memory ids = _acquire(player, 1);
+        expire(clone, ids[0]);
+        pool.settle(5);
+        assertEq(clone.unsettledAcquisitionCount(), 0);
+        assertTrue(_capExceeded());
+
+        _warpToRotation();
+        vm.recordLogs();
+        vm.prank(keeper);
+        pool.rotate();
+        (uint256 listed,) = _countTrack(vm.getRecordedLogs(), IPoolTypes.GrailListed.selector, 0);
+        assertEq(listed, 1);
+
+        (uint256 price,) = _price(listingId);
+        assertEq(_listing(0), listingId, "repriced in place");
+        assertEq(_notional(0), price);
+        assertGt(price, 0.03 ether, "lifted");
+        assertLe(price, ceiling);
+        assertFalse(_capExceeded(), "the cap holds at the lifted price");
+        assertEq(_pulls(0), 0, "the lift restarts the count");
+
+        // One wei lower would exceed the cap.
+        uint256 lowerWeight = 1e36 / (price - 1);
+        uint256 total = clone.totalWeight() - 1e36 / price + lowerWeight;
+        assertGt(lowerWeight * 10_000, total * pool.grailProbCapBps(), "the lifted price is the smallest admissible");
+        _assertI1();
     }
 }

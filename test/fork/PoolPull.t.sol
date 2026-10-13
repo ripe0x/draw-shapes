@@ -8,12 +8,15 @@ import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
-import {IPoolTypes} from "../../src/interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @dev Contract purchaser without `onERC721Received`.
 contract NoReceiver {
-    function pull(Pool pool, uint256 count, uint256 maxFee, uint256 deadline) external payable {
-        pool.pull{value: msg.value}(count, maxFee, deadline);
+    function acquire(Pool pool, uint256 maxFee, uint256 slippageBps, uint256 version, uint256 deadline)
+        external
+        payable
+    {
+        pool.acquireBatch{value: msg.value}(address(this), 1, maxFee, 0, slippageBps, version, deadline);
     }
 }
 
@@ -113,6 +116,12 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- helpers
 
+    /// @dev Clears the purchase operator of the FWA pool so wallets can acquire from it directly.
+    function _gateOff() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setPurchaseGate(false);
+    }
+
     function _open(uint256 depositWei) internal {
         vm.prank(alice);
         pool.deposit{value: depositWei}();
@@ -149,14 +158,15 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     /// @dev Pulls `count` through the pool as `who`. Returns the request ids, the per-request fee
     ///      and the base price computed from FWA reads before the call.
-    function _pullAs(address who, uint256 count) internal returns (uint256[] memory ids, uint256 fee, uint256 base) {
+    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids, uint256 fee, uint256 base) {
         uint256 total;
         (fee,, total) = clone.quoteAcquisitionPrice(count);
         base = _expectedBase(fee);
         vm.deal(who, who.balance + total);
         uint64 last = clone.lastIssuedSequence();
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.prank(who);
-        pool.pull{value: total}(count, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(who, count, fee, 0, slip, version, block.timestamp + 1 hours);
         ids = new uint256[](count);
         for (uint256 i; i < count; ++i) {
             ids[i] = clone.requestIdAtSequence(last + 1 + uint64(i));
@@ -247,7 +257,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 cashBefore = pool.cash();
 
         vm.recordLogs();
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 1);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
         for (uint256 i; i < logs.length; ++i) {
@@ -302,7 +312,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 listingId = _listingOfRow(1, 0);
         IPoolTypes.Item memory it = pool.listedItem(listingId);
 
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 1);
         _capture(ids[0], listingId);
         uint256 proceeds = _proceeds(fee, base);
         assertGt(proceeds, it.value, "row 1 capture is a gain");
@@ -333,7 +343,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256[3] memory listingIds = [_listingOfRow(0, 0), _listingOfRow(1, 0), _listingOfRow(1, 1)];
         uint256[3] memory rowOf = [uint256(0), 1, 1];
 
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 3);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 3);
         assertEq(ids.length, 3);
         for (uint256 i; i < 3; ++i) {
             (uint256 recordedBase, bool recorded) = pool.baseOf(ids[i]);
@@ -366,7 +376,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_settleBudgetBoundsTheWalk() public {
         _openLarge();
-        (uint256[] memory ids,,) = _pullAs(player, 3);
+        (uint256[] memory ids,,) = _acquire(player, 3);
         _capture(ids[0], _listingOfRow(1, 0));
         _capture(ids[1], _listingOfRow(1, 1));
         _capture(ids[2], _listingOfRow(1, 2));
@@ -383,7 +393,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openLarge();
         uint256[3] memory listingIds = [_listingOfRow(1, 0), _listingOfRow(0, 0), _listingOfRow(1, 1)];
         uint256[3] memory rowOf = [uint256(1), 0, 1];
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 3);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 3);
         Book memory b;
         for (uint256 i; i < 3; ++i) {
             _apply(b, _proceeds(fee, base), pool.listedItem(listingIds[i]).value, rowOf[i]);
@@ -420,7 +430,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_harvestWaitsForTheBookingWalk() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         assertGt(clone.ownerProceeds(), 0);
 
@@ -439,7 +449,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         returns (uint256 owed, uint256 expected)
     {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
         owed = clone.ownerProceeds();
@@ -478,7 +488,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_harvestShortfallSpillsIntoMaintenanceReceivable() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
         uint256 ordinary = pool.receivable();
@@ -497,7 +507,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_harvestShortfallSpillsIntoGrailReceivables() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
         uint256 ordinary = pool.receivable();
@@ -572,14 +582,14 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         uint256 listingId = _listingOfRow(0, 0);
         IPoolTypes.Item memory it = pool.listedItem(listingId);
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 1);
         _capture(ids[0], listingId);
         assertEq(pool.nextSequenceToBook(), 1, "pool has not booked yet");
 
         uint256 cashBefore = pool.cash();
         vm.expectEmit(true, true, false, true, address(pool));
         emit IPoolTypes.Captured(ids[0], listingId, 0, it.value, _proceeds(fee, base));
-        _pullAs(player, 1);
+        _acquire(player, 1);
 
         assertEq(pool.nextSequenceToBook(), 2, "slice booked the capture");
         assertEq(pool.replacementLength(), 0, "slice consumed the replacement");
@@ -596,21 +606,21 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_upkeepSliceSkipsReplacementWhenCashIsShort() public {
         _openLarge();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(0, 0));
         pool.settle(5);
         assertEq(pool.replacementLength(), 1);
 
         // The slice harvests the capture's proceeds (about 0.05 ETH) before it prices the mint.
         pool.spendOnBacking(pool.cash() - 0.01 ether);
-        _pullAs(player, 1);
+        _acquire(player, 1);
         assertEq(pool.replacementLength(), 1);
         assertEq(pool.heldCount(), 0);
     }
 
     function test_listingWhileUnsettledStagesAndStartsTheCooldown() public {
         _openReady();
-        _pullAs(player, 1);
+        _acquire(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
         uint256 tokenId = mintShapes(address(pool), 0.1 ether, 1);
@@ -633,6 +643,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         IPoolTypes.Item memory it = pool.listedItem(listingId);
         uint256 navBefore = pool.nav();
 
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         (, bool recorded) = pool.baseOf(requestId);
         assertFalse(recorded);
@@ -673,6 +684,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.rowCount(0), 7);
         assertEq(pool.rowCount(1), 3);
 
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, _listingOfRow(0, 0));
         assertEq(pool.trailingPulls(), 10, "counted when the capture is booked");
@@ -695,6 +707,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pullsBefore, 0);
         assertTrue(grailListing != 0);
 
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, _listingOfRow(0, 0));
         pool.settle(5);
@@ -705,7 +718,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_poolPullIsCountedOnceWhenBooked() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         assertEq(pool.trailingPulls(), 0, "not counted at request time");
         _capture(ids[0], _listingOfRow(0, 0));
         pool.settle(5);
@@ -719,6 +732,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 listingId = _listingOfRow(1, 0);
         uint256 value = pool.listedItem(listingId).value;
         (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, listingId);
         uint256 owed = clone.ownerProceeds();
@@ -745,8 +759,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_settleBooksNoSurplusWhileTheWalkIsBehind() public {
         _openLarge();
-        (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+        (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, _listingOfRow(1, 1));
         uint256 owed = clone.ownerProceeds();
@@ -874,14 +889,16 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_revert_purchasesCoolingDownRightAfterOpen() public {
         _open(100 ether);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(IPoolTypes.PurchasesCoolingDown.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
 
         warpPastCooldown(clone);
+        (slip, version) = poolArgs(clone);
         vm.prank(player);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_revert_boardTooThin() public {
@@ -892,35 +909,38 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertGt(pool.listedCount(), 0, "board is built");
         assertLt(pool.listedCount(), concurrency, "board is below concurrency");
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(IPoolTypes.BoardTooThin.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_boardTooThinCountsUnsettledAcquisitions() public {
         _openReady();
         assertEq(pool.listedCount(), pool.concurrency());
-        _pullAs(player, 1);
+        _acquire(player, 1);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(IPoolTypes.BoardTooThin.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_boardStaysThinUntilReplacementIsListed() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
         assertEq(pool.listedCount(), pool.concurrency() - 1);
 
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(IPoolTypes.BoardTooThin.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     /// @dev On the 10 item board the first capture of a batch moves FWA's fee past the slippage
@@ -928,7 +948,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_slippageRefundedRequestsBookNothing() public {
         _openReady();
         uint256[3] memory listingIds = [_listingOfRow(1, 0), _listingOfRow(0, 0), _listingOfRow(1, 1)];
-        (uint256[] memory ids, uint256 fee,) = _pullAs(player, 3);
+        (uint256[] memory ids, uint256 fee,) = _acquire(player, 3);
         uint256 captures;
         for (uint256 i; i < 3; ++i) {
             fulfill(clone, ids[i], wordFor(clone, listingIds[i]));
@@ -948,74 +968,79 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_revert_feeAboveMax() public {
         _openReady();
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(abi.encodeWithSelector(IPoolTypes.FeeAboveMax.selector, fee, fee - 1));
-        pool.pull{value: total}(1, fee - 1, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee - 1, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_revert_insufficientValue() public {
         _openReady();
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.prank(player);
         vm.expectRevert(abi.encodeWithSelector(IPoolTypes.InsufficientValue.selector, total - 1, total));
-        pool.pull{value: total - 1}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total - 1}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_pullRefundsOverpayment() public {
         _openReady();
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total + 1 ether);
         vm.prank(player);
-        pool.pull{value: total + 1 ether}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total + 1 ether}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
         assertEq(player.balance, 1 ether);
     }
 
     function test_revert_countOutOfRange() public {
         _openReady();
         (uint256 fee,,) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.InvalidCount.selector);
-        pool.pull(0, fee, block.timestamp + 1 hours);
+        pool.acquireBatch(address(this), 0, fee, 0, slip, version, block.timestamp + 1 hours);
         uint256 over = pool.maxBatch() + 1;
+        (slip, version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.InvalidCount.selector);
-        pool.pull(over, fee, block.timestamp + 1 hours);
+        pool.acquireBatch(address(this), over, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_revert_pullBeforeOpenAndWhenPaused() public {
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.NotLive.selector);
-        pool.pull(1, 1 ether, block.timestamp + 1 hours);
+        pool.acquireBatch(address(this), 1, 1 ether, 0, slip, version, block.timestamp + 1 hours);
 
         _openReady();
         pool.setPullsPaused(true);
+        (slip, version) = poolArgs(clone);
         vm.expectRevert(IPoolTypes.PullsPaused.selector);
-        pool.pull(1, 1 ether, block.timestamp + 1 hours);
+        pool.acquireBatch(address(this), 1, 1 ether, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_revert_insolvent() public {
         _openReady();
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
         vm.deal(address(pool), pool.cash() - 1);
         vm.prank(player);
         vm.expectRevert(IPoolTypes.Insolvent.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
-    function test_grailProbabilityGuard() public {
+    function test_listedGrailWeightAboveTheCapDoesNotBlockAcquisitions() public {
         _openReady();
+        (uint256 slip, uint256 version) = poolArgs(clone);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
-        vm.deal(player, 2 * total);
+        vm.deal(player, total);
 
         // Weight of a 0.01 ETH list price is about half of the board weight, above the 20% cap.
         pool.setGrailListing(0, 1, 11, 0.01 ether);
         vm.prank(player);
-        vm.expectRevert(IPoolTypes.GrailProbTooHigh.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
-
-        pool.setGrailListing(0, 1, 11, 100 ether);
-        vm.prank(player);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
     }
 
     function test_revert_settleWithoutFwaPool() public {
@@ -1041,7 +1066,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 listingId = _listingOfRow(0, 0);
         IPoolTypes.Item memory it = pool.listedItem(listingId);
         uint64 last = clone.lastIssuedSequence();
-        noReceiver.pull{value: total}(Pool(payable(address(pool))), 1, fee, block.timestamp + 1 hours);
+        (uint256 slip, uint256 version) = poolArgs(clone);
+        noReceiver.acquire{value: total}(Pool(payable(address(pool))), fee, slip, version, block.timestamp + 1 hours);
         uint256 requestId = clone.requestIdAtSequence(last + 1);
 
         _capture(requestId, listingId);
@@ -1054,6 +1080,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     ///      Delivery reverts in `Shapes._update` (self custody), so the acquisition stays
     ///      DeliveryPending.
     function _grief(uint256 listingId) internal returns (uint256 requestId) {
+        _gateOff();
         requestId = acquireAs(SHAPES_ADDR, SHAPES_ADDR, clone, block.timestamp + 1 hours);
         fulfill(clone, requestId, wordFor(clone, listingId));
         (,,,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(requestId);
@@ -1102,7 +1129,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         bool repaid;
         for (uint256 i; i < 18 && !repaid; ++i) {
             uint256 listing = _listingOfRow(1, 0);
-            (uint256[] memory ids, uint256 fee, uint256 base) = _pullAs(player, 1);
+            (uint256[] memory ids, uint256 fee, uint256 base) = _acquire(player, 1);
             b.receivable = 0; // the pull's slice harvested the receivable booked by the earlier settle
             _capture(ids[0], listing);
             _apply(b, _proceeds(fee, base), pool.listedItem(listing).value, 1);
@@ -1137,7 +1164,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 backingBefore = pool.backing();
         uint256 listedBefore = pool.listedCount();
 
-        (uint256[] memory ids,,) = _pullAs(SHAPES_ADDR, 1);
+        (uint256[] memory ids,,) = _acquire(SHAPES_ADDR, 1);
         fulfill(clone, ids[0], wordFor(clone, listingId));
         (, uint64 deadline) = clone.pendingDeliveries(listingId);
         vm.warp(deadline);
@@ -1166,7 +1193,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_expiredAcquisitionBooksNothing() public {
         _openReady();
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         uint256 backingBefore = pool.backing();
         expire(clone, ids[0]);
 
@@ -1193,7 +1220,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     ///      has not booked the capture afterwards.
     function _captureUnbooked(uint256 listingId) internal returns (uint256 fee, uint256 base) {
         uint256[] memory ids;
-        (ids, fee, base) = _pullAs(player, 1);
+        (ids, fee, base) = _acquire(player, 1);
         _capture(ids[0], listingId);
         clone.processAcquisitions(1);
         assertEq(pool.nextSequenceToBook(), 1, "pool has not booked");
@@ -1304,6 +1331,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_directPurchaseSurplusIsPricedByTheNextDeposit() public {
         _openReady();
         uint256 listingId = _listingOfRow(0, 0);
+        _gateOff();
         uint256 requestId = acquireAs(alice, saver, clone, block.timestamp + 1 hours);
         _capture(requestId, listingId);
         pool.settle(5);
@@ -1335,7 +1363,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertGt(queued, 0, "withdraw enqueued");
         assertEq(pool.cash(), 0);
 
-        (uint256[] memory ids,,) = _pullAs(player, 1);
+        (uint256[] memory ids,,) = _acquire(player, 1);
         _capture(ids[0], _listingOfRow(1, 0));
         pool.settle(5);
         uint256 harvested = pool.receivable();
@@ -1344,7 +1372,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(pool.replacementLength(), 1);
 
         uint256 balance = saver.balance;
-        _pullAs(player, 1);
+        _acquire(player, 1);
 
         assertEq(saver.balance - balance, harvested, "claim took the harvested cash");
         assertEq(pool.claims(), queued - harvested);

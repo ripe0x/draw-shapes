@@ -48,6 +48,11 @@ value back from the pool.
 The pool is Opening and takes deposits at once. The admin then:
 
 1. Calls `createFwaPool(expectedFee)`. The factory must allow the admin to create a pool, and the
-   pool must hold the fee in the FWA token. The opening deadline starts here.
-2. Waits for `openingDeadlineAt`.
-3. Calls `open()` until `lifecycle()` returns Live. Each call runs one restock.
+   pool must hold the fee in the FWA token. The opening deadline starts here. The call sets the
+   pool as the FWA `purchaseOperator`, so FWA accepts purchases made through the pool's `acquire`
+   and `acquireBatch` only.
+2. Calls `setPurchaseGate(false)` while the FWA site buys directly at the FWA pool. This sets the
+   `purchaseOperator` to zero. `setPurchaseGate(true)` sets it back to the pool once the site
+   routes purchases through the pool. `purchaseOperator()` on the FWA pool shows the state.
+3. Waits for `openingDeadlineAt`.
+4. Calls `open()` until `lifecycle()` returns Live. Each call runs one restock.

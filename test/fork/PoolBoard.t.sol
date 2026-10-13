@@ -9,7 +9,7 @@ import {PricingLib} from "../../src/lib/PricingLib.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
-import {IPoolTypes} from "../../src/interfaces/IPool.sol";
+import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
 /// @notice Board build against deployed Shapes, deployed Shape Packs and a FWA clone created by
 ///         the pool through the deployed factory.
@@ -42,6 +42,12 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
+    }
+
+    /// @dev Clears the purchase operator of the FWA pool so wallets can acquire from it directly.
+    function _gateOff() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setPurchaseGate(false);
     }
 
     function _create(IPoolTypes.Params memory p) internal {
@@ -107,7 +113,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(pool.openingDeadline(), 24 hours);
         assertTrue(shapes.isApprovedForAll(address(pool), address(clone)));
         assertTrue(IERC721(address(drawPacks)).isApprovedForAll(address(pool), address(clone)));
-        assertEq(clone.purchaseOperator(), address(0));
+        assertEq(clone.purchaseOperator(), address(pool));
     }
 
     function test_createFwaPoolEmitsEvent() public {
@@ -390,6 +396,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         warpPastCooldown(clone);
 
         uint256 listingId = 1;
+        _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         fulfill(clone, requestId, wordFor(clone, listingId));
 

@@ -357,10 +357,11 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).setMaxBatch(1);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(2);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(alice, total);
         vm.prank(alice);
         vm.expectRevert(IPoolTypes.InvalidCount.selector);
-        pool.pull{value: total}(2, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(alice, 2, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_setConcurrencyBounds() public {
@@ -381,21 +382,24 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         vm.deal(alice, 3 * total);
         uint64 last = clone.lastIssuedSequence();
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.prank(alice);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(alice, 1, fee, 0, slip, version, block.timestamp + 1 hours);
         uint256 requestId = clone.requestIdAtSequence(last + 1);
         fulfill(clone, requestId, wordFor(clone, pool.listedIds(0)[0]));
         pool.settle(20);
         assertEq(pool.listedCount(), 9);
 
+        (slip, version) = poolArgs(clone);
         vm.prank(alice);
         vm.expectRevert(IPoolTypes.BoardTooThin.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(alice, 1, fee, 0, slip, version, block.timestamp + 1 hours);
 
         vm.prank(admin);
         IPool(address(pool)).setConcurrency(9);
+        (slip, version) = poolArgs(clone);
         vm.prank(alice);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(alice, 1, fee, 0, slip, version, block.timestamp + 1 hours);
     }
 
     function test_setRotateIntervalBounds() public {
@@ -449,10 +453,11 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         assertTrue(pool.depositsPaused());
 
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
+        (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(alice, total + 1 ether);
         vm.startPrank(alice);
         vm.expectRevert(IPoolTypes.PullsPaused.selector);
-        pool.pull{value: total}(1, fee, block.timestamp + 1 hours);
+        pool.acquireBatch{value: total}(alice, 1, fee, 0, slip, version, block.timestamp + 1 hours);
         vm.expectRevert(IPoolTypes.DepositsPaused.selector);
         pool.deposit{value: 1 ether}();
         vm.stopPrank();

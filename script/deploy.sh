@@ -219,7 +219,7 @@ LIFECYCLES=(Opening Live Exiting Exported)
 echo "record: $RECORD"
 echo "readback: lifecycle=${LIFECYCLES[$(cast call --rpc-url "$RPC_URL" "$POOL" 'lifecycle()(uint8)')]} admin=$(cast call --rpc-url "$RPC_URL" "$POOL" 'admin()(address)') fwaPool=$(cast call --rpc-url "$RPC_URL" "$POOL" 'fwaPool()(address)') nav=$(cast call --rpc-url "$RPC_URL" "$POOL" 'nav()(uint256)')"
 if [[ -n "$FWA_POOL" ]]; then
-  echo "readback: fwaPool owner=$(cast call --rpc-url "$RPC_URL" "$FWA_POOL" 'owner()(address)')"
+  echo "readback: fwaPool owner=$(cast call --rpc-url "$RPC_URL" "$FWA_POOL" 'owner()(address)') purchaseOperator=$(cast call --rpc-url "$RPC_URL" "$FWA_POOL" 'purchaseOperator()(address)')"
 fi
 echo "pool: https://evm.now/address/${POOL}?chainId=${CHAIN_ID}"
 [[ -z "$LENS" ]] || echo "lens: https://evm.now/address/${LENS}?chainId=${CHAIN_ID}"

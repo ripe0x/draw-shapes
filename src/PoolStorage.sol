@@ -84,8 +84,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     PullSlot[PULL_SLOTS] internal _pullSlots;
 
-    /// @dev `base + 1` of each pull request id, where `base` is the FWA base price at request time.
-    ///      Zero marks a request opened outside `pull`.
+    /// @dev `base + 1` of each request id opened by `acquire` or `acquireBatch`, where `base` is the
+    ///      FWA base price at request time. Zero marks a request opened directly at the FWA pool.
     mapping(uint256 requestId => uint256) internal _basePlusOne;
     /// @notice First FWA acquisition sequence the pool has not yet booked.
     uint64 public nextSequenceToBook;

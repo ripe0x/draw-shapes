@@ -115,6 +115,14 @@ contract PoolAdmin is PoolBooks {
         depositsPaused = deposits;
     }
 
+    /// @notice Sets the purchase operator of the FWA pool to this pool (`on`) or to zero. While it
+    ///         is this pool, FWA accepts purchases made through `acquire` and `acquireBatch` only.
+    function setPurchaseGate(bool on) external onlyDelegated {
+        _admin();
+        if (address(fwaPool) == address(0)) revert FwaPoolMissing();
+        _call(address(fwaPool), IFWAClone.setPurchaseOperator.selector, on ? uint160(address(this)) : 0, 0);
+    }
+
     function setAdmin(address newAdmin) external onlyDelegated {
         _admin();
         if (newAdmin == address(0)) revert ZeroAddress();

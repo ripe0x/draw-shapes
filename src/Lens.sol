@@ -18,7 +18,7 @@ contract Lens {
     uint256 internal constant MINOR = 0;
     uint256 internal constant MAJOR = 1;
 
-    /// @dev First failing pull guard, in the order `Pool.pull` applies them.
+    /// @dev First failing pull guard, in the order `Pool.acquireBatch` applies them.
     enum Reason {
         None,
         NotLive,
@@ -27,8 +27,7 @@ contract Lens {
         InvalidCount,
         CoolingDown,
         Insolvent,
-        BoardTooThin,
-        GrailProbTooHigh
+        BoardTooThin
     }
 
     struct Quote {
@@ -98,10 +97,6 @@ contract Lens {
         uint256 listedCount;
         uint256 unsettled;
         uint256 concurrency;
-        bool grailWithinCap;
-        uint256 grailWeight;
-        uint256 totalWeight;
-        uint256 grailProbCapBps;
     }
 
     struct Parameters {
@@ -137,7 +132,7 @@ contract Lens {
 
     // ------------------------------------------------------------------ quote
 
-    /// @notice FWA price of `count` acquisitions and whether `Pool.pull` would accept them now.
+    /// @notice FWA price of `count` acquisitions and whether `Pool.acquireBatch` would accept them now.
     ///         `reason` names the first failing guard. The price is zero before the FWA pool exists.
     function quote(uint256 count) external view returns (Quote memory q) {
         IFWAClone fwa = pool.fwaPool();
@@ -160,7 +155,6 @@ contract Lens {
         if (!r.cooldownPassed) return Reason.CoolingDown;
         if (!r.solvent) return Reason.Insolvent;
         if (!r.boardDeep) return Reason.BoardTooThin;
-        if (!r.grailWithinCap) return Reason.GrailProbTooHigh;
         return Reason.None;
     }
 
@@ -283,7 +277,7 @@ contract Lens {
 
     // ------------------------------------------------------------------ reopen guards
 
-    /// @notice Each guard `Pool.pull` applies, with the values it compares.
+    /// @notice Each guard `Pool.acquireBatch` applies, with the values it compares.
     function reopenStatus() external view returns (Reopen memory) {
         return _reopen();
     }
@@ -293,14 +287,12 @@ contract Lens {
         r.pullsOpen = !pool.pullsPaused();
         r.listedCount = pool.listedCount();
         r.concurrency = pool.concurrency();
-        r.grailProbCapBps = pool.grailProbCapBps();
         r.balance = address(pool).balance;
         r.required = pool.cash() + pool.maintenance();
         IFWAClone fwa = pool.fwaPool();
         for (uint256 t; t <= MAJOR; ++t) {
-            (uint256 bucket,,, uint256 notional,,,,,,,, uint256 listingId) = pool.grail(t);
+            (uint256 bucket,,,,,,,,,,,) = pool.grail(t);
             r.required += bucket;
-            if (listingId != 0) r.grailWeight += PricingLib.weightOf(notional);
         }
         r.solvent = r.balance >= r.required;
         if (address(fwa) == address(0)) return r;
@@ -308,8 +300,6 @@ contract Lens {
         r.cooldownPassed = block.timestamp >= r.purchasesResumeAt;
         r.unsettled = fwa.unsettledAcquisitionCount();
         r.boardDeep = r.listedCount >= r.unsettled + r.concurrency;
-        r.totalWeight = fwa.totalWeight();
-        r.grailWithinCap = r.grailWeight * BPS <= r.totalWeight * r.grailProbCapBps;
     }
 
     // ------------------------------------------------------------------ parameters

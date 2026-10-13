@@ -7,6 +7,7 @@ import {ShapePacks} from "draw-packs/ShapePacks.sol";
 import {ShapePackRenderer} from "draw-packs/ShapePackRenderer.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {IFWACloneFactory} from "../../src/interfaces/IFWACloneFactory.sol";
+import {IPool} from "../../src/interfaces/IPool.sol";
 
 /// @dev The VRF consumer callback. The FWA VRF service is the registered Chainlink consumer and
 ///      forwards each word to the pool that paid for it.
@@ -95,6 +96,32 @@ abstract contract ForkBase is Test {
         vm.deal(caller, caller.balance + total);
         vm.prank(caller);
         requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, version, deadline);
+    }
+
+    /// @dev `maxNegativeSlippageBps` and `expectedInventoryVersion` that `pullWithShapes` passes to the
+    ///      FWA pool: its own `selectionSlippageBps` and the live `inventoryVersion`. Read before a
+    ///      `vm.prank` or `vm.expectRevert`, which apply to the next call.
+    function poolArgs(IFWAClone fwa) internal view returns (uint256 slippageBps, uint256 version) {
+        return (fwa.selectionSlippageBps(), fwa.inventoryVersion());
+    }
+
+    /// @dev `acquireBatch` of `count` through `pool_` as `who`, paying exactly the quoted total with
+    ///      `maxAcquisitionFee` equal to the quoted fee and the pool-chosen arguments of `poolArgs`.
+    ///      Returns the request ids.
+    function acquirePooled(address pool_, IFWAClone fwa, address who, uint256 count)
+        internal
+        returns (uint256[] memory ids)
+    {
+        (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
+        (uint256 slip, uint256 version) = poolArgs(fwa);
+        vm.deal(who, who.balance + total);
+        uint64 last = fwa.lastIssuedSequence();
+        vm.prank(who);
+        IPool(pool_).acquireBatch{value: total}(who, count, fee, 0, slip, version, block.timestamp + 1 hours);
+        ids = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            ids[i] = fwa.requestIdAtSequence(last + 1 + uint64(i));
+        }
     }
 
     /// @dev Delivers `word` the way a live fulfillment arrives: the coordinator calls the FWA VRF

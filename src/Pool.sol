@@ -52,6 +52,10 @@ contract Pool is PoolBooks {
     /// @dev Intrinsic transaction gas plus the refund transfer, added to the measured gas.
     uint256 internal constant ROTATE_GAS_OVERHEAD = 30_000;
 
+    /// @dev Transient storage slot that holds the purchaser while `_acquire` is inside its call to
+    ///      the FWA pool. Zero outside that call.
+    uint256 private constant PURCHASER_SLOT = uint256(keccak256("draw-shapes.Pool.purchaser"));
+
     /// @notice `PoolAdmin` instance that `fallback` delegates to.
     address public immutable adminModule;
 
@@ -120,8 +124,8 @@ contract Pool is PoolBooks {
 
     // ------------------------------------------------------------------ paths
 
-    /// @notice Creates the FWA pool through the factory and approves it for both collections.
-    ///         Starts the opening deadline. The factory pulls `expectedFee` of its FWA token from
+    /// @notice Creates the FWA pool through the factory, approves it for both collections and sets
+    ///         this contract as its purchase operator. Starts the opening deadline. The factory pulls `expectedFee` of its FWA token from
     ///         this contract, so the pool must hold that balance first.
     function createFwaPool(uint256 expectedFee) external onlyAdmin nonReentrant {
         if (lifecycle != Lifecycle.Opening) revert NotOpening();
@@ -142,6 +146,7 @@ contract Pool is PoolBooks {
         openingDeadlineAt = block.timestamp + openingDeadline;
         _call(shapes, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
         _call(drawPacks, IERC721.setApprovalForAll.selector, uint160(address(clone)), 1);
+        _call(address(clone), IFWAClone.setPurchaseOperator.selector, uint160(address(this)), 0);
         emit FwaPoolCreated(address(clone));
     }
 
@@ -254,22 +259,94 @@ contract Pool is PoolBooks {
         lastRotateAt = block.timestamp;
     }
 
-    /// @notice Buys `count` FWA acquisitions for `msg.sender` at the quoted fee. Overpayment is
-    ///         refunded. Settles up to `SETTLE_BUDGET` FWA acquisitions, harvests, pays queued
-    ///         claims and mints one queued replacement from `cash`.
-    function pull(uint256 count, uint256 maxFee, uint256 deadline) external payable nonReentrant {
-        _pull(msg.sender, count, maxFee, deadline, msg.value);
+    /// @notice FWA `acquire` through the pool: opens one acquisition for `purchaser`, which must be
+    ///         `msg.sender`. Equal to `acquireBatch` with `count` 1. Returns the request id.
+    function acquire(
+        address purchaser,
+        uint256 maxAcquisitionFee,
+        uint256 minWeightedValue,
+        uint256 maxNegativeSlippageBps,
+        uint256 expectedInventoryVersion,
+        uint256 deadline
+    ) external payable nonReentrant returns (uint256 requestId) {
+        if (purchaser != msg.sender) revert PurchaserMismatch();
+        requestId = _acquire(
+            purchaser,
+            1,
+            maxAcquisitionFee,
+            minWeightedValue,
+            maxNegativeSlippageBps,
+            expectedInventoryVersion,
+            deadline,
+            msg.value
+        )[0];
+    }
+
+    /// @notice FWA `acquireBatch` through the pool: opens `count` acquisitions for `purchaser`, which
+    ///         must be `msg.sender`. The slippage, minimum weighted value, inventory version and
+    ///         deadline arguments go to the FWA pool as given. Overpayment is refunded to the
+    ///         caller. Settles up to `SETTLE_BUDGET` FWA acquisitions, harvests, pays queued claims
+    ///         and mints one queued replacement from `cash`. Returns the request ids.
+    function acquireBatch(
+        address purchaser,
+        uint256 count,
+        uint256 maxAcquisitionFee,
+        uint256 minWeightedValue,
+        uint256 maxNegativeSlippageBps,
+        uint256 expectedInventoryVersion,
+        uint256 deadline
+    ) external payable nonReentrant returns (uint256[] memory requestIds) {
+        if (purchaser != msg.sender) revert PurchaserMismatch();
+        requestIds = _acquire(
+            purchaser,
+            count,
+            maxAcquisitionFee,
+            minWeightedValue,
+            maxNegativeSlippageBps,
+            expectedInventoryVersion,
+            deadline,
+            msg.value
+        );
     }
 
     /// @notice Redeems the caller's Shapes `tokenIds` and applies the proceeds and `msg.value` to
-    ///         `pull`. The caller must have approved this contract for each token.
+    ///         an `acquireBatch` of `count` with `minWeightedValue` 0 and the FWA pool's own
+    ///         `selectionSlippageBps` and `inventoryVersion`. The caller must have approved this
+    ///         contract for each token.
     function pullWithShapes(uint256[] calldata tokenIds, uint256 count, uint256 maxFee, uint256 deadline)
         external
         payable
         nonReentrant
     {
         _requireLive();
-        _pull(msg.sender, count, maxFee, deadline, msg.value + _redeemShapes(tokenIds));
+        uint256 value = msg.value + _redeemShapes(tokenIds);
+        address fwa = address(fwaPool);
+        _acquire(
+            msg.sender,
+            count,
+            maxFee,
+            0,
+            _read(fwa, IFWAClone.selectionSlippageBps.selector, 0),
+            _read(fwa, IFWAClone.inventoryVersion.selector, 0),
+            deadline,
+            value
+        );
+    }
+
+    /// @notice FWA price of `count` acquisitions: fee and VRF fee per acquisition and the total.
+    function quoteAcquisitionPrice(uint256 count) external view returns (uint256 fee, uint256 vrf, uint256 total) {
+        return fwaPool.quoteAcquisitionPrice(count);
+    }
+
+    /// @notice FWA purchase operator hook. True while this pool is inside its call to the FWA pool
+    ///         and `wallet` is the purchaser of that call.
+    function canPurchase(address wallet) external view returns (bool) {
+        uint256 slot = PURCHASER_SLOT;
+        uint256 purchaser;
+        assembly ("memory-safe") {
+            purchaser := tload(slot)
+        }
+        return purchaser != 0 && purchaser == uint160(wallet);
     }
 
     /// @notice Redeems the caller's Shape `tokenId` and deposits the proceeds. The caller must have
@@ -496,9 +573,21 @@ contract Pool is PoolBooks {
         }
     }
 
-    /// @dev Buys `count` acquisitions for `purchaser` with `value` wei available. `value` is
-    ///      already in the pool balance and outside every bucket.
-    function _pull(address purchaser, uint256 count, uint256 maxFee, uint256 deadline, uint256 value) internal {
+    /// @dev Opens `count` FWA acquisitions for `purchaser` with `value` wei available. `value` is
+    ///      already in the pool balance and outside every bucket. The slippage, minimum weighted
+    ///      value, inventory version and deadline arguments go to the FWA pool unchanged. The
+    ///      purchaser is held in transient storage during the FWA call, which is when `canPurchase`
+    ///      answers true for it.
+    function _acquire(
+        address purchaser,
+        uint256 count,
+        uint256 maxFee,
+        uint256 minWeightedValue,
+        uint256 maxNegativeSlippageBps,
+        uint256 expectedInventoryVersion,
+        uint256 deadline,
+        uint256 value
+    ) internal returns (uint256[] memory ids) {
         _requireLive();
         if (pullsPaused) revert PullsPaused();
         if (count == 0 || count > maxBatch) revert InvalidCount();
@@ -509,15 +598,16 @@ contract Pool is PoolBooks {
         if (fee > maxFee) revert FeeAboveMax(fee, maxFee);
         if (value < total) revert InsufficientValue(value, total);
 
-        uint256[] memory ids = fwa.acquireBatch{value: total}(
-            purchaser,
-            count,
-            maxFee,
-            0,
-            _read(address(fwa), IFWAClone.selectionSlippageBps.selector, 0),
-            _read(address(fwa), IFWAClone.inventoryVersion.selector, 0),
-            deadline
+        uint256 slot = PURCHASER_SLOT;
+        assembly ("memory-safe") {
+            tstore(slot, purchaser)
+        }
+        ids = fwa.acquireBatch{value: total}(
+            purchaser, count, maxFee, minWeightedValue, maxNegativeSlippageBps, expectedInventoryVersion, deadline
         );
+        assembly ("memory-safe") {
+            tstore(slot, 0)
+        }
         _recordBases(fwa, fee, ids);
         emit Pulled(purchaser, count, fee, ids);
 
@@ -562,9 +652,8 @@ contract Pool is PoolBooks {
     }
 
     /// @dev Reverts unless a pull may open: the FWA cooldown has passed, the balance covers the
-    ///      buckets plus the `incoming` wei still outside them, the listed ordinary items exceed
-    ///      the unsettled acquisitions by `concurrency`, and the listed GRAIL tracks hold at most
-    ///      `grailProbCapBps` of the FWA selection weight.
+    ///      buckets plus the `incoming` wei still outside them, and the listed ordinary items exceed
+    ///      the unsettled acquisitions by `concurrency`.
     function _requirePurchasable(uint256 incoming) internal view {
         IFWAClone fwa = fwaPool;
         if (block.timestamp < _read(address(fwa), IFWAClone.purchasesResumeAt.selector, 0)) {
@@ -572,8 +661,6 @@ contract Pool is PoolBooks {
         }
         if (!_covered(incoming)) revert Insolvent();
         if (listedCount < _unsettled() + concurrency) revert BoardTooThin();
-
-        if (_grailCapExceeded(MAJOR + 1, 0)) revert GrailProbTooHigh();
     }
 
     /// @dev True when the listed GRAIL tracks hold more than `grailProbCapBps` of the FWA selection
@@ -756,31 +843,55 @@ contract Pool is PoolBooks {
         );
     }
 
-    /// @dev One rotation step for track `t`: grows it when ready, otherwise lists an unlisted pack
-    ///      or lowers the list price by the decay accrued since the last listing or reprice. The
-    ///      new price is `PricingLib.decayedNotional`, which is at least `floorWei`. A listed
-    ///      track is repriced only when its listing is Active and the new price is below the
-    ///      current one by at least `repriceMinBps` of it, and any track only when the new price
-    ///      keeps the listed GRAIL weight within `grailProbCapBps`. Returns whether the FWA listing changed. `busy` is true while FWA
-    ///      holds unsettled acquisitions, which lock repricing and withdrawal.
+    /// @dev One rotation step for track `t`: grows it when ready, otherwise lists an unlisted pack,
+    ///      lowers the list price by the decay accrued since the last listing or reprice, or lifts
+    ///      the price when the listed GRAIL weight exceeds `grailProbCapBps`. A listed track is
+    ///      repriced only when its listing is Active. A decay applies when the new price
+    ///      (`PricingLib.decayedNotional`, at least `floorWei`) is below the current one by at least
+    ///      `repriceMinBps` of it and keeps the listed GRAIL weight within `grailProbCapBps`. A lift
+    ///      applies when the weight is above the cap at the current price. Returns whether the FWA
+    ///      listing changed. `busy` is true while FWA holds unsettled acquisitions, which lock
+    ///      repricing and withdrawal.
     function _rotateGrail(uint256 t, bool busy) internal returns (bool) {
         if (_growGrail(t, busy) == 0) return true;
         Grail storage g = grail[t];
         if (g.packId == 0 || busy) return false;
         uint256 listingId = g.listingId;
+        if (listingId != 0 && _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) return false;
         uint256 next = PricingLib.decayedNotional(g.notional, g.decayWeiPerPull, g.pullsSinceList, g.floorWei);
         if (
-            listingId != 0
-                && (
-                    next >= g.notional || g.notional - next < g.notional * repriceMinBps / BPS
-                        || _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)
-                )
+            (listingId == 0 || (next < g.notional && g.notional - next >= g.notional * repriceMinBps / BPS))
+                && !_grailCapExceeded(t, next)
         ) {
-            return false;
+            _priceGrail(t, g, next);
+            return true;
         }
-        if (_grailCapExceeded(t, next)) return false;
-        _priceGrail(t, g, next);
+        if (listingId == 0 || !_grailCapExceeded(MAJOR + 1, 0)) return false;
+        uint256 lifted = _liftedNotional(t, g);
+        if (lifted <= g.notional) return false;
+        _priceGrail(t, g, lifted);
         return true;
+    }
+
+    /// @dev Smallest list price at or above `g.notional` that brings the listed GRAIL weight within
+    ///      `grailProbCapBps`, at most `g.backing * g.listBps / 10_000`. The weight of track `t` is
+    ///      `PricingLib.NUM / price`. With `rest` the FWA weight outside track `t` and `other` the
+    ///      weight of the other listed track, the cap holds while
+    ///      `(other + w) * BPS <= (rest + w) * grailProbCapBps`, so the largest admissible weight is
+    ///      `(rest * grailProbCapBps - other * BPS) / (BPS - grailProbCapBps)`. The ceiling applies
+    ///      when `other` alone exceeds the cap. Requires `g.listingId != 0`.
+    function _liftedNotional(uint256 t, Grail storage g) internal view returns (uint256 price) {
+        uint256 ceiling = g.backing * g.listBps / BPS;
+        uint256 rest = _totalWeight() - PricingLib.weightOf(g.notional);
+        Grail storage o = grail[1 - t];
+        uint256 other = o.listingId != 0 ? PricingLib.weightOf(o.notional) : 0;
+        uint256 room = rest * grailProbCapBps;
+        uint256 used = other * BPS;
+        if (room <= used) return ceiling;
+        uint256 maxWeight = (room - used) / (BPS - grailProbCapBps);
+        price = PricingLib.NUM / (maxWeight + 1) + 1;
+        if (price > ceiling) price = ceiling;
+        if (price < g.notional) price = g.notional;
     }
 
     /// @dev Adds `stepWei` of backing to track `t`, paid from `grail[t].bucket` with the mint fees
