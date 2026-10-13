@@ -90,6 +90,64 @@ the named place; none of them is load bearing for the others unless the entry sa
    proceeds and the harvest surplus repays them (entry 1). Setting the operator to the pool would
    close direct buys and make harvest equality exact again. Place: `Pool.createFwaPool`.
 
+14. **Launch values in `script/env/*.env` are guesses where SPEC 5 points at
+   `launch-profile.json`.** The profile (old repo, `project/launch-profile.json`) gives: premium
+   200, maintenance 100, feed 400, entry base 1,100, slope 2,000, cap 2,500, reference 55 ETH,
+   GRAIL target 25 ETH, decay 0.001 ETH per pull, notional floor 1 ETH, list start 75 percent,
+   merge policy (no minor share), opening window 24 h, restock interval 60 min. Guesses filling
+   the gaps: mix rows `0.01 Shape 40%, 0.02 pack 30%, 0.03 pack 20%, 0.05 Shape 10%`;
+   `minorShareBps` 2,000 with a minor track of target 1 ETH, step 0.1 ETH, floor 0.25 ETH, and a
+   major track of target 25 ETH, step 0.5 ETH, floor 1 ETH, both `listBps` 7,500; `navCap`
+   unlimited (`type(uint256).max`); `minItems` 30; `grailProbCapBps` 1,000. Place:
+   `script/env/mainnet.env` (and anvil, sepolia). Edit the values, the deploy reads them.
+
+15. **Retirement folds `maintenance` into `cash`.** SPEC 13 moves maintenance to a successor and
+   says nothing for retirement. Guess: at the final `exportStep` of a retirement, `cash +=
+   maintenance`, so depositors receive it. Place: `Pool.exportStep`.
+
+16. **Successor row matching on import.** SPEC 13 says imported tokens are registered by reading
+   `valueOf` and denominations. Guess: `importItem` picks the first successor mix row with equal
+   backing and matching pack-ness and reverts `NoMatchingRow` otherwise, so a migration plan must
+   give the successor a mix that covers the old rows. Place: `Pool.importItem`.
+
+17. **Imported shares are priced at the successor's NAV per share.** `finalizeImport` mints
+   `importedNav * totalShares / navBefore` (1:1 when the successor has no shares) and
+   `migrateHolder` divides them by `exportedShares`. Rounding dust stays unassigned. Place:
+   `Pool.finalizeImport`.
+
+18. **FWA locks starve liquidation and GRAIL work under steady pull flow.** `withdrawListing` and
+   `updatePrice` revert while any acquisition is unsettled. With a pull every VRF latency the
+   count never reaches zero, so liquidation, GRAIL growth and decay reprice wait for a gap. One
+   ticket plus VRF fee per interval keeps the gap closed. This follows from FWA and SPEC 7.
+   Guess: accepted for v1; the admin can pause pulls to open a gap. Record for a SPEC note.
+
+19. **`growGrail` is public and each call relists, which restarts FWA's 300 s purchase cooldown.**
+   Bounded by one bucket step per call. Guess: accepted; gate behind `rotateInterval` if abused.
+
+20. **I5 holds in the books, not in expectation.** A GRAIL listed above the harmonic mean raises
+   the ordinary ticket and so ordinary margin, funded by the track's expected loss. This is the
+   product's design (the feed pays for a prize that makes tickets dearer). Recorded for the SPEC.
+
+21. **`open()` runs restock only, not the full `rotate`.** GRAIL growth and decay start one
+   interval after open. SPEC 6 says open runs the first rotate. Guess: restock is the part of
+   rotate that builds the board; the GRAIL step waits for funding anyway. Place: `Pool.open`.
+
+22. **Decay reprice runs after growth, and is skipped when the track grew.** SPEC 11 orders decay
+   first. End state is identical because growth resets price and the pull counter.
+
+23. **Pool.sol compiles with via_ir. SPEC 3 says under 24KB without via_ir and no delegatecall
+   libraries; both cannot hold with the SPEC's feature set.** Measured at packet 6 (1,673 lines,
+   before admin setters, sweep, adminCall): legacy codegen 26,166 B runtime (over EIP-170),
+   via_ir 22,907 B. The SPEC's own remedies are exhausted: pure math already sits in PricingLib
+   (internal libraries do not shrink bytecode) and every diagnostic view moved to the test harness
+   with Lens reading public getters. Note: Pool has compiled under via_ir since packet 3a because
+   the `lib/draw-packs/src/**` restriction in foundry.toml also covers the `IShapePacks` interface
+   Pool imports; the director added that glob and did not notice until packet 6. Guess taken:
+   keep via_ir for Pool (standard pipeline, no storage-layout coupling), make it explicit in
+   foundry.toml, and record it in SPEC 3. Alternatives: a delegatecall library for exit and admin
+   (about 4 KB, SPEC forbids), or dropping functions (none are optional under SPEC). Place:
+   `foundry.toml`.
+
 8. **Launch `minItems` must exceed `concurrency`.** FWA `maxOutstandingRequestsPerPool` is 10 on
    mainnet. With `minItems` 10 the board is `BoardTooThin` after the first capture until the
    replacement is listed. Not a code change; a launch-profile note.
