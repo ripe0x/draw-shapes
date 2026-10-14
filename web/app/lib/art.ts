@@ -2,7 +2,7 @@
 
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePublicClient } from "wagmi";
-import type { Address } from "viem";
+import { decodeFunctionResult, encodeFunctionData, type Address } from "viem";
 import { fwaCloneAbi, packsAbi, shapesAbi } from "./abi/external";
 import { useDeployment } from "../Providers";
 
@@ -21,17 +21,21 @@ export interface Token {
   tokenId: bigint;
 }
 
+/** `tokenURI` renders the SVG on chain. Each read is its own eth_call with multicall batching off,
+ *  since many renders aggregated into one Multicall3 call exceed the call gas limit. */
+async function readTokenURI(client: NonNullable<ReturnType<typeof usePublicClient>>, packs: Address, t: Token): Promise<string> {
+  const abi = t.collection.toLowerCase() === packs.toLowerCase() ? packsAbi : shapesAbi;
+  const { data } = await client.call({
+    to: t.collection,
+    data: encodeFunctionData({ abi, functionName: "tokenURI", args: [t.tokenId] }),
+    batch: false,
+  });
+  return decodeFunctionResult({ abi, functionName: "tokenURI", data: data ?? "0x" });
+}
+
 const imageQuery = (client: ReturnType<typeof usePublicClient>, chainId: number, packs: Address, t: Token) => ({
   queryKey: ["token-image", chainId, t.collection.toLowerCase(), t.tokenId.toString()],
-  queryFn: async () =>
-    imageOf(
-      await client!.readContract({
-        address: t.collection,
-        abi: t.collection.toLowerCase() === packs.toLowerCase() ? packsAbi : shapesAbi,
-        functionName: "tokenURI",
-        args: [t.tokenId],
-      }),
-    ),
+  queryFn: async () => imageOf(await readTokenURI(client!, packs, t)),
   enabled: !!client,
   staleTime: Infinity,
   gcTime: Infinity,

@@ -6,10 +6,11 @@ import { eth, pct } from "./lib/format";
 import { CardFan } from "./components/CardFan";
 import { GrailBoard } from "./components/GrailBoard";
 import { OddsGlance } from "./components/OddsGlance";
+import { PoolGrid } from "./components/PoolGrid";
 import { PullCard } from "./components/PullCard";
 
-/** `/`: the pull promise and live board summary, the card carousel, the pull card, what a pull can
- *  draw, both GRAIL tracks and the deposit band. */
+/** `/`: the pull promise and live board summary, the card carousel, the pull card, the listed items
+ *  grid beside both GRAIL tracks, what a pull can draw and the deposit band. */
 export default function Landing() {
   const pool = usePool().data;
   const odds = pool ? drawOdds(pool.board, pool.grails) : undefined;
@@ -56,11 +57,15 @@ export default function Landing() {
         </div>
       </div>
 
-      <div className="landing-pool-layout landing-odds-layout">
-        <OddsGlance />
+      <div className="landing-pool-layout">
+        <PoolGrid />
         <div className="landing-grail-col">
           <GrailBoard />
         </div>
+      </div>
+
+      <div className="landing-odds-row">
+        <OddsGlance />
       </div>
 
       <div className="landing-supply-band">
