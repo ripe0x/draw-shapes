@@ -33,7 +33,7 @@ export function oddsOneIn(bps: bigint): string {
 
 /** Contract enum names in declaration order (IPool.sol and Lens.sol). */
 export const LIFECYCLE = ["Opening", "Live", "Exiting", "Exported"] as const;
-export const SETTLE_TRIGGER = ["None", "Batch", "Age", "Thin"] as const;
+export const SETTLE_TRIGGER = ["None", "Batch", "Age", "Thin", "Deep"] as const;
 export const ROTATE_TRIGGER = ["None", "Claim", "GrailStep", "Held"] as const;
 export const QUOTE_REASON = [
   "None",

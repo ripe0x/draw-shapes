@@ -71,7 +71,8 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         p.rotateInterval = 900;
     }
 
-    /// @dev Deploys a pool with `minItems_`, funds it with 100 ETH and builds its board.
+    /// @dev Deploys a pool with `minItems_`, funds it with the opening deposit that makes
+    ///      `boardItems()` equal `minItems_`, and builds its board.
     function _create(uint256 minItems_) internal {
         pool = new PoolHarness(_params(minItems_));
         vm.prank(admin);
@@ -80,7 +81,8 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         vm.prank(address(pool));
         clone.setBool(41, true);
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), _target(minItems_), "board");
@@ -103,6 +105,13 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function _admin() internal returns (IPool) {
         vm.prank(admin);
         return IPool(address(pool));
+    }
+
+    /// @dev Adds `amount` of ordinary cash, as harvested proceeds do. The free NAV it adds stays
+    ///      below `batchMin` items of board depth, so `settleDue` is not `Deep`.
+    function _spare(uint256 amount) internal {
+        vm.deal(address(this), address(this).balance + amount);
+        pool.bookProceeds{value: amount}();
     }
 
     function _fundMaintenance() internal {
@@ -146,7 +155,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
             rows[i] = PricingLib.RowState(
                 share,
                 IPool(address(pool)).rowCount(i) + pool.queuedOf(i),
-                (pool.minItems() * share + BPS - 1) / BPS,
+                PricingLib.rowDepth(IPool(address(pool)).boardItems(), share),
                 backingWei,
                 rungs.length == 1
             );
@@ -183,6 +192,11 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
             total += w[i];
         }
         if (total == 0) return (fallbackRow, false);
+        bool anyBelow;
+        for (uint256 i; i < n; ++i) {
+            if (rows[i].count < rows[i].target) anyBelow = true;
+        }
+        if (!anyBelow) return (type(uint256).max, false);
 
         uint256 pick = uint256(h) % total;
         uint256 drawn;
@@ -202,7 +216,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
             for (; m < 3; ++m) {
                 uint256 best = type(uint256).max;
                 for (uint256 i; i < n; ++i) {
-                    if (!rows[i].single || rows[i].backingWei < 5 * rows[drawn].backingWei) continue;
+                    if (!rows[i].single || rows[i].backingWei < 5 * rows[drawn].backingWei || rows[i].count >= rows[i].target) continue;
                     bool taken;
                     for (uint256 t; t < m; ++t) {
                         if (chosen[t] == i) taken = true;
@@ -265,18 +279,16 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
             );
             assertEq(row, expected, "row");
             assertEq(surprise, expectedSurprise, "surprise");
-            ++hits[row];
+            if (row < hits.length) ++hits[row];
         }
     }
 
     // ---------------------------------------------------------------- the sampling rule
 
-    function test_chooseRowOnAFullBoardDrawsByShare() public view {
-        // surpriseBps 200: most draws are step 1 draws by share.
-        PricingLib.RowState[] memory rows = _rows();
-        for (uint256 i; i < rows.length; ++i) {
-            assertEq(rows[i].count, rows[i].target, "board at target");
-        }
+    function test_chooseRowWithADeficitDrawsByShare() public {
+        // surpriseBps 200: most draws are step 1 draws by share. The 0.5 row misses one item, so
+        // a row is below its target and a replacement is chosen.
+        pool.removeListed(pool.listedIds(5)[0]);
         uint256[6] memory hits = _assertMatchesReference(0);
         assertGt(hits[0], hits[3], "the 3,800 bps row is drawn more often than the 1,000 bps row");
         assertGt(hits[1], hits[4]);
@@ -296,7 +308,16 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertGt(hits[4], hits[3]);
     }
 
+    /// @dev Takes one listed item out of each of rows 3, 4 and 5 so they sit below their targets,
+    ///      which makes them surprise candidates.
+    function _openSurpriseCandidates() internal {
+        for (uint256 r = 3; r <= 5; ++r) {
+            pool.removeListed(pool.listedIds(r)[0]);
+        }
+    }
+
     function test_chooseRowSurpriseUpgradesToASingleRowOfAtLeastFiveTimesTheBacking() public {
+        _openSurpriseCandidates();
         _admin().setReplacement(10_000, 8, 100_000);
         uint256[6] memory hits = _assertMatchesReference(0);
         // Every draw takes the surprise step. Rows 0, 1 and 2 (0.01, 0.02, 0.03) upgrade to the
@@ -310,13 +331,18 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
 
     function test_chooseRowSurpriseWeighsTheThreeSmallestCandidatesSixtyThirtyTen() public {
         // Row 0 (0.01) holds 90 percent of the draws. Its candidates are rows 3, 4 and 5
-        // (0.05, 0.1, 0.5). The band is wide so no candidate sits at its cap.
+        // (0.05, 0.1, 0.5), each trimmed to one item, below the targets of 2 that the new shares give.
+        // The band is wide so no candidate sits at its cap.
         PricingLib.MixRow[] memory rows = _launchMix();
         for (uint256 i; i < rows.length; ++i) {
             rows[i].shareBps = i == 0 ? 9_000 : 200;
         }
         IPool p = _admin();
         p.setMix(rows);
+        for (uint256 r = 3; r <= 5; ++r) {
+            while (IPool(address(pool)).rowCount(r) > 1) pool.removeListed(pool.listedIds(r)[0]);
+        }
+        pool.removeListed(pool.listedIds(5)[0]);
         _admin().setReplacement(10_000, 0, 100_000);
         uint256[6] memory hits = _assertMatchesReference(0);
         assertGt(hits[3], hits[4], "60 against 30");
@@ -324,10 +350,57 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertGt(hits[5], 0);
     }
 
+    function test_chooseRowSurpriseSkipsASingleRowAtOrAboveItsTarget() public {
+        // Rows 3 and 4 are below target, row 5 (0.5) is at target. Every draw takes the surprise step.
+        for (uint256 r = 3; r <= 4; ++r) {
+            pool.removeListed(pool.listedIds(r)[0]);
+        }
+        _admin().setReplacement(10_000, 0, 100_000);
+        PricingLib.RowState[] memory rows = _rows();
+        assertEq(rows[5].count, rows[5].target, "0.5 row at target");
+        _assertMatchesReference(0);
+        assertEq(_surprisesOnRow(5), 0, "a surprise roll never lands on the 0.5 row at target");
+
+        // Above target the row is excluded as well.
+        pool.pushReplacement(5);
+        assertEq(_surprisesOnRow(5), 0, "a surprise roll never lands on the 0.5 row above target");
+    }
+
+    function test_chooseRowSurpriseLandsOnASingleRowBelowItsTarget() public {
+        for (uint256 r = 3; r <= 5; ++r) {
+            pool.removeListed(pool.listedIds(r)[0]);
+        }
+        _admin().setReplacement(10_000, 0, 100_000);
+        assertGt(_surprisesOnRow(5), 0, "the 0.5 row is a candidate below target");
+    }
+
+    /// @dev Surprise draws that land on `row` among 300 words, with every row's count as it stands.
+    function _surprisesOnRow(uint256 row) internal view returns (uint256 landed) {
+        uint256 surprises;
+        for (uint256 i; i < 300; ++i) {
+            (uint256 chosen, bool surprise) = pool.chooseRow(uint256(keccak256(abi.encode("s", i))), 2_000 + i, 0);
+            if (!surprise) continue;
+            ++surprises;
+            if (chosen == row) ++landed;
+        }
+        assertGt(surprises, 0, "surprise draws occur");
+    }
+
+    function test_chooseRowSurpriseKeepsTheDeficitDrawWhenNoSingleRowIsBelowTarget() public {
+        // Full board: no candidate is below target, so every draw is a deficit weighted sample.
+        _admin().setReplacement(10_000, 8, 100_000);
+        for (uint256 i; i < 150; ++i) {
+            (, bool surprise) = pool.chooseRow(uint256(keccak256(abi.encode("word", i))), 1_000 + i, 0);
+            assertFalse(surprise);
+        }
+        _assertMatchesReference(0);
+    }
+
     function test_chooseRowSurpriseNeedsACandidate() public {
         // restoreK 0 draws by share. A drawn 0.5 row (row 5) has no single row at 2.5 ETH or
         // more, so its draw stands without the surprise flag.
         _admin().setReplacement(10_000, 0, 100_000);
+        pool.removeListed(pool.listedIds(0)[0]);
         PricingLib.RowState[] memory rows = _rows();
         uint256 stood;
         for (uint256 i; i < 600; ++i) {
@@ -353,13 +426,17 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertGt(hits[5], 0, "the largest deficit row takes its draws");
     }
 
-    function test_chooseRowKeepsTheDrawnRowWhenEveryRowIsAtOrAboveTarget() public {
+    function test_chooseRowReturnsNoRowWhenEveryRowIsAtOrAboveTarget() public {
         for (uint256 i; i < 60; ++i) {
             pool.pushReplacement(0);
         }
         _admin().setReplacement(0, 8, 3_000);
         uint256[6] memory hits = _assertMatchesReference(0);
-        assertGt(hits[0], 0, "no row has a deficit, so the draw stands");
+        for (uint256 i; i < 150; ++i) {
+            (uint256 row,) = pool.chooseRow(uint256(keccak256(abi.encode("word", i))), 1_000 + i, 0);
+            assertEq(row, type(uint256).max, "no row is below target, so no replacement");
+        }
+        assertEq(hits[0], 0);
     }
 
     function test_chooseRowCapIsAtLeastTargetPlusOne() public {
@@ -440,6 +517,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
 
     function test_aSurpriseCaptureQueuesALargerSingleRow() public {
         _setCooldown(0);
+        _openSurpriseCandidates();
         _admin().setReplacement(10_000, 8, 100_000);
         uint256 requestId = _captureRow(0);
         vm.recordLogs();
@@ -481,6 +559,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_batchTriggerListsFiveReplacementsAndRefundsTheCaller() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.12 ether);
         for (uint256 i; i < 4; ++i) {
             _captureRow(0);
         }
@@ -510,6 +589,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_ageTriggerListsAReplacementOnceTheQueueIsOldEnough() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.05 ether);
         _captureRow(0);
         pool.bookOnly(20);
         assertEq(pool.replacementLength(), 1);
@@ -531,8 +611,16 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
 
     function test_thinTriggerListsWhenTheBoardIsWithinFiveOfTheConcurrencyGuard() public {
         _setCooldown(0);
-        _create(10);
         _fundMaintenance();
+        _spare(0.05 ether);
+        // Thin out the board to 12 items. A batchMin above the depth gap keeps Batch and Deep out of the way.
+        while (pool.listedCount() > 12) {
+            for (uint256 r; r < 6 && pool.listedCount() > 12; ++r) {
+                uint256[] memory ids = pool.listedIds(r);
+                if (ids.length != 0) pool.removeListed(ids[ids.length - 1]);
+            }
+        }
+        _admin().setBatch(1_000, 1 hours);
         uint256 concurrency = IPool(address(pool)).concurrency();
         assertLt(pool.listedCount(), concurrency + 5, "thin board");
         assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.None), "nothing to list");
@@ -548,6 +636,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_aSettleThatIsNotDueListsNothingAndRefundsNothing() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.05 ether);
         _captureRow(0);
         pool.bookOnly(20);
         assertEq(pool.replacementLength(), 1);
@@ -568,6 +657,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_settleListsAtMostTwentyFivePerCall() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.4 ether);
         for (uint256 i; i < 30; ++i) {
             pool.pushReplacement(0);
         }
@@ -588,6 +678,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_batchTriggerAtTwentyListsAllTwentyInOneSettle() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.3 ether);
         _admin().setBatch(20, 1 hours);
         for (uint256 i; i < 19; ++i) {
             pool.pushReplacement(0);
@@ -615,6 +706,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_theTipSetterChangesTheSettleRefund() public {
         _setCooldown(0);
         _fundMaintenance();
+        _spare(0.05 ether);
         _admin().setBatch(1, 1 hours);
         pool.pushReplacement(0);
         (, uint256 refundDefault) = _settle();
@@ -693,6 +785,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_aNonzeroFactoryCooldownKeepsSettleFromListingAndRotateListsTheBatch() public {
         assertEq(factory.inventoryChangeCooldown(), 300);
         _fundMaintenance();
+        _spare(0.12 ether);
         for (uint256 i; i < 5; ++i) {
             _captureRow(0);
             vm.warp(clone.purchasesResumeAt() + 1);
@@ -720,6 +813,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
     function test_listWhilePausedLetsSettleListUnderACooldown() public {
         assertEq(factory.inventoryChangeCooldown(), 300);
         _fundMaintenance();
+        _spare(0.12 ether);
         _admin().setListWhilePaused(true);
         for (uint256 i; i < 5; ++i) {
             _captureRow(0);
@@ -792,6 +886,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
 
     function test_aPackRowBuiltFromTwoHeldShapesMintsNothing() public {
         _setCooldown(0);
+        _spare(0.1 ether);
         uint256 first = mintShapes(player, 0.01 ether, 2);
         _approveAll(player);
         uint256[] memory tokenIds = new uint256[](2);
@@ -820,6 +915,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
 
     function test_aPackRowTakesOneHeldShapeAndMintsTheOtherRung() public {
         _setCooldown(0);
+        _spare(0.1 ether);
         uint256 id = mintShapes(player, 0.01 ether, 1);
         _approveAll(player);
         _pullWithShape(id);

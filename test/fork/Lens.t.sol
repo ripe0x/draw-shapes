@@ -47,10 +47,11 @@ contract LensForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- helpers
 
     function _open(bool large) internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         if (large) pool.sizeBoard(60);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
     }
 
@@ -158,7 +159,7 @@ contract LensForkTest is ForkBase, PoolFixture {
             uint256[] memory ids = pool.listedIds(i);
             assertEq(rows[i].listed, ids.length);
             assertEq(rows[i].count, IPool(address(pool)).rowCount(i));
-            assertEq(rows[i].target, PricingLib.rowDepth(pool.minItems(), rows[i].shareBps));
+            assertEq(rows[i].target, PricingLib.rowDepth(IPool(address(pool)).boardItems(), rows[i].shareBps));
             assertEq(rows[i].listingPrice, _price(ids[0]), "list price equals the pool's own FWA price");
         }
         assertEq(rows[0].rungs.length, 1);
@@ -354,6 +355,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.openingDeadline, 24 hours);
         assertEq(p.openingDeadlineAt, IPool(address(pool)).openingDeadlineAt());
         assertEq(p.minItems, 10);
+        assertEq(p.boardItems, IPool(address(pool)).boardItems());
         assertEq(p.grailProbCapBps, 2_000);
         assertEq(p.batchMin, 20);
         assertEq(p.batchMaxAge, 1 hours);

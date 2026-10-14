@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+import {IShapes} from "shapes/interfaces/IShapes.sol";
+import {Denominations} from "shapes/lib/Denominations.sol";
 import {Pool} from "../../src/Pool.sol";
 import {PoolAdmin} from "../../src/PoolAdmin.sol";
 import {PoolListing} from "../../src/PoolListing.sol";
@@ -325,6 +327,46 @@ abstract contract PoolFixture is Test {
         p.bandBps = 3_000;
         p.reserveBps = 1_000;
         p.tipWei = 0.0002 ether;
+    }
+
+    /// @dev Opening deposit after whose entry contribution `boardItems()` equals `minItems`: the cost
+    ///      of the `minItems` board (backing plus the mint fee of every rung), grossed up by the
+    ///      reserve and by the entry fee at zero NAV, rounded up. Cash above the reserve buys items
+    ///      beyond `minItems`, so a pool opened with more has a deeper board and a `Deep` settle.
+    function _openingDeposit(address target) internal view returns (uint256) {
+        IPool ip = IPool(target);
+        uint256 mintFee = IShapes(ip.shapes()).mintFee();
+        uint256 cost;
+        for (uint256 i; i < ip.mixLength(); ++i) {
+            (uint8[] memory rungs, uint16 share) = ip.mixRow(i);
+            uint256 backing;
+            for (uint256 j; j < rungs.length; ++j) {
+                backing += Denominations.amountAt(rungs[j]);
+            }
+            cost += PricingLib.rowDepth(ip.minItems(), share) * (backing + mintFee * rungs.length);
+        }
+        uint256 free = 10_000 - ip.reserveBps();
+        (uint32 floorBps,,) = ip.entryFee();
+        uint256 navTarget = (cost * 10_000 + free - 1) / free;
+        return (navTarget * 10_000 + (10_000 - floorBps) - 1) / (10_000 - floorBps);
+    }
+
+    /// @dev Credits `amount` of ordinary cash to `target`, as harvested proceeds do. Keep the free NAV
+    ///      it adds below `batchMin` items of board depth (about `batchMin * 0.9 * meanRowCost`), or
+    ///      `settleDue` is `Deep`.
+    function _spareCash(PoolHarness target, uint256 amount) internal {
+        vm.deal(address(this), address(this).balance + amount);
+        target.bookProceeds{value: amount}();
+    }
+
+    /// @dev Raises the GRAIL fund of `target`, which is outside ordinary NAV, to the 11 ETH that a
+    ///      100 ETH opening deposit contributes at the 11 percent floor entry fee. At that fund `open`
+    ///      forms the opening five. Call it before `open`.
+    function _topUpGrailFund(PoolHarness target) internal {
+        uint256 fund = IPool(address(target)).grail().fund;
+        if (fund >= 11 ether) return;
+        vm.deal(address(this), address(this).balance + 11 ether);
+        target.addGrailFund{value: 11 ether - fund}();
     }
 
     /// @dev Warps to the end of the `rotateInterval` that follows `lastRotateAt`, which `rotate`

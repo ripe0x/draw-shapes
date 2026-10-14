@@ -25,9 +25,9 @@ Shares are nontransferable. There is one admin role.
 
 | Contract | Role |
 | --- | --- |
-| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailTarget`, `grail` and `grailItems` to `listingModule` and every other selector to `adminModule`. |
+| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other selector to `adminModule`. |
 | `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import (including `importGrail`), getters, `chooseRow`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
-| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the getters `grail()` and `grailItems()` and the setters `setGrail` and `setGrailTarget`. Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
+| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the getters `grail()` and `grailItems()`, the view `boardItems()` and the setters `setGrail` and `setGrailTarget`. Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
 | `PoolBooks.sol`, `PoolStorage.sol` | Shared bases: settlement, harvest, margin split, row choice; storage layout, item registry, parameter validation. `interfaces/IPool.sol` holds the combined ABI, types, errors and events. |
 | `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
 | Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 20,351 B, `PoolAdmin` 24,056 B, `PoolListing` 14,589 B, `Lens` 15,817 B (limit 24,576 B).
+Runtime sizes: `Pool` 20,852 B, `PoolAdmin` 24,484 B, `PoolListing` 15,189 B, `Lens` 16,036 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 

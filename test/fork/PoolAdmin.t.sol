@@ -45,7 +45,8 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
 
     function _openReady() internal {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         pool.loseGrailFund(IPool(address(pool)).grail().fund);

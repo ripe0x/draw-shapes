@@ -27,6 +27,7 @@ export function Upkeep() {
     `${p.batchMin} or more replacements are queued.`,
     `The oldest queued replacement is ${duration(Number(p.batchMaxAge))} old.`,
     `Listed items minus unsettled acquisitions are fewer than ${p.concurrency + 5n}.`,
+    `The board holds ${p.batchMin} or more items fewer than the ${p.boardItems} that NAV above the reserve funds.`,
   ] as const;
   const rotateMeaning = [
     `No reason holds, or the rotate interval of ${duration(Number(p.rotateInterval))} has not passed since the last rotate.`,

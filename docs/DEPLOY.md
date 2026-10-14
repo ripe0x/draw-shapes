@@ -60,8 +60,8 @@ The pool is Opening and takes deposits at once. The admin then:
 ## Keeper
 
 Run a keeper on a short interval. It reads `Lens.settleDue()` (or `Pool.settleDue()`) and calls `Pool.settle(20)`
-whenever `settleDue() != None`. A nonzero value means a batch, an age or a thin board reason holds and funded work is
-queued. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL item. `settle` lists while the
+whenever `settleDue() != None`. A nonzero value means a batch, an age, a thin board or a deep board (NAV above the reserve funds more items
+than the board holds) reason holds and funded work is queued or can be queued. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL item. `settle` lists while the
 factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on.
 
 Keeper funding: `maintenanceBps` 100 covers mint and list gas up to about 2 gwei. Above that, top the bucket up with

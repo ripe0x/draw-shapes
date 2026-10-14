@@ -64,13 +64,14 @@ library PricingLib {
     /// @dev 1. Deficit draw: row weight is `shareBps * (BPS + restoreK * deficit * BPS / target) / BPS`
     ///         with `deficit = max(target - count, 0)`, drawn by `uint256(h) % sum`.
     ///      2. Surprise: when `(uint256(h) >> 64) % BPS < surpriseBps`, the candidates are the single
-    ///         rung rows with at least 5 times the drawn row's backing. The three of lowest backing
+    ///         rung rows below their target with at least 5 times the drawn row's backing. The three of lowest backing
     ///         (lowest index on a tie) take the weights 60, 30 and 10, cut to the candidate count and
     ///         drawn by `(uint256(h) >> 128) % 100` scaled to the weight sum.
     ///      3. Band: a row with `count >= max(target + 1, ceil(target * (BPS + bandBps) / BPS))` is
     ///         replaced by the row of largest deficit (lowest index on a tie). When no row is below
     ///         its target the step 1 row stands.
-    ///      `fallbackRow` is returned when every share is zero.
+    ///      `fallbackRow` is returned when every share is zero. `type(uint256).max` is returned
+    ///      when no row is below its target: the capture is not replaced.
     function chooseRow(
         bytes32 h,
         RowState[] memory rows,
@@ -82,13 +83,16 @@ library PricingLib {
         uint256 n = rows.length;
         uint256[] memory weight = new uint256[](n);
         uint256 total;
+        bool anyBelow;
         for (uint256 i; i < n; ++i) {
             RowState memory r = rows[i];
+            if (r.count < r.target) anyBelow = true;
             uint256 boost = r.target > r.count ? restoreK * (r.target - r.count) * BPS / r.target : 0;
             weight[i] = r.shareBps * (BPS + boost) / BPS;
             total += weight[i];
         }
         if (total == 0) return (fallbackRow, false);
+        if (!anyBelow) return (type(uint256).max, false);
         uint256 pick = uint256(h) % total;
         uint256 drawn;
         for (; drawn < n; ++drawn) {
@@ -133,7 +137,7 @@ library PricingLib {
             uint256 best = type(uint256).max;
             for (uint256 i; i < rows.length; ++i) {
                 RowState memory r = rows[i];
-                if (!r.single || r.backingWei < minBacking) continue;
+                if (!r.single || r.backingWei < minBacking || r.count >= r.target) continue;
                 if (m != 0 && (r.backingWei < lastBacking || (r.backingWei == lastBacking && i <= lastIndex))) {
                     continue;
                 }

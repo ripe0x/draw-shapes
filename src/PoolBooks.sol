@@ -91,7 +91,7 @@ abstract contract PoolBooks is PoolStorage {
     /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the GRAIL
     ///      receivable and removes the item. An ordinary item leaves backing, its proceeds join
     ///      `receivable` and `margin`, and the row chosen by `_chooseRow` is queued for a
-    ///      replacement.
+    ///      replacement. No replacement is queued when no row is below its target.
     function _capture(uint256 requestId, uint256 listingId, uint256 paid, uint256 mintFee) internal {
         uint256 stored = _basePlusOne[requestId];
         uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
@@ -104,8 +104,10 @@ abstract contract PoolBooks is PoolStorage {
         _margin += SafeCastLib.toInt256(proceeds) - SafeCastLib.toInt256(it.value);
         _mintLineOwed += mintFee * _mix[it.row].rungs.length;
         (uint256 row, bool surprise) = _chooseRow(requestId, it.row);
-        _enqueue(row);
-        emit ReplacementChosen(requestId, it.row, row, surprise);
+        if (row != type(uint256).max) {
+            _enqueue(row);
+            emit ReplacementChosen(requestId, it.row, row, surprise);
+        }
         emit Captured(requestId, listingId, it.row, it.value, proceeds);
         _splitMargin();
     }
@@ -135,7 +137,7 @@ abstract contract PoolBooks is PoolStorage {
     {
         uint256 n = _mix.length;
         PricingLib.RowState[] memory rows = new PricingLib.RowState[](n);
-        uint256 items = minItems;
+        uint256 items = _boardItems();
         for (uint256 i; i < n; ++i) {
             uint256 share = _mix[i].shareBps;
             rows[i] = PricingLib.RowState(
@@ -304,6 +306,21 @@ abstract contract PoolBooks is PoolStorage {
         for (uint256 i; i < _grailItems.length; ++i) {
             _grailItems[i].pullsSinceList += count;
         }
+    }
+
+    /// @dev Board depth in items: `max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`.
+    ///      `meanRowCost` is the share-weighted cost of a mix row at the current mint fee: its
+    ///      backing plus the mint fee of each rung. `nav()` is net of `claims`. The target depth of a
+    ///      mix row is `rowDepth(_boardItems(), shareBps)`.
+    function _boardItems() internal view returns (uint256 items) {
+        uint256 shares = _mixShares;
+        if (shares != 0) {
+            uint256 mean = (_mixBacking + _mintFee() * _mixRungs) / shares;
+            uint256 value = nav();
+            if (mean != 0) items = (value - value * _reserveBps / BPS) / mean;
+        }
+        uint256 floor = minItems;
+        return items > floor ? items : floor;
     }
 
     /// @dev FWA and Shapes reads used at several call sites. Each is one function so the external

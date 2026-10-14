@@ -36,14 +36,14 @@ contract PoolListing is PoolBooks {
     ///         Returns the number listed.
     function openBoard() external onlyDelegated onlySelf returns (uint256) {
         _openGrail();
-        uint256 queued = _replacementQueue.length - replacementHead;
-        for (uint256 r; r < _mix.length; ++r) {
-            uint256 target = PricingLib.rowDepth(minItems, _mix[r].shareBps);
-            for (; queued < MAX_OPEN_MINTS && _rowCount[r] + _queuedByRow[r] < target; ++queued) {
-                _enqueue(r);
-            }
-        }
+        _queueMissing(MAX_OPEN_MINTS);
         return _listBatch(MAX_OPEN_MINTS);
+    }
+
+    /// @notice Queues the items each row lacks against its target depth, until the queue holds
+    ///         `cap` entries. A row's count is its listed, held and queued items.
+    function queueMissing(uint256 cap) external onlyDelegated onlySelf {
+        _queueMissing(cap);
     }
 
     /// @notice Fills the queued replacements in order and lists them, then lists held items, at
@@ -77,6 +77,12 @@ contract PoolListing is PoolBooks {
     /// @notice The GRAIL items, listed or not.
     function grailItems() external view onlyDelegated returns (GrailItem[] memory) {
         return _grailItems;
+    }
+
+    /// @notice Board depth in items: `max(minItems, (nav - nav * reserveBps / 10_000) /
+    ///         meanRowBacking)`, with `meanRowBacking` the share-weighted backing of the mix rows.
+    function boardItems() external view onlyDelegated returns (uint256) {
+        return _boardItems();
     }
 
     /// @notice Lists unlisted GRAIL items, mints pieces from the fund and runs merges. At most
@@ -322,6 +328,19 @@ contract PoolListing is PoolBooks {
     }
 
     // ------------------------------------------------------------------ internal
+
+    /// @dev Appends rows to the replacement queue in row order, each up to its target depth
+    ///      `rowDepth(_boardItems(), shareBps)`, until the queue holds `cap` entries.
+    function _queueMissing(uint256 cap) internal {
+        uint256 queued = _replacementQueue.length - replacementHead;
+        uint256 items = _boardItems();
+        for (uint256 r; r < _mix.length; ++r) {
+            uint256 target = PricingLib.rowDepth(items, _mix[r].shareBps);
+            for (; queued < cap && _rowCount[r] + _queuedByRow[r] < target; ++queued) {
+                _enqueue(r);
+            }
+        }
+    }
 
     /// @dev Same rule as `PoolAdmin`. Completes the `PoolBooks` hook.
     function _chooseRow(uint256 requestId, uint256 capturedRow)

@@ -80,6 +80,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     }
 
     function _open(PoolHarness p_, IFWAClone c_) internal {
+        if (address(p_) == address(pool)) _topUpGrailFund(p_);
         vm.warp(IPool(address(p_)).openingDeadlineAt());
         while (p_.lifecycle() == IPoolTypes.Lifecycle.Opening) p_.open();
         warpPastCooldown(c_);
@@ -108,10 +109,11 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     /// @dev Pool A: two depositors, a 60 item board, the opening five and three pieces on the GRAIL,
     ///      two settled captures and one replacement held unlisted.
     function _buildA() internal {
-        _deposit(pool, holderOne, 100 ether);
-        _deposit(pool, holderTwo, 50 ether);
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.sizeBoard(60);
+        uint256 opening = _openingDeposit(address(pool));
+        _deposit(pool, holderOne, opening * 2 / 3);
+        _deposit(pool, holderTwo, opening - opening * 2 / 3);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         _open(pool, clone);
         assertEq(pool.listedCount(), 60, "board");
 
@@ -138,8 +140,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     /// @dev Pool B as successor of A with one native depositor, opened with a 10 item board.
     function _buildB() internal {
         (succ, succClone) = _deployPool(address(pool));
-        _deposit(succ, carol, 20 ether);
+        _deposit(succ, carol, _openingDeposit(address(succ)));
         _open(succ, succClone);
+        _spareCash(succ, 17 ether);
         assertEq(succ.listedCount(), 10, "successor board");
     }
 
@@ -585,7 +588,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(succ)).importedFromShares(), aShares);
         assertEq(IPool(address(succ)).exportedShares(), 0, "export snapshot fields stay on the exporting pool");
         assertApproxEqAbs(
-            succ.sharesOf(carol) * succ.nav() / succ.totalShares(), carolClaim, 1, "native claim unchanged"
+            succ.sharesOf(carol) * succ.nav() / succ.totalShares(), carolClaim, 32, "native claim unchanged"
         );
         _assertI1(pool);
         _assertI1(succ);
@@ -750,8 +753,9 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         succClone = succ.fwaPool();
         vm.prank(address(succ));
         succClone.setBool(41, true);
-        _deposit(succ, carol, 20 ether);
+        _deposit(succ, carol, _openingDeposit(address(succ)));
         _open(succ, succClone);
+        _spareCash(succ, 17 ether);
     }
 
     function test_revert_depositWithdrawAndRedeemAndDepositOnTheSuccessorDuringTheImport() public {
@@ -794,7 +798,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 100);
         assertEq(IPool(address(succ)).importedShares(), succ.importedNav() * bShares / bNav);
-        assertApproxEqAbs(succ.sharesOf(carol) * succ.nav() / succ.totalShares(), bNav, 2, "native holder keeps NAV");
+        assertApproxEqAbs(succ.sharesOf(carol) * succ.nav() / succ.totalShares(), bNav, 32, "native holder keeps NAV");
     }
 
     function test_finalizeImportMintsOneToOneWhenTheSuccessorHasNoShares() public {

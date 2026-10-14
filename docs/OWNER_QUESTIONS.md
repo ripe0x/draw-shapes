@@ -387,3 +387,15 @@ No entry is open.
    a sixth piece may stay listed after the 5 ETH merge (the recipe takes any five pieces), and a completed GRAIL stays
    listed while the next cycle builds. The completed item carries a `done` flag so it is not a merge input. Place:
    `PoolListing.grailStep`, `grailReprice`, `PoolBooks._capture`, `PoolAdmin.setGrail`-family. SPEC 5, 11 and 13.
+
+42. **Board depth follows NAV.** (decided, in SPEC) Owner decision of 2026-10-14. `boardItems() = max(minItems, (nav -
+   nav * reserveBps / 10_000) / meanRowCost)`, with `nav` the ordinary NAV (already net of `claims`) and `meanRowCost`
+   the share-weighted cost of a mix row at the current Shapes mint fee: its backing plus the mint fee of each rung. The
+   target depth of a row is `ceil(boardItems() * shareBps / 10_000)` in `open`, the replacement draw and `Lens.board`.
+   A row at or past its band cap is redirected to the row of largest deficit, so a row above target gets no replacement
+   until it is below it; nothing is delisted when NAV falls. A surprise upgrade only lands on a single rung row below
+   its target. New settle trigger `Deep`: the listed, held and queued ordinary items are fewer than `boardItems()` by at
+   least `batchMin`. `settle` on `Deep` queues each row's missing items (at most `MAX_LIST_PER_SETTLE` queued per call)
+   and lists at most 25. `open()` goes Live as before, on the first call that lists fewer than `MAX_OPEN_MINTS` items.
+   No new parameter. Place: `PoolBooks._boardItems`, `PoolStorage._setMix`, `PoolListing._queueMissing`,
+   `Pool.settleDue`, `Pool.settle`, `PricingLib.chooseRow`, `PoolAdmin.boardItems`, `Lens.parameters`. SPEC 9.

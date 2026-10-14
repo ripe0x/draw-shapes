@@ -48,10 +48,11 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- helpers
 
     function _open(uint256 pulls) internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         if (pulls != 0) pool.sizeBoard(pulls);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         pool.loseGrailFund(_fundOf());
         warpPastCooldown(clone);
@@ -276,6 +277,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
     ///      that `settleDue` is `Thin`.
     function _decayedItemWithDueSettle() internal {
         _openReady();
+        _spareCash(pool, 0.2 ether);
         pool.pushReplacement(1);
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);

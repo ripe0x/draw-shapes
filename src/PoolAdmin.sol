@@ -463,7 +463,8 @@ contract PoolAdmin is PoolBooks {
 
     /// @notice Row that replaces the capture of FWA request `requestId`, and whether the surprise
     ///         step chose it. Drawn by `PricingLib.chooseRow` from `keccak256(randomWord,
-    ///         requestId)`. A row's count is its listed, held and queued items.
+    ///         requestId)`. A row's count is its listed, held and queued items. Returns
+    ///         `type(uint256).max` when no row is below its target.
     function chooseRow(uint256 requestId, uint256 capturedRow)
         external
         view

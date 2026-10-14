@@ -37,7 +37,8 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         clone.setBool(41, true);
 
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         warpPastCooldown(clone);

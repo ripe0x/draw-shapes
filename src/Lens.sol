@@ -141,6 +141,7 @@ contract Lens {
         uint256 openingDeadline;
         uint256 openingDeadlineAt;
         uint256 minItems;
+        uint256 boardItems;
         uint256 grailProbCapBps;
         uint256 batchMin;
         uint256 batchMaxAge;
@@ -227,7 +228,7 @@ contract Lens {
         rows = new Row[](n);
         (uint16 premium, uint16 maintenance, uint16 feed) = pool.feeSplit();
         uint256 fee = IShapes(pool.shapes()).mintFee();
-        uint256 items = pool.minItems();
+        uint256 items = _ip().boardItems();
         for (uint256 i; i < n; ++i) {
             Row memory r = rows[i];
             (r.rungs, r.shareBps) = _ip().mixRow(i);
@@ -390,6 +391,7 @@ contract Lens {
         p.openingDeadline = _ip().openingDeadline();
         p.openingDeadlineAt = _ip().openingDeadlineAt();
         p.minItems = pool.minItems();
+        p.boardItems = _ip().boardItems();
         p.grailProbCapBps = _ip().grailProbCapBps();
         p.batchMin = _ip().batchMin();
         p.batchMaxAge = _ip().batchMaxAge();

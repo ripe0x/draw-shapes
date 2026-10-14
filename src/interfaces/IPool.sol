@@ -96,7 +96,8 @@ interface IPoolTypes {
         None,
         Batch,
         Age,
-        Thin
+        Thin,
+        Deep
     }
 
     struct Params {
@@ -307,6 +308,8 @@ interface IPool is IPoolTypes {
     // ------------------------------------------------------------------ views
 
     function nav() external view returns (uint256);
+    /// @dev Served by `PoolListing`.
+    function boardItems() external view returns (uint256);
     function rowCount(uint256 row) external view returns (uint256);
     function mixLength() external view returns (uint256);
     function listedRowCount(uint256 row) external view returns (uint256);
@@ -324,11 +327,13 @@ interface IPool is IPoolTypes {
     function rotate() external;
     function rotateDue() external view returns (RotateTrigger);
     function settleDue() external view returns (SettleTrigger);
+    /// @dev `row` is `type(uint256).max` when no row is below its target and the capture is not replaced.
     function chooseRow(uint256 requestId, uint256 capturedRow) external view returns (uint256 row, bool surprise);
     /// @dev `PoolListing` entrypoints. Callable by the pool itself only, except the view
     ///      `grailReady`.
     function listBatch(uint256 max) external returns (uint256 listed);
     function openBoard() external returns (uint256 listed);
+    function queueMissing(uint256 cap) external;
     function grailStep() external returns (bool changed);
     function grailReprice() external returns (bool changed);
     function grailReady() external view returns (bool);

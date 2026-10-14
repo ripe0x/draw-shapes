@@ -48,7 +48,8 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
     function _openReady() internal {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
         _drainGrailFund();
@@ -61,10 +62,11 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
     }
 
     function _openLarge() internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.sizeBoard(60);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
         _drainGrailFund();

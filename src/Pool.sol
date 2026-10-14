@@ -34,7 +34,7 @@ import {IPool} from "./interfaces/IPool.sol";
 ///
 ///      Admin, exit and successor-import functions are implemented by `PoolAdmin`. The listing
 ///      engine and the GRAIL (mint, merge, decay, probability cap) are implemented by `PoolListing`.
-///      `fallback` delegates `listBatch`, `openBoard`, `grailStep`, `grailReprice` and `grailReady`
+///      `fallback` delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice` and `grailReady`
 ///      to `listingModule` and every other call to `adminModule`, on the storage layout of
 ///      `PoolStorage`. Share, claim and bucket amounts are in wei.
 contract Pool is PoolBooks {
@@ -205,14 +205,21 @@ contract Pool is PoolBooks {
     /// @notice First reason `settle` lists replacements: `Batch` when `batchMin` replacements are
     ///         queued, `Age` when the queue has been nonempty for `batchMaxAge`, `Thin` when the
     ///         listed items beyond the unsettled acquisitions are fewer than `concurrency +
-    ///         THIN_MARGIN`. `None` when no reason holds, when nothing can be listed (no held item
-    ///         and the head of the queue is unaffordable) and when the pool is not Live.
+    ///         THIN_MARGIN`, `Deep` when the listed, held and queued items are fewer than
+    ///         `boardItems()` by at least `batchMin`. `None` when no reason holds, when a nonempty
+    ///         queue cannot be filled (no held item and the head of the queue is unaffordable) and
+    ///         when the pool is not Live.
     function settleDue() public view returns (SettleTrigger) {
-        if (lifecycle != Lifecycle.Live || !_listWork()) return SettleTrigger.None;
+        if (lifecycle != Lifecycle.Live) return SettleTrigger.None;
         uint256 queued = _replacementQueue.length - replacementHead;
-        if (queued >= _batchMin) return SettleTrigger.Batch;
-        if (queued != 0 && block.timestamp >= _oldestQueuedAt + _batchMaxAge) return SettleTrigger.Age;
-        if (listedCount < _unsettled() + _concurrency + THIN_MARGIN) return SettleTrigger.Thin;
+        if (_listWork()) {
+            if (queued >= _batchMin) return SettleTrigger.Batch;
+            if (queued != 0 && block.timestamp >= _oldestQueuedAt + _batchMaxAge) return SettleTrigger.Age;
+            if (listedCount < _unsettled() + _concurrency + THIN_MARGIN) return SettleTrigger.Thin;
+        } else if (queued != 0) {
+            return SettleTrigger.None;
+        }
+        if (listedCount + _held.length + queued + _batchMin <= _boardItems()) return SettleTrigger.Deep;
         return SettleTrigger.None;
     }
 
@@ -333,7 +340,8 @@ contract Pool is PoolBooks {
     /// @notice Processes up to `maxCount` FWA acquisitions, books their results, harvests and
     ///         activates staged FWA listings. When `settleDue` is not `None`, it lists at most
     ///         `MAX_LIST_PER_SETTLE` items from the replacement queue and the held items while
-    ///         listing is allowed, then applies the GRAIL decay
+    ///         listing is allowed, after `Deep` first queues the items each row lacks against its
+    ///         target depth (`PoolListing.queueMissing`, at most `MAX_LIST_PER_SETTLE` queued), then applies the GRAIL decay
     ///         (`PoolListing.grailReprice`) while FWA holds no unsettled acquisition and the
     ///         booking walk is level. A due call that listed an item or repriced a GRAIL item
     ///         refunds the caller `(gasUsed + ROTATE_GAS_OVERHEAD) *
@@ -348,7 +356,9 @@ contract Pool is PoolBooks {
         if (!busy) _call(address(fwaPool), IFWAClone.activateListings.selector, MAX_ACTIVATIONS, 0);
         uint256 listed;
         uint256 refund;
-        if (settleDue() != SettleTrigger.None && _listingAllowed()) {
+        SettleTrigger due = settleDue();
+        if (due != SettleTrigger.None && _listingAllowed()) {
+            if (due == SettleTrigger.Deep) _call(address(this), IPool.queueMissing.selector, MAX_LIST_PER_SETTLE, 0);
             listed = _listBatch(MAX_LIST_PER_SETTLE);
             bool repriced = !busy && _call(address(this), IPool.grailReprice.selector, 0, 0) != 0;
             if (listed != 0 || repriced) refund = _chargeRefund(gasStart);
@@ -388,17 +398,19 @@ contract Pool is PoolBooks {
         return this.onERC721Received.selector;
     }
 
-    /// @notice Delegates `listBatch`, `openBoard`, `grailStep`, `grailReprice`, `grailReady`,
-    ///         `setGrail`, `setGrailTarget`, `grail` and `grailItems` to `listingModule` and every other call to
+    /// @notice Delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`,
+    ///         `setGrail`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other call to
     ///         `adminModule`, and returns the module's return data or revert data.
     fallback() external payable {
         address module = adminModule;
         bytes4 sig = msg.sig;
         if (
-            sig == IPool.listBatch.selector || sig == IPool.openBoard.selector || sig == IPool.grailStep.selector
+            sig == IPool.listBatch.selector || sig == IPool.openBoard.selector || sig == IPool.queueMissing.selector
+                || sig == IPool.grailStep.selector
                 || sig == IPool.grailReprice.selector || sig == IPool.grailReady.selector
                 || sig == IPool.setGrail.selector || sig == IPool.setGrailTarget.selector
                 || sig == IPool.grail.selector || sig == IPool.grailItems.selector
+                || sig == IPool.boardItems.selector
         ) module = listingModule;
         assembly ("memory-safe") {
             calldatacopy(0, 0, calldatasize())

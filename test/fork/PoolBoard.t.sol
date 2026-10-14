@@ -14,7 +14,8 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 /// @notice Board build against deployed Shapes, deployed Shape Packs and a FWA clone created by
 ///         the pool through the deployed factory.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
-///      2 x 0.01 ETH (3,000 bps). `minItems` is 10, so the first targets are 7 and 3 items.
+///      2 x 0.01 ETH (3,000 bps). `minItems` is 10, so the first targets are 7 and 3 items
+///      while NAV is below the point where `boardItems()` exceeds it.
 contract PoolBoardForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -159,7 +160,8 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.minItems = 60;
         _create(p);
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         assertFalse(clone.localPurchasesEnabled());
 
@@ -207,7 +209,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     }
 
     function test_restockPaysQueuedClaimsBeforeMinting() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         address saver = makeAddr("saver");
         vm.deal(saver, 10 ether);
         vm.prank(saver);
@@ -234,7 +236,8 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_openBuildsBoardToMinItemsByRowShare() public {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         uint256 cashBefore = pool.cash();
         _open();
 
@@ -253,7 +256,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     }
 
     function test_packRowRegistryValueEqualsValueOf() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         uint256 packs;
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
@@ -346,7 +349,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(pool.backing(), 0);
         assertEq(IPool(address(pool)).rowCount(0), 0);
 
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         assertEq(shapes.ownerOf(id), address(pool));
         assertEq(pool.heldCount(), 0);
         assertEq(pool.backing(), 7 * 0.1 ether + 3 * 0.02 ether);
@@ -354,7 +357,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     /// @dev Exercises the ported acquire and fulfill helpers against the clone the pool created.
     function test_forkHelpersAcquireAndFulfill() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         vm.prank(address(pool));
         clone.setBool(41, true);
         warpPastCooldown(clone);

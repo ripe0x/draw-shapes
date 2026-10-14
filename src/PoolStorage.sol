@@ -172,6 +172,11 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint32 internal _founderWindowSeconds;
     /// @dev Timestamp from which `deposit` is admitted while Live.
     uint64 internal _depositsOpenAt;
+    /// @dev Sums over the mix rows, set by `_setMix`: `shareBps * rowBacking`, `shareBps * rungs`
+    ///      and `shareBps`. The mean cost of a row is `(_mixBacking + mintFee * _mixRungs) / _mixShares`.
+    uint256 internal _mixBacking;
+    uint256 internal _mixRungs;
+    uint256 internal _mixShares;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -517,8 +522,14 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
         delete _mix;
         delete _rowBackingWei;
+        uint256 weighted;
+        uint256 rungs;
+        uint256 shares;
         for (uint256 i; i < n; ++i) {
             _rowBackingWei.push(PricingLib.rowBacking(rows[i]));
+            weighted += uint256(rows[i].shareBps) * _rowBackingWei[i];
+            rungs += uint256(rows[i].shareBps) * rows[i].rungs.length;
+            shares += rows[i].shareBps;
             if (_rowCount.length < n) {
                 _rowCount.push();
                 _queuedByRow.push();
@@ -531,5 +542,6 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
                 row.rungs.push(rows[i].rungs[j]);
             }
         }
+        (_mixBacking, _mixRungs, _mixShares) = (weighted, rungs, shares);
     }
 }

@@ -78,7 +78,7 @@ contract PlayMonthTest is ForkBase, Deploy {
 
     // per-hour accumulators
     uint256[3] internal rotTrig;
-    uint256[3] internal setTrig;
+    uint256[4] internal setTrig;
     uint256 internal settleListedHour;
     uint256 internal settleRefundHour;
     uint256 internal rotates;
@@ -537,7 +537,7 @@ contract PlayMonthTest is ForkBase, Deploy {
             "hour,navPerShare,cash,backing,receivable,claims,listedCount,grailBacking0,grailNotional0,grailOddsBps0,"
             "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotHeld,"
             "inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds,"
-            "settles,setBatch,setAge,setThin,settleListed,settleRefund"
+            "settles,setBatch,setAge,setThin,setDeep,settleListed,settleRefund"
         );
         _truncate("claims.csv", "hour,depositor,shares,paidNow,enqueued,waitSeconds,open");
     }
@@ -583,7 +583,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         line = _c(_c(line, rotTrig[1]), rotTrig[2]);
         line = _c(_c(line, inventoryChanged), h < pauseSec.length ? pauseSec[h] : 0);
         line = _c(_c(_c(line, pullsHour), rejectedHour), waitHour);
-        line = _c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]);
+        line = _c(_c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]), setTrig[3]);
         line = _c(_c(line, settleListedHour), settleRefundHour);
         vm.writeLine(string.concat(dir, "hourly.csv"), line);
 

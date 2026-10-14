@@ -54,7 +54,8 @@ export function ParamsDisclosure() {
       <Kv label="Rotate interval" value={secs(p.rotateInterval)} />
       <Kv label="Opening deadline length" value={secs(p.openingDeadline)} />
       <Kv label="Opening deadline at" value={utc(p.openingDeadlineAt)} />
-      <Kv label="Board depth (items)" value={count(p.minItems)} />
+      <Kv label="Board depth now (items)" value={count(p.boardItems)} />
+      <Kv label="Minimum board depth (items)" value={count(p.minItems)} />
       <Kv label="GRAIL probability cap" value={bps(p.grailProbCapBps)} />
       <Kv label="Settle batch minimum" value={count(p.batchMin)} />
       <Kv label="Settle batch max age" value={secs(p.batchMaxAge)} />

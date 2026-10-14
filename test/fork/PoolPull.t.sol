@@ -121,24 +121,27 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     }
 
     function _open(uint256 depositWei) internal {
+        if (depositWei == 0) depositWei = _openingDeposit(address(pool));
         vm.prank(alice);
         pool.deposit{value: depositWei}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
     }
 
     function _openReady() internal {
-        _open(100 ether);
+        _open(0);
         warpPastCooldown(clone);
     }
 
     /// @dev Board of 60 items (42 Shapes, 18 packs). The 10 item board of `_openReady` moves FWA's fee
     ///      by more than the 10% slippage tolerance when two cheap items are captured in one batch.
     function _openLarge() internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.sizeBoard(60);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
         warpPastCooldown(clone);
@@ -745,6 +748,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_pullWithShapesCoversTicketAndRefundsExcess() public {
         _openReady();
+        _spareCash(pool, 0.5 ether);
         uint256 first = mintShapes(player, 0.1 ether, 2);
         vm.prank(player);
         IERC721(SHAPES_ADDR).setApprovalForAll(address(pool), true);
@@ -810,6 +814,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     function test_redeemAndDepositMintsSharesForRedeemedValue() public {
         _openReady();
+        _spareCash(pool, 0.5 ether);
         uint256 tokenId = mintShapes(player, 0.1 ether, 1);
         vm.prank(player);
         IERC721(SHAPES_ADDR).approve(address(pool), tokenId);
@@ -845,7 +850,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     // ---------------------------------------------------------------- reopen guards
 
     function test_revert_purchasesCoolingDownRightAfterOpen() public {
-        _open(100 ether);
+        _open(0);
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         (uint256 slip, uint256 version) = poolArgs(clone);
         vm.deal(player, total);
