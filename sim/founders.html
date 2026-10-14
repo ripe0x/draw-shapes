@@ -1,0 +1,134 @@
+<title>Founder Cohort Explorer</title>
+<style>
+/* Layout: controls column on the left, chart and readouts on the right; stacks at phone width. */
+:root {
+  --bg: #f6f5f1; --fg: #1d1c19; --muted: #6b6960; --line: #d9d7cf; --panel: #ffffff;
+  --accent: #2a78d6; --ref: #b4b2a9; --ref2: #5f5e5a; --even: #1d9e75; --window: #d85a30;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif; --font-data: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15150f; --fg: #ebe9e1; --muted: #9c9a90; --line: #33322c; --panel: #1f1e18;
+  --accent: #5a9ae6; --ref: #6f6d65; --ref2: #b4b2a9; --even: #5dcaa5; --window: #f0997b; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #15150f; --fg: #ebe9e1; --muted: #9c9a90; --line: #33322c; --panel: #1f1e18;
+  --accent: #5a9ae6; --ref: #6f6d65; --ref2: #b4b2a9; --even: #5dcaa5; --window: #f0997b; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5; margin: 0; padding-block: 24px; padding-inline: 16px; }
+.wrap { max-width: 1100px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; text-wrap: balance; }
+.sub { color: var(--muted); margin: 0 0 20px; max-width: 65ch; }
+.grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; }
+@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+.ctl { display: grid; gap: 12px; align-content: start; }
+.ctl label { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font-size: 13px; color: var(--muted); }
+.ctl label b { font-weight: 500; color: var(--fg); font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.ctl input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.ctl h2 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0 0; font-weight: 500; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.tile small { display: block; font-size: 12px; color: var(--muted); }
+.tile strong { font-size: 20px; font-weight: 500; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.legend span { display: flex; align-items: center; gap: 5px; }
+.sw { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+.chart { position: relative; width: 100%; height: 320px; }
+.notes { color: var(--muted); font-size: 13px; margin-top: 14px; max-width: 70ch; }
+.notes p { margin: 4px 0; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<div class="wrap">
+  <h1>Founder cohort explorer</h1>
+  <p class="sub">Return of the opening depositors over time. The cohort pays the entry fee that seeds the GRAIL, holds the pool alone during the founder window, and shares the premium with later depositors after it.</p>
+  <div class="grid">
+    <div class="ctl">
+      <h2>Cohort</h2>
+      <label>Founder deposits, total <b id="Do"></b><input type="range" id="D" min="10" max="200" step="1" value="77"></label>
+      <label>Opening fee <b id="Fo"></b><input type="range" id="F" min="5" max="25" step="1" value="10"></label>
+      <h2>Window</h2>
+      <label>Founder window <b id="Wo"></b><input type="range" id="W" min="0" max="90" step="1" value="30"></label>
+      <label>Premium in the window <b id="Pwo"></b><input type="range" id="Pw" min="50" max="500" step="25" value="300"></label>
+      <label>Premium after the window <b id="Po"></b><input type="range" id="P" min="50" max="500" step="25" value="200"></label>
+      <h2>Market</h2>
+      <label>Tickets per day <b id="Vo"></b><input type="range" id="V" min="1" max="40" step="1" value="10"></label>
+      <label>Turnover target (bps of NAV per day) <b id="To"></b><input type="range" id="T" min="250" max="2500" step="125" value="1250"></label>
+    </div>
+    <div>
+      <div class="tiles">
+        <div class="tile"><small>GRAIL seeded</small><strong id="g"></strong></div>
+        <div class="tile"><small>NAV at open</small><strong id="n"></strong></div>
+        <div class="tile"><small>Yield per day in window</small><strong id="y"></strong></div>
+        <div class="tile"><small>Break-even</small><strong id="be"></strong></div>
+        <div class="tile"><small>Return at window end</small><strong id="rw"></strong></div>
+        <div class="tile"><small>Return at day 180</small><strong id="r180"></strong></div>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--accent)"></i>Selected</span>
+        <span><i class="sw" style="background:var(--ref)"></i>Half the deposits</span>
+        <span><i class="sw" style="background:var(--ref2)"></i>Double the deposits</span>
+        <span><i class="sw" style="background:var(--even)"></i>Break-even</span>
+        <span><i class="sw" style="background:var(--window)"></i>Window ends</span>
+      </div>
+      <div class="chart"><canvas id="c" role="img" aria-label="Founder return percent over 180 days for the selected, half and double deposit totals, with break-even at zero and the founder window end marked"></canvas></div>
+      <div class="notes">
+        <p>Fee times deposits is the GRAIL seed. NAV after the fee funds the board. Yield per day is premium times tickets per day over NAV. After the window the pool is assumed to fill to the volume cap on day one, so yield drops to the cap rate.</p>
+        <p>The window premium is set by the admin with <code>setFeeSplit</code> at open and reverted when the window closes. The feed takes the difference, so list prices and tickets are unchanged.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const DAYS = 180;
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function curve(D, f, premIn, premOut, V, W, turn) {
+  const nav0 = D * (1 - f);
+  const cap = Math.max(nav0, V / turn);
+  const yIn = premIn * V / nav0;
+  const yOut = premOut * V / cap;
+  const pts = []; let acc = 0, be = null;
+  for (let d = 0; d <= DAYS; d++) {
+    if (d > 0) acc += d <= W ? yIn : yOut;
+    const r = (1 - f) * (1 + acc) - 1;
+    if (be === null && r >= 0) be = d;
+    pts.push({ x: d, y: r * 100 });
+  }
+  return { pts, be, nav0, yIn, g: D * f };
+}
+const beLabel = { id: 'beLabel', afterDraw(c) {
+  const s = c.$be; if (!s || s.be === null) return;
+  const x = c.scales.x.getPixelForValue(s.be), y = c.scales.y.getPixelForValue(0);
+  const ctx = c.ctx; ctx.save(); ctx.font = '500 12px ' + css('--font-data'); ctx.fillStyle = css('--even');
+  ctx.fillText('break-even day ' + s.be, x + 6, y - 8); ctx.restore();
+} };
+let ch;
+function build() {
+  const muted = css('--muted'), line = css('--line');
+  ch = new Chart($('c'), { type: 'line', plugins: [beLabel], data: { datasets: [
+    { label: 'selected', data: [], borderColor: css('--accent'), borderWidth: 2, pointRadius: 0 },
+    { label: 'half', data: [], borderColor: css('--ref'), borderWidth: 1.5, pointRadius: 0 },
+    { label: 'double', data: [], borderColor: css('--ref2'), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 },
+    { label: 'win', data: [], borderColor: css('--window'), borderWidth: 1.5, pointRadius: 0, borderDash: [3, 3] },
+    { label: 'bev', data: [], borderColor: css('--even'), borderWidth: 1.5, pointRadius: 0, borderDash: [3, 3] },
+    { label: 'zero', data: [{ x: 0, y: 0 }, { x: DAYS, y: 0 }], borderColor: css('--even'), borderWidth: 1.5, pointRadius: 0 } ] },
+    options: { responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+      plugins: { legend: { display: false }, tooltip: { filter: i => ['selected', 'half', 'double'].includes(i.dataset.label),
+        callbacks: { title: i => i.length ? 'day ' + Math.round(i[0].parsed.x) : '', label: c => c.dataset.label + ': ' + c.parsed.y.toFixed(1) + '%' } } },
+      scales: { x: { type: 'linear', min: 0, max: DAYS, title: { display: true, text: 'days since open', color: muted }, ticks: { color: muted, stepSize: 30 }, grid: { display: false } },
+        y: { title: { display: true, text: 'founder return %', color: muted }, ticks: { color: muted, callback: v => v + '%' }, grid: { color: line } } } } });
+}
+function upd() {
+  const D = +$('D').value, f = +$('F').value / 100, W = +$('W').value, premIn = +$('Pw').value / 1e4, premOut = +$('P').value / 1e4, V = +$('V').value, turn = +$('T').value / 1e4;
+  $('Do').textContent = D + ' ETH'; $('Fo').textContent = Math.round(f * 100) + '%'; $('Wo').textContent = W + ' days';
+  $('Pwo').textContent = $('Pw').value + ' bps'; $('Po').textContent = $('P').value + ' bps'; $('Vo').textContent = V + ' ETH'; $('To').textContent = $('T').value;
+  const s = curve(D, f, premIn, premOut, V, W, turn), h = curve(D / 2, f, premIn, premOut, V, W, turn), x = curve(D * 2, f, premIn, premOut, V, W, turn);
+  $('g').textContent = s.g.toFixed(1) + ' ETH'; $('n').textContent = s.nav0.toFixed(0) + ' ETH'; $('y').textContent = (s.yIn * 100).toFixed(2) + '%';
+  $('be').textContent = s.be === null ? 'past day 180' : 'day ' + s.be; $('rw').textContent = (W ? s.pts[W].y : 0).toFixed(1) + '%'; $('r180').textContent = s.pts[DAYS].y.toFixed(1) + '%';
+  const ys = [...s.pts, ...h.pts, ...x.pts].map(p => p.y); const lo = Math.min(-15, ...ys), hi = Math.max(10, ...ys);
+  const d = ch.data.datasets; d[0].data = s.pts; d[1].data = h.pts; d[2].data = x.pts;
+  d[3].data = [{ x: W, y: lo }, { x: W, y: hi }]; d[4].data = s.be === null ? [] : [{ x: s.be, y: lo }, { x: s.be, y: 0 }];
+  ch.$be = s; ch.options.scales.y.min = Math.floor(lo / 5) * 5; ch.options.scales.y.max = Math.ceil(hi / 5) * 5; ch.update();
+}
+build();
+['D', 'F', 'W', 'Pw', 'P', 'V', 'T'].forEach(id => $(id).addEventListener('input', upd));
+upd();
+</script>
