@@ -186,6 +186,7 @@ interface IPoolTypes {
     ///      the caller from `maintenance`.
     event Settled(uint256 listed, uint256 refund);
     event MaintenanceFunded(address indexed from, uint256 amount);
+    event GrailFunded(address indexed from, uint8 indexed track, uint256 amount);
     /// @dev `chosenRow` is the row queued to replace the capture of `capturedRow`. `surprise` is true
     ///      when the surprise draw selected it.
     event ReplacementChosen(uint256 indexed requestId, uint256 capturedRow, uint256 chosenRow, bool surprise);
@@ -343,6 +344,7 @@ interface IPool is IPoolTypes {
     function settle(uint256 maxCount) external;
     function payClaims() external;
     function fundMaintenance() external payable;
+    function fundGrail(uint8 t) external payable;
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4);
 
     // ------------------------------------------------------------------ PoolAdmin

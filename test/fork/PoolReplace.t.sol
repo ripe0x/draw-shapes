@@ -947,6 +947,30 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertEq(uint8(lens.settleDue()), uint8(IPoolTypes.SettleTrigger.Batch));
     }
 
+    function test_fundGrail_creditsBucket() public {
+        IPool p = IPool(address(pool));
+        (uint256 before_,,,,,,,,,,,) = p.grail(1);
+        uint256 balBefore = address(pool).balance;
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit IPoolTypes.GrailFunded(alice, 1, 1 ether);
+        vm.prank(alice);
+        p.fundGrail{value: 1 ether}(1);
+        (uint256 after_,,,,,,,,,,,) = p.grail(1);
+        assertEq(after_ - before_, 1 ether);
+        assertEq(address(pool).balance - balBefore, 1 ether);
+    }
+
+    function test_fundGrail_rejectsZero() public {
+        vm.expectRevert(IPoolTypes.ZeroAmount.selector);
+        IPool(address(pool)).fundGrail(1);
+    }
+
+    function test_fundGrail_rejectsBadTrack() public {
+        vm.prank(alice);
+        vm.expectRevert(IPoolTypes.InvalidTrack.selector);
+        IPool(address(pool)).fundGrail{value: 1 ether}(2);
+    }
+
     function test_theModuleGettersMatchTheConstructor() public view {
         IPool p = IPool(address(pool));
         assertEq(p.batchMin(), 5);

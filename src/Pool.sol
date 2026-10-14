@@ -361,6 +361,14 @@ contract Pool is PoolBooks {
         emit MaintenanceFunded(msg.sender, msg.value);
     }
 
+    /// @notice Adds `msg.value` to track `t`'s bucket. Anyone may call it.
+    function fundGrail(uint8 t) external payable {
+        if (msg.value == 0) revert ZeroAmount();
+        if (t > MAJOR) revert InvalidTrack();
+        _grail[t].bucket += msg.value;
+        emit GrailFunded(msg.sender, t, msg.value);
+    }
+
     /// @notice Accepts ETH from Shapes redemptions and FWA proceeds. The ETH is booked by the
     ///         function that triggered the transfer.
     receive() external payable {}

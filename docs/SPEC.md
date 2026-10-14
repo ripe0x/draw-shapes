@@ -253,6 +253,7 @@ track) and `rotateInterval` has passed since `lastRefundAt`: one refund per inte
 `fundMaintenance()` payable adds the sent ETH to `maintenance`. Anyone may call it. The launch plan is `maintenanceBps`
 100 plus operator top-ups from Shapes mint fee revenue: at 1 gwei the mint fee per Shape is about six times the mint
 and list gas per item, at 6 gwei about equal, so the bucket is refilled from that revenue when the basefee is high.
+`fundGrail(t)` payable adds the sent ETH to `grail[t].bucket`. Anyone may call it.
 
 ## 11. GRAIL tracks
 
