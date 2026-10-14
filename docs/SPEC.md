@@ -273,26 +273,56 @@ track) and `rotateInterval` has passed since `lastRefundAt`: one refund per inte
 and list gas per item, at 6 gwei about equal, so the bucket is refilled from that revenue when the basefee is high.
 `fundGrail(t)` payable adds the sent ETH to `grail[t].bucket`. Anyone may call it.
 
-## 11. GRAIL tracks
+## 11. GRAIL
 
-Two tracks, `minor` and `major`, one struct each: `bucket`, `packId`, `backing`, `notional`, `targetWei`, `stepWei`,
-`listBps`, `decayWeiPerPull`, `floorWei`, `pullsSinceList`, `receivable`, `listingId`.
+One fund, one ladder, many listed pieces. The GRAIL is built on the board from 1 ETH Shapes that players
+can draw while it forms.
 
-Growth (trigger GrailStep), per track: requires `bucket >= stepWei + mint fees` and `backing < targetWei`. A track with a
-listing grows only while FWA holds no unsettled acquisition; a track without a listing grows at any time. Withdraws
-the listing if listed; mints the largest native rungs that fit; `createPack` if `packId == 0`, else `addToPack`; `backing += step`;
-if the pack's contents sum to a native rung, opens, composes at Shapes, and repacks it as one Shape; `notional = backing * listBps / 10_000`; lists. It resets `pullsSinceList`.
+Storage. `grail`: `fund` (ETH), `receivable`, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`,
+`decayWeiPerPull`, `pieceFloorWei`, `floorWei`. `grailItems`: at most `MAX_GRAIL_ITEMS` (16) entries of
+`collection` (Shapes or Draw Packs), `tokenId`, `backing`, `notional`, `listingId`, `pullsSinceList`.
+A piece is an item with backing of 1 ETH. At most `MAX_PIECES` (6) pieces exist at once.
 
-Decay, inside `settle` after the listing step and under the same listing condition (cooldown 0 or `listWhilePaused`), per track: `next = max(floorWei, notional - decayWeiPerPull *
-pullsSinceList)`. The reprice runs when the listing is Active, `next` is at least 1 percent (`notional / 100`) below
-`notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls `updatePrice` and resets
-`pullsSinceList`. An unlisted pack is listed at `next`. On capture, proceeds go to the track's receivable and then its
-bucket, and `packId` and `backing` reset to 0.
+Ladder. `targetWei` is one of 5, 10, 25, 50, 100 ETH. `setGrailTarget(wei)` writes `nextTargetWei`;
+a cycle reads it at start. Launch target 25 ETH.
 
-Probability cap, inside `settle` after the decay. When the listed GRAIL weight exceeds `grailProbCapBps`, `settle` lifts a track's
-`notional` to the smallest price that restores the cap, at most `backing * listBps / 10_000`. The lift needs an Active
-listing and no unsettled acquisitions, and it resets `pullsSinceList`. The board depth guard keeps at least
-`concurrency` ordinary items listed, so a first minor listing at 0.1 ETH holds about 1 percent of selection weight.
+Funding. The whole entry contribution (section 7), the feed share of every settled ticket (section 9),
+`fundGrail()` from any sender, and the proceeds of a captured GRAIL item (through `receivable`). The fund
+is outside ordinary NAV (section 4).
+
+Mint (trigger GrailStep, inside `rotate`). While `fund >= 1 ETH + mintFee`, pieces < 6, items < 16, FWA
+holds no unsettled acquisition, and at most `MAX_GRAIL_MINTS_PER_ROTATE` (3) per call: mint one 1 ETH
+Shape, list it at `notional = backing`, `fund -= 1 ETH + mintFee`.
+
+Merge (same trigger, after mint). Recipes by target, inputs taken from `grailItems`:
+- 5 ETH from five pieces, while a sixth piece stays listed.
+- 10 ETH from two 5 ETH items.
+- 25 ETH from two 10 ETH items and one 5 ETH item.
+- 50 ETH from two 25 ETH items.
+- 100 ETH from two 50 ETH items.
+A recipe runs when its inputs are listed and FWA holds no unsettled acquisition. It withdraws the inputs'
+listings, composes at Shapes when the output backing is a native rung (5, 10, 50, 100), else creates a
+Draw Pack of the inputs (25), and lists the output at `backing * listBps / 10_000`, floored at
+`floorWei`. The output joins `grailItems`. When the output backing equals `targetWei` the cycle is complete:
+`cycleId += 1`, `targetWei = nextTargetWei`, and minting continues from the fund. The completed GRAIL stays
+listed until captured.
+
+Opening. Inside `open()` before the board lists: if `fund >= 5 * (1 ETH + mintFee)`, mint five pieces,
+compose one 5 ETH Shape, list it at `notional = backing`. It is the first item of cycle 1.
+
+Decay, inside `settle` after the listing step and under the same listing condition, per listed item:
+`next = max(floor, notional - decayWeiPerPull * pullsSinceList)`, with `floor = pieceFloorWei` for a piece
+and `floorWei` otherwise. The reprice runs when the listing is Active and `next` is at least 1 percent
+below `notional`. It calls `updatePrice` and resets `pullsSinceList`.
+
+Probability cap, inside `settle` after the decay. When the listed GRAIL weight exceeds `grailProbCapBps`,
+every listed item's `notional` is raised by the same factor, at most to `backing * listBps / 10_000`
+(`backing` for a piece), until the cap holds. Needs Active listings and no unsettled acquisitions.
+
+Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
+A captured intermediate does not stop the cycle; the recipe waits for new inputs.
+
+Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 1 ETH.
 
 ## 12. Admin
 
