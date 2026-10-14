@@ -101,9 +101,10 @@ contract Pool is PoolBooks {
     /// @notice Enables FWA acquisitions and builds the board after the opening deadline. Each call
     ///         pays queued claims, queues the items each row lacks against its target depth, then
     ///         fills and lists the queue and the held items, at most `MAX_OPEN_MINTS` in all
-    ///         (`PoolListing.openBoard`). The
-    ///         pool becomes Live on the first call that lists fewer than `MAX_OPEN_MINTS` items,
-    ///         and `open` stays callable while Opening.
+    ///         (`PoolListing.openBoard`). The pool becomes Live on the first call after which
+    ///         `listedCount` is at least `minItems`, or which lists fewer than `MAX_OPEN_MINTS`
+    ///         items. `open` stays callable while Opening. Once Live, the `Deep` settle trigger
+    ///         lists the rest of the board.
     function open() external nonReentrant {
         _notExiting();
         if (lifecycle != Lifecycle.Opening) revert NotOpening();
@@ -114,7 +115,7 @@ contract Pool is PoolBooks {
             _call(address(fwa), IFWAClone.setBool.selector, FWAConfigKeys.ACQUISITIONS_ENABLED, 1);
         }
         _payClaims();
-        if (_call(address(this), IPool.openBoard.selector, 0, 0) < MAX_OPEN_MINTS) {
+        if (_call(address(this), IPool.openBoard.selector, 0, 0) < MAX_OPEN_MINTS || listedCount >= minItems) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
             _liveDay = uint32(block.timestamp / 1 days);

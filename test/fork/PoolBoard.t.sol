@@ -155,7 +155,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
     }
 
-    function test_openRepeatsUntilTheBoardIsBuiltThenGoesLive() public {
+    function test_openRepeatsUntilMinItemsAreListedThenGoesLive() public {
         IPoolTypes.Params memory p = _forkParams();
         p.minItems = 60;
         _create(p);
@@ -177,11 +177,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
         pool.open();
         assertEq(pool.listedCount(), 60, "board at target after 20 mints");
-        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening), "a full batch keeps the pool Opening");
-
-        pool.open();
-        assertEq(pool.listedCount(), 60);
-        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live), "minItems listed sets Live");
         assertEq(IPool(address(pool)).rowCount(0), 42);
         assertEq(IPool(address(pool)).rowCount(1), 18);
 

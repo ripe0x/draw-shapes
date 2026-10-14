@@ -113,8 +113,9 @@ the rest is listed on the board).
 
 - Opening: deposits open from deployment at NAV, which is pure cash, so every opening depositor receives shares 1:1.
   Pulls closed. Admin calls `createFwaPool(expectedFee)`, which starts the opening deadline. After the deadline anyone
-  calls `open()`, which enables FWA acquisitions and lists at most 20 items per call. The first call that lists fewer
-  than 20 sets Live.
+  calls `open()`, which enables FWA acquisitions and lists at most 20 items per call. The first call after which at
+  least `minItems` are listed, or which lists fewer than 20, sets Live. Once Live, the `Deep` settle trigger (section 9)
+  lists the rest of the board up to `boardItems()`.
 - Live: all paths open subject to pause flags and reopen guards.
 - Paused: admin flags. Settlement of issued pulls, deposits, `settle` and `rotate` continue unless a flag closes them.
 - Exiting: `startExit(dest)` by admin. It disables FWA acquisitions and closes pulls, deposits, rotation and GRAIL

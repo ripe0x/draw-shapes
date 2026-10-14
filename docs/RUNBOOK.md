@@ -70,7 +70,8 @@ SIGN="--account $KEYSTORE_ACCOUNT --password-file $KEYSTORE_PASSWORD_FILE"
 2. Deposit the opening cohort. Opening NAV is cash, so shares mint 1:1.
    `cast send --rpc-url $RPC $SIGN $POOL 'deposit()' --value $AMOUNT`
 3. After `openingDeadlineAt`, call `open()` until `lifecycle()` returns 1 (Live). Each call lists at
-   most 20 items; anyone may call it.
+   most 20 items and anyone may call it. The pool is Live once `minItems` are listed. `settleDue()`
+   then returns Deep and `settle` lists the rest of the board up to `boardItems()`.
    `cast send --rpc-url $RPC $SIGN $POOL 'open()'`
 4. Founder window premium. Right after the pool is Live, move 100 bps from the feed to the premium.
    The sum stays 700, so list prices and tickets are unchanged. `admission()` on Lens shows

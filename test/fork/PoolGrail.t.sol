@@ -61,6 +61,7 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.deposit{value: depositWei}();
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
+        while (pool.settleDue() == IPoolTypes.SettleTrigger.Deep) pool.settle(20);
         warpPastCooldown(clone);
     }
 

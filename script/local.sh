@@ -85,11 +85,11 @@ start() {
     cast rpc --rpc-url "$RPC_URL" evm_increaseTime "$(( DEADLINE - NOW + 1 ))" >/dev/null
     cast rpc --rpc-url "$RPC_URL" evm_mine >/dev/null
   fi
-  for i in $(seq 50); do
+  for i in $(seq 200); do
     [[ "$(call "$POOL" 'lifecycle()(uint8)')" == "1" ]] && break
     echo "open() call $i"; send --from "$ADMIN" "$POOL" 'open()'
   done
-  [[ "$(call "$POOL" 'lifecycle()(uint8)')" == "1" ]] || { echo "pool is not Live after 50 open() calls"; exit 1; }
+  [[ "$(call "$POOL" 'lifecycle()(uint8)')" == "1" ]] || { echo "pool is not Live after 200 open() calls"; exit 1; }
 
   echo "pool     $POOL"
   echo "lens     $LENS"

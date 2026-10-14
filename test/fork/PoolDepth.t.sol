@@ -141,6 +141,50 @@ contract PoolDepthForkTest is ForkBase, PoolFixture {
         assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.None));
     }
 
+    // ---------------------------------------------------------------- open
+
+    function test_openGoesLiveAtMinItemsAndDeepFillsTheRest() public {
+        IPoolTypes.Params memory p = _params();
+        p.shapes = SHAPES_ADDR;
+        p.drawPacks = address(drawPacks);
+        p.fwaFactory = FACTORY_ADDR;
+        p.mix[1].rungs[0] = 0;
+        p.mix[1].rungs[1] = 0;
+        p.batchMin = 5;
+        PoolHarness big = new PoolHarness(p);
+        vm.prank(admin);
+        IPool(address(big)).createFwaPool(0);
+        IFWAClone bigClone = big.fwaPool();
+        vm.prank(address(big));
+        bigClone.setBool(41, true);
+
+        uint256 minItems = big.minItems();
+        vm.prank(alice);
+        big.deposit{value: _openingDeposit(address(big)) + 8 ether}();
+        assertGe(IPool(address(big)).boardItems(), 3 * minItems, "deep opening deposit");
+
+        vm.warp(IPool(address(big)).openingDeadlineAt());
+        uint256 calls;
+        while (big.lifecycle() == IPoolTypes.Lifecycle.Opening && calls < 50) {
+            big.open();
+            ++calls;
+        }
+        assertEq(uint8(big.lifecycle()), uint8(IPoolTypes.Lifecycle.Live), "Live");
+        assertLe(calls, (minItems + 19) / 20 + 2, "open calls to Live");
+        assertGe(big.listedCount(), minItems);
+        assertLt(big.listedCount(), IPool(address(big)).boardItems());
+        assertEq(uint8(big.settleDue()), uint8(IPoolTypes.SettleTrigger.Deep));
+
+        uint256 n;
+        while (big.settleDue() == IPoolTypes.SettleTrigger.Deep && n < 100) {
+            vm.prank(keeper);
+            big.settle(20);
+            ++n;
+        }
+        assertLt(n, 100);
+        assertLt(IPool(address(big)).boardItems(), big.listedCount() + big.heldCount() + big.replacementLength() + 5);
+    }
+
     // ---------------------------------------------------------------- settle on Deep
 
     function test_settleOnDeepQueuesAndListsTwentyFivePerCallUntilTheBoardMatches() public {
