@@ -18,9 +18,17 @@ Live. It prints the pool, lens and FWA pool addresses, `Lens.quote(1)`, `nav()`,
 `rotateDue()`. The record is `deployments/31337-8545.json`. Anvil accounts 1, 2 and 3 are the
 keeper and two test wallets, each funded with `LOCAL_WALLET_ETH` (default 1000).
 
-A local pull stays unfulfilled until the FWA VRF service is impersonated on the fork, so `settle`
-has nothing to book after it. Warping 1000 seconds (`evm_increaseTime`, `evm_mine`) after a pull
-makes `rotateDue()` nonzero and shows the keeper send path.
+### Local VRF
+
+Nothing fulfils VRF on anvil, so a pull stays Pending. `script/local.sh fulfill` impersonates the
+FWA VRF service's `s_vrfCoordinator`, sends `rawFulfillRandomWords` to the service with a random
+word for each Pending acquisition from `nextSequenceToProcess()` to `lastIssuedSequence()`, then
+calls `processAcquisitions(20)` and logs the request id and resulting status. `LOCAL_VRF=1
+script/local.sh keeper` runs the same step at the start of every pass, before `settle`. Use it on
+anvil only.
+
+Warping 1000 seconds (`evm_increaseTime`, `evm_mine`) makes `rotateDue()` nonzero and shows the
+keeper rotate path.
 
 ## What to watch
 

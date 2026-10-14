@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Keeper loop: settle, rotate and payClaims on the pool, one log line per sent transaction.
 # Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool), KEEPER, INTERVAL (default 15), ONCE=1 for one pass.
+# LOCAL_VRF=1 runs `script/local.sh fulfill` at the start of every pass (anvil only).
 # WALLET_MODE=anvil sends with --unlocked --from $KEEPER. WALLET_MODE=keystore sends with
 # --account $KEYSTORE_ACCOUNT and --password-file $KEYSTORE_PASSWORD_FILE (shell only, never a key in argv).
 set -euo pipefail
@@ -51,6 +52,7 @@ send() {
 
 pass() {
   local settle rotate head cash
+  [[ "${LOCAL_VRF:-0}" != 1 ]] || "$(dirname "$0")/local.sh" fulfill
   settle=$(cast call --rpc-url "$RPC_URL" "$POOL" 'settleDue()(uint8)')
   [[ "$settle" == "0" ]] || send "settle(20) reason=$settle" "$SETTLED_TOPIC" 'settle(uint256)' 20
   rotate=$(cast call --rpc-url "$RPC_URL" "$POOL" 'rotateDue()(uint8)')

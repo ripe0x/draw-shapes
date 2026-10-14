@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Local run on an anvil fork of mainnet (port 8545): script/local.sh <start|keeper|stop>
+# Local run on an anvil fork of mainnet (port 8545): script/local.sh <start|keeper|fulfill|stop>
 #   start   fork, deploy, create the FWA pool, fund wallets, deposit, warp, open() until Live, print state
-#   keeper  exec script/keeper.sh against the local record with the anvil keeper wallet
+#   keeper  exec script/keeper.sh against the local record with the anvil keeper wallet (LOCAL_VRF=1 also runs fulfill each pass)
+#   fulfill deliver a random word for every Pending FWA acquisition as the VRF coordinator, then processAcquisitions(20)
 #   stop    kill anvil
 # Env: FORK_RPC (default publicnode), LOCAL_OPENING_ETH (default 50), LOCAL_WALLET_ETH (default 1000),
 # ONCE=1 and INTERVAL pass through to the keeper.
@@ -22,6 +23,26 @@ send() { cast send --rpc-url "$RPC_URL" --unlocked "$@" >/dev/null; }
 stop() {
   [[ -f "$PIDFILE" ]] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
   rm -f "$PIDFILE"; echo "anvil stopped"
+}
+
+# Mirrors test/fork/ForkBase.sol fulfill: the sender is the VRF service's s_vrfCoordinator, the target is the VRF service.
+fulfill() {
+  local pool svc coord seq last rid st word
+  pool=$(jq -r .fwaPool "$RECORD"); svc=$(call "$pool" 'vrfService()(address)'); coord=$(call "$svc" 's_vrfCoordinator()(address)')
+  seq=$(call "$pool" 'nextSequenceToProcess()(uint64)' | awk '{print $1}'); last=$(call "$pool" 'lastIssuedSequence()(uint64)' | awk '{print $1}')
+  cast rpc --rpc-url "$RPC_URL" anvil_impersonateAccount "$coord" >/dev/null
+  cast rpc --rpc-url "$RPC_URL" anvil_setBalance "$coord" 0xde0b6b3a7640000 >/dev/null
+  for (( ; seq <= last; seq++ )); do
+    rid=$(call "$pool" 'requestIdAtSequence(uint64)(uint256)' "$seq" | awk '{print $1}')
+    st=$(call "$pool" 'acquisitions(uint256)(address,uint256,uint256,uint256,uint8)' "$rid" | tail -1 | awk '{print $1}')
+    [[ "$st" == 1 ]] || continue
+    word=0x$(openssl rand -hex 32)
+    # Explicit gas limit: the service defers delivery to the clone when gasleft() is below its callback reserve.
+    send --gas-limit 3000000 --from "$coord" "$svc" 'rawFulfillRandomWords(uint256,uint256[])' "$rid" "[$word]"
+    send --from "$KEEPER" "$pool" 'processAcquisitions(uint256)' 20
+    st=$(call "$pool" 'acquisitions(uint256)(address,uint256,uint256,uint256,uint8)' "$rid" | tail -1 | awk '{print $1}')
+    echo "$(date -u +%FT%TZ) fulfill seq=$seq requestId=$rid status=$st"
+  done
 }
 
 start() {
@@ -73,6 +94,7 @@ start() {
 case "${1:-}" in
   start) start ;;
   keeper) DEPLOYMENT_RECORD="$RECORD" WALLET_MODE=anvil KEEPER="$KEEPER" exec script/keeper.sh ;;
+  fulfill) fulfill ;;
   stop) stop ;;
-  *) echo "usage: script/local.sh <start|keeper|stop>"; exit 1 ;;
+  *) echo "usage: script/local.sh <start|keeper|fulfill|stop>"; exit 1 ;;
 esac
