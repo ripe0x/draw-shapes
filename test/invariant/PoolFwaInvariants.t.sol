@@ -58,6 +58,8 @@ contract PoolFwaHandler is ForkBase {
     uint256 internal _grailListedInCall;
     uint256 public settleListed;
     uint256 public settleRefunds;
+    /// @dev `settle` calls made while `settleDue` was `Deep`, which queue and list the board shortfall.
+    uint256 public deepSettles;
     /// @dev Shapes `pullWithShapes` and `redeemAndDeposit` left in the pool as held items.
     uint256 public keptShapes;
     /// @dev Set when `rotate` succeeds while `rotateDue` is `None`.
@@ -539,11 +541,17 @@ contract PoolFwaHandler is ForkBase {
     }
 
     function settleAndHarvest() external recorded {
+        _countDeep();
         pool.settle(20);
         _harvest();
     }
 
+    function _countDeep() internal {
+        if (pool.settleDue() == IPoolTypes.SettleTrigger.Deep) ++deepSettles;
+    }
+
     function _settle(uint256 count) internal {
+        _countDeep();
         vm.recordLogs();
         uint256 balanceBefore = address(this).balance;
         pool.settle(count);
@@ -658,11 +666,19 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         vm.prank(address(pool));
         clone.setBool(41, true);
 
-        // 60 item board: 30 Shapes of 0.1, 18 packs and 12 Shapes of 0.01.
-        vm.prank(alice);
-        pool.deposit{value: 200 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        // 60 item board: 30 Shapes of 0.1, 18 packs and 12 Shapes of 0.01. The opening deposit is the
+        // one that makes `boardItems()` equal 60. The GRAIL fund is raised to the 22 ETH that a
+        // 200 ETH deposit contributes at the 11 percent floor entry fee.
         pool.sizeBoard(60);
+        uint256 opening = _openingDeposit(address(pool));
+        vm.prank(alice);
+        pool.deposit{value: opening}();
+        uint256 fund = IPool(address(pool)).grail().fund;
+        if (fund < 22 ether) {
+            vm.deal(address(this), address(this).balance + 22 ether);
+            IPool(address(pool)).fundGrail{value: 22 ether - fund}();
+        }
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         warpPastCooldown(clone);
 
@@ -767,6 +783,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.rotations(), 0);
         assertGt(handler.keptShapes(), 0);
         assertGt(handler.settleListed(), 0);
+        assertGt(handler.deepSettles(), 0);
         assertGt(handler.liquidations(), 0);
         assertGt(handler.liquidatedItems(), 0);
         assertGt(handler.ghostLiquidationFees(), 0);
@@ -864,6 +881,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         emit log_named_uint("last run: grail mints", handler.grailMints());
         emit log_named_uint("last run: grail captures", handler.grailCaptures());
         emit log_named_uint("last run: harvests", handler.harvests());
+        emit log_named_uint("last run: deep settles", handler.deepSettles());
         emit log_named_uint("last run: export steps", handler.exportSteps());
         emit log_named_uint("last run: param changes", handler.paramChanges());
         emit log_named_uint("last run: operator changes", handler.operatorChanges());
