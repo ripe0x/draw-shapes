@@ -15,8 +15,6 @@ import {IPool, IPoolTypes} from "./interfaces/IPool.sol";
 contract Lens {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant WAD = 1e18;
-    uint256 internal constant MINOR = 0;
-    uint256 internal constant MAJOR = 1;
 
     /// @dev First failing pull guard, in the order `Pool.acquireBatch` applies them.
     enum Reason {
@@ -54,20 +52,29 @@ contract Lens {
         uint256 target;
     }
 
-    struct GrailView {
-        uint256 bucket;
-        uint256 packId;
+    /// @dev A GRAIL item with its share of the FWA selection weight in bps, zero while it is unlisted.
+    struct GrailItemView {
+        address collection;
+        bool done;
+        uint256 tokenId;
         uint256 backing;
         uint256 notional;
+        uint256 listingId;
+        uint256 pullsSinceList;
+        uint256 weightBps;
+    }
+
+    struct GrailView {
+        uint256 fund;
+        uint256 receivable;
         uint256 targetWei;
-        uint256 stepWei;
+        uint256 nextTargetWei;
+        uint256 cycleId;
         uint256 listBps;
         uint256 decayWeiPerPull;
+        uint256 pieceFloorWei;
         uint256 floorWei;
-        uint256 pullsSinceList;
-        uint256 receivable;
-        uint256 listingId;
-        uint256 weightBps;
+        GrailItemView[] items;
     }
 
     struct QueuedClaim {
@@ -218,7 +225,7 @@ contract Lens {
     function board() external view returns (Row[] memory rows) {
         uint256 n = _ip().mixLength();
         rows = new Row[](n);
-        (uint16 premium, uint16 maintenance, uint16 feed,) = pool.feeSplit();
+        (uint16 premium, uint16 maintenance, uint16 feed) = pool.feeSplit();
         uint256 fee = IShapes(pool.shapes()).mintFee();
         uint256 items = pool.minItems();
         for (uint256 i; i < n; ++i) {
@@ -238,26 +245,23 @@ contract Lens {
 
     // ------------------------------------------------------------------ GRAIL
 
-    /// @notice Track `t` with its share of the FWA selection weight in bps. The share is zero while
-    ///         the pack is unlisted.
-    function grail(uint8 t) external view returns (GrailView memory g) {
-        (
-            g.bucket,
-            g.packId,
-            g.backing,
-            g.notional,
-            g.targetWei,
-            g.stepWei,
-            g.listBps,
-            g.decayWeiPerPull,
-            g.floorWei,
-            g.pullsSinceList,
-            g.receivable,
-            g.listingId
-        ) = _ip().grail(t);
-        if (g.listingId != 0) {
-            uint256 total = pool.fwaPool().totalWeight();
-            if (total != 0) g.weightBps = PricingLib.weightOf(g.notional) * BPS / total;
+    /// @notice The GRAIL fund, parameters and cycle, and every GRAIL item with its share of the FWA
+    ///         selection weight. The share is zero while the item is unlisted.
+    function grail() external view returns (GrailView memory g) {
+        IPoolTypes.Grail memory s = _ip().grail();
+        (g.fund, g.receivable, g.targetWei, g.nextTargetWei, g.cycleId) =
+            (s.fund, s.receivable, s.targetWei, s.nextTargetWei, s.cycleId);
+        (g.listBps, g.decayWeiPerPull, g.pieceFloorWei, g.floorWei) =
+            (s.listBps, s.decayWeiPerPull, s.pieceFloorWei, s.floorWei);
+        IPoolTypes.GrailItem[] memory items = _ip().grailItems();
+        g.items = new GrailItemView[](items.length);
+        uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
+        for (uint256 i; i < items.length; ++i) {
+            IPoolTypes.GrailItem memory it = items[i];
+            uint256 weightBps = it.listingId != 0 && total != 0 ? PricingLib.weightOf(it.notional) * BPS / total : 0;
+            g.items[i] = GrailItemView(
+                it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.pullsSinceList, weightBps
+            );
         }
     }
 
@@ -320,10 +324,7 @@ contract Lens {
         r.balance = address(pool).balance;
         r.required = pool.cash() + pool.maintenance();
         IFWAClone fwa = pool.fwaPool();
-        for (uint256 t; t <= MAJOR; ++t) {
-            (uint256 bucket,,,,,,,,,,,) = _ip().grail(t);
-            r.required += bucket;
-        }
+        r.required += _ip().grail().fund;
         r.solvent = r.balance >= r.required;
         if (address(fwa) == address(0)) return r;
         r.purchasesResumeAt = fwa.purchasesResumeAt();
@@ -344,7 +345,7 @@ contract Lens {
         a.headroom = a.navCap > currentNav ? a.navCap - currentNav : 0;
         a.depositsOpenAt = pool.depositsOpenAt();
         (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
-        (uint16 premiumBps,,,) = pool.feeSplit();
+        (uint16 premiumBps,,) = pool.feeSplit();
         a.contributionBps = PricingLib.entryFeeBps(premiumBps, a.dailyVolume, currentNav, floorBps, capBps, paybackDays);
         a.open = pool.lifecycle() == IPoolTypes.Lifecycle.Live && !pool.depositsPaused()
             && block.timestamp >= a.depositsOpenAt && a.headroom != 0;
@@ -377,8 +378,7 @@ contract Lens {
         p.lifecycle = pool.lifecycle();
         p.pullsPaused = pool.pullsPaused();
         p.depositsPaused = pool.depositsPaused();
-        (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps, p.feeSplit.minorShareBps) =
-            pool.feeSplit();
+        (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps) = pool.feeSplit();
         (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
         p.floorBps = floorBps;
         p.capBps = capBps;

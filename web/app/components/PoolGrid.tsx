@@ -2,7 +2,7 @@
 
 import { useListedItems, type ListedItem } from "../lib/art";
 import { eth } from "../lib/format";
-import { TRACK, usePool } from "../lib/pool";
+import { usePool } from "../lib/pool";
 import { TokenArt } from "./TokenArt";
 
 /** Art tiles drawn at most; the rest of the board collapses into count lines. */
@@ -32,7 +32,7 @@ export function PoolGrid() {
     const k = kindOf(i);
     rest.set(k, { item: rest.get(k)?.item ?? i, count: (rest.get(k)?.count ?? 0) + 1 });
   }
-  const grailTrack = new Map(pool?.grails.flatMap((g, t) => (g.listingId !== 0n ? [[g.listingId, TRACK[t]] as const] : [])));
+  const grailListings = new Set(pool?.grail.items.flatMap((g) => (g.listingId !== 0n ? [g.listingId] : [])));
 
   return (
     <div id="pool">
@@ -48,7 +48,7 @@ export function PoolGrid() {
                 <TokenArt token={t} />
                 <div className="landing-grid-value">
                   {eth(t.valueWei)} ETH
-                  {grailTrack.has(t.listingId) && <span className="landing-grid-tag"> {grailTrack.get(t.listingId)} GRAIL</span>}
+                  {grailListings.has(t.listingId) && <span className="landing-grid-tag"> GRAIL</span>}
                 </div>
               </div>
             ))}

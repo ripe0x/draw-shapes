@@ -37,8 +37,8 @@ export interface Item {
   value: bigint;
   /** True once `settle` booked the capture. Shapes need no booking check. */
   booked: boolean;
-  /** GRAIL track the pack belonged to, once `settle` books the capture. */
-  grail?: number;
+  /** True when the token was a GRAIL item, once `settle` books the capture. */
+  grail?: boolean;
 }
 export interface Card {
   id: bigint;
@@ -142,7 +142,7 @@ async function load(client: PublicClient, dep: Deployment, owner: Address, prior
       logsIn(since, latest, (a, b) => client.getLogs({ address: dep.pool, event: grailEvent, args: { requestId }, fromBlock: a, toBlock: b, strict: true })),
     ]);
     for (const l of ordinary) cards[l.args.requestId.toString()].item!.booked = true;
-    for (const l of grail) Object.assign(cards[l.args.requestId.toString()].item!, { booked: true, grail: Number(l.args.track) });
+    for (const l of grail) Object.assign(cards[l.args.requestId.toString()].item!, { booked: true, grail: true });
   }
 
   const fresh = new Set(base?.fresh);

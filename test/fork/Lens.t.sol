@@ -14,8 +14,8 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 /// @notice Every `Lens` view against a pool with a live FWA clone, deployed Shapes and a Draw Packs
 ///         deployment.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
-///      2 x 0.01 ETH (3,000 bps). Minor track: step 0.05 ETH, target 0.05 ETH, list 80 percent.
-///      The major step is 500 ETH, so `rotate` never grows it.
+///      2 x 0.01 ETH (3,000 bps). GRAIL: target 25 ETH, list 75 percent. A 100 ETH deposit routes about 11 ETH to
+///      the GRAIL fund, and `open` forms the opening five from it.
 contract LensForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -35,15 +35,6 @@ contract LensForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: 0.05 ether,
-            stepWei: 0.05 ether,
-            listBps: 8_000,
-            decayWeiPerPull: 0.001 ether,
-            floorWei: 0.02 ether
-        });
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
         pool = new PoolHarness(p);
         lens = new Lens(pool);
         vm.prank(admin);
@@ -182,25 +173,40 @@ contract LensForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- GRAIL
 
-    function test_grailViewCarriesTheTrackAndItsWeight() public {
+    function test_grailViewCarriesTheFundTheCycleAndTheItemsWithTheirWeight() public {
         _open(false);
-        _warpPastRotateGate(pool);
-        pool.growTrack(0);
-        Lens.GrailView memory g = lens.grail(0);
-        (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional,,,,,,,, uint256 listingId) = IPool(address(pool)).grail(0);
-        assertEq(g.bucket, bucket);
-        assertEq(g.packId, packId);
-        assertEq(g.backing, backing_);
-        assertEq(g.notional, notional);
-        assertEq(g.listingId, listingId);
-        assertEq(g.stepWei, 0.05 ether);
-        assertEq(g.listBps, 8_000);
-        assertEq(g.weightBps, PricingLib.weightOf(notional) * 10_000 / clone.totalWeight());
-        assertGt(g.weightBps, 0);
+        IPoolTypes.Grail memory stored = IPool(address(pool)).grail();
+        IPoolTypes.GrailItem[] memory storedItems = IPool(address(pool)).grailItems();
+        Lens.GrailView memory g = lens.grail();
+        assertEq(g.fund, stored.fund);
+        assertGt(g.fund, 0, "the contribution left a fund after the opening five");
+        assertEq(g.receivable, stored.receivable);
+        assertEq(g.targetWei, 25 ether);
+        assertEq(g.nextTargetWei, 25 ether);
+        assertEq(g.cycleId, 1);
+        assertEq(g.listBps, 7_500);
+        assertEq(g.decayWeiPerPull, 0.001 ether);
+        assertEq(g.pieceFloorWei, 0.25 ether);
+        assertEq(g.floorWei, 1 ether);
+        assertEq(g.items.length, 1);
+        assertEq(storedItems.length, 1);
+        Lens.GrailItemView memory it = g.items[0];
+        assertEq(it.collection, SHAPES_ADDR);
+        assertEq(it.tokenId, storedItems[0].tokenId);
+        assertEq(it.backing, 5 ether);
+        assertEq(it.notional, 5 ether, "the opening five lists at face");
+        assertEq(it.listingId, storedItems[0].listingId);
+        assertEq(it.pullsSinceList, 0);
+        assertFalse(it.done);
+        assertEq(it.weightBps, PricingLib.weightOf(it.notional) * 10_000 / clone.totalWeight());
+        assertGt(it.weightBps, 0);
+    }
 
-        Lens.GrailView memory major = lens.grail(1);
-        assertEq(major.listingId, 0);
-        assertEq(major.weightBps, 0, "an unlisted track has no weight");
+    function test_grailViewIsEmptyBeforeOpen() public {
+        Lens.GrailView memory g = lens.grail();
+        assertEq(g.items.length, 0);
+        assertEq(g.fund, 0);
+        assertEq(g.cycleId, 1);
     }
 
     // ---------------------------------------------------------------- claims
@@ -259,7 +265,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "inside the spacing");
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         assertEq(uint8(lens.rotateDue()), uint8(pool.rotateDue()));
-        assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "the minor track is funded");
+        assertEq(uint8(lens.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "the fund covers a piece");
     }
 
     // ---------------------------------------------------------------- reopen guards and parameters
@@ -338,7 +344,6 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.feeSplit.premiumBps, 200);
         assertEq(p.feeSplit.maintenanceBps, 100);
         assertEq(p.feeSplit.feedBps, 400);
-        assertEq(p.feeSplit.minorShareBps, 4_000);
         assertEq(p.floorBps, 1_100);
         assertEq(p.capBps, 2_500);
         assertEq(p.paybackDays, 20);

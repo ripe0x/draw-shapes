@@ -20,7 +20,7 @@ contract NoReceiver {
     }
 }
 
-/// @notice `_splitMargin` against round numbers. Fee split 200 : 100 : 400 bps, minor share 4,000.
+/// @notice `_splitMargin` against round numbers. Fee split 200 : 100 : 400 bps.
 contract PoolSplitMarginTest is PoolFixture {
     PoolHarness internal pool;
 
@@ -40,8 +40,7 @@ contract PoolSplitMarginTest is PoolFixture {
         assertEq(IPool(address(pool)).margin(), 0);
         assertEq(IPool(address(pool)).mintLineOwed(), 0);
         assertEq(IPool(address(pool)).maintenanceReceivable(), 0.1 ether);
-        assertEq(pool.grailReceivable(0), 0.16 ether);
-        assertEq(pool.grailReceivable(1), 0.24 ether);
+        assertEq(pool.grailReceivable(), 0.4 ether);
         assertEq(pool.receivable(), 1.1 ether - 0.5 ether);
     }
 
@@ -74,7 +73,6 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     uint256 internal constant MAINT_BPS = 100;
     uint256 internal constant FEED_BPS = 400;
     uint256 internal constant SPLIT_BPS = 700;
-    uint256 internal constant MINOR_SHARE_BPS = 4_000;
 
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -89,8 +87,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         int256 margin;
         uint256 mintLineOwed;
         uint256 maintenanceReceivable;
-        uint256 minorReceivable;
-        uint256 majorReceivable;
+        uint256 grailReceivable;
     }
 
     function setUp() public {
@@ -210,11 +207,9 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 rest = amount - cover;
         uint256 maintenanceShare = rest * MAINT_BPS / SPLIT_BPS;
         uint256 feedShare = rest * FEED_BPS / SPLIT_BPS;
-        uint256 minorFeed = feedShare * MINOR_SHARE_BPS / 10_000;
         b.receivable -= maintenanceShare + feedShare;
         b.maintenanceReceivable += maintenanceShare;
-        b.minorReceivable += minorFeed;
-        b.majorReceivable += feedShare - minorFeed;
+        b.grailReceivable += feedShare;
         b.margin = 0;
     }
 
@@ -223,18 +218,15 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).margin(), b.margin, "margin");
         assertEq(IPool(address(pool)).mintLineOwed(), b.mintLineOwed, "mintLineOwed");
         assertEq(IPool(address(pool)).maintenanceReceivable(), b.maintenanceReceivable, "maintenanceReceivable");
-        assertEq(pool.grailReceivable(0), b.minorReceivable, "minor receivable");
-        assertEq(pool.grailReceivable(1), b.majorReceivable, "major receivable");
+        assertEq(pool.grailReceivable(), b.grailReceivable, "grail receivable");
     }
 
-    function _grailBuckets() internal view returns (uint256 minorBucket, uint256 majorBucket) {
-        (minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
-        (majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
+    function _grailFund() internal view returns (uint256) {
+        return IPool(address(pool)).grail().fund;
     }
 
     function _assertI1() internal view {
-        (uint256 minorBucket, uint256 majorBucket) = _grailBuckets();
-        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + minorBucket + majorBucket, "I1");
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + _grailFund(), "I1");
     }
 
     /// @dev Sum of listed and held item values.
@@ -333,7 +325,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(b.margin, 0);
         assertEq(b.mintLineOwed, 2 * mintFee - cover);
         assertEq(b.maintenanceReceivable, maintenanceShare);
-        assertEq(b.minorReceivable + b.majorReceivable, feedShare);
+        assertEq(b.grailReceivable, feedShare);
         assertEq(b.receivable, proceeds - maintenanceShare - feedShare);
         _assertBook(b);
     }
@@ -404,10 +396,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         uint256 owed = clone.ownerProceeds();
         assertEq(owed, 3 * _proceeds(fee, base), "FWA owner proceeds");
-        assertEq(b.receivable + b.maintenanceReceivable + b.minorReceivable + b.majorReceivable, owed);
+        assertEq(b.receivable + b.maintenanceReceivable + b.grailReceivable, owed);
         uint256 cashBefore = pool.cash();
         uint256 balanceBefore = address(pool).balance;
-        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        uint256 fundBefore = _grailFund();
 
         vm.expectEmit(false, false, false, true, address(pool));
         emit IPoolTypes.Harvested(owed, 0);
@@ -417,13 +409,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(clone.ownerProceeds(), 0);
         assertEq(pool.cash(), cashBefore + b.receivable);
         assertEq(pool.maintenance(), b.maintenanceReceivable);
-        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
-        assertEq(minorAfter - minorBefore, b.minorReceivable);
-        assertEq(majorAfter - majorBefore, b.majorReceivable);
+        assertEq(_grailFund() - fundBefore, b.grailReceivable);
         assertEq(pool.receivable(), 0);
         assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
-        assertEq(pool.grailReceivable(0), 0);
-        assertEq(pool.grailReceivable(1), 0);
+        assertEq(pool.grailReceivable(), 0);
         assertEq(IPool(address(pool)).margin(), b.margin);
         _assertI1();
         assertFalse(pool.harvest(), "nothing left to harvest");
@@ -445,7 +434,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     /// @dev Books one pack capture, then raises the booked receivables by the amounts given so that
     ///      `ownerProceeds` falls short of them by their sum.
-    function _shortfallFixture(uint256 ordinary, uint256 maintenanceWei, uint256 minorWei, uint256 majorWei)
+    function _shortfallFixture(uint256 ordinary, uint256 maintenanceWei, uint256 grailWei)
         internal
         returns (uint256 owed, uint256 expected)
     {
@@ -454,19 +443,18 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _capture(ids[0], _listingOfRow(1, 0));
         pool.bookOnly(5);
         owed = clone.ownerProceeds();
-        pool.addReceivables(ordinary, maintenanceWei, minorWei, majorWei);
-        expected = pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
-        assertEq(expected - owed, ordinary + maintenanceWei + minorWei + majorWei);
+        pool.addReceivables(ordinary, maintenanceWei, grailWei);
+        expected = pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable();
+        assertEq(expected - owed, ordinary + maintenanceWei + grailWei);
     }
 
     function test_harvestShortfallWritesDownOrdinaryReceivable() public {
-        (uint256 owed, uint256 expected) = _shortfallFixture(7, 0, 0, 0);
+        (uint256 owed, uint256 expected) = _shortfallFixture(7, 0, 0);
         uint256 cashBefore = pool.cash();
         uint256 receivableBefore = pool.receivable();
         uint256 maintenanceBefore = IPool(address(pool)).maintenanceReceivable();
-        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
-        uint256 minorR = pool.grailReceivable(0);
-        uint256 majorR = pool.grailReceivable(1);
+        uint256 fundBefore = _grailFund();
+        uint256 grailR = pool.grailReceivable();
 
         vm.expectEmit(false, false, false, true, address(pool));
         emit IPoolTypes.HarvestShortfall(owed, expected);
@@ -476,13 +464,10 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
         assertEq(pool.cash(), cashBefore + receivableBefore - 7, "ordinary receivable written down by the gap");
         assertEq(pool.maintenance(), maintenanceBefore);
-        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
-        assertEq(minorAfter - minorBefore, minorR);
-        assertEq(majorAfter - majorBefore, majorR);
+        assertEq(_grailFund() - fundBefore, grailR);
         assertEq(pool.receivable(), 0);
         assertEq(IPool(address(pool)).maintenanceReceivable(), 0);
-        assertEq(pool.grailReceivable(0), 0);
-        assertEq(pool.grailReceivable(1), 0);
+        assertEq(pool.grailReceivable(), 0);
         assertEq(clone.ownerProceeds(), 0);
         _assertI1();
     }
@@ -494,7 +479,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         pool.bookOnly(5);
         uint256 ordinary = pool.receivable();
         uint256 maintenanceR = IPool(address(pool)).maintenanceReceivable();
-        pool.addReceivables(0, ordinary + 5, 0, 0);
+        pool.addReceivables(0, ordinary + 5, 0);
         uint256 cashBefore = pool.cash();
         uint256 maintenanceBefore = pool.maintenance();
 
@@ -513,26 +498,23 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         pool.bookOnly(5);
         uint256 ordinary = pool.receivable();
         uint256 maintenanceR = IPool(address(pool)).maintenanceReceivable();
-        uint256 minorR = pool.grailReceivable(0);
-        uint256 majorR = pool.grailReceivable(1);
-        assertGt(minorR, 3);
-        pool.addReceivables(0, 0, 0, ordinary + maintenanceR + 3);
+        uint256 grailR = pool.grailReceivable();
+        assertGt(grailR, 3);
+        pool.addReceivables(0, 0, ordinary + maintenanceR + 3);
         uint256 cashBefore = pool.cash();
         uint256 maintenanceBefore = pool.maintenance();
-        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        uint256 fundBefore = _grailFund();
 
         assertTrue(pool.harvest());
 
         assertEq(pool.cash(), cashBefore);
         assertEq(pool.maintenance(), maintenanceBefore);
-        (uint256 minorAfter, uint256 majorAfter) = _grailBuckets();
-        assertEq(minorAfter - minorBefore, minorR - 3, "MINOR takes the first GRAIL cut");
-        assertEq(majorAfter - majorBefore, majorR + ordinary + maintenanceR + 3);
+        assertEq(_grailFund() - fundBefore, grailR + ordinary + maintenanceR, "the shortfall is cut from the GRAIL receivable last");
         _assertI1();
     }
 
     function test_withdrawCompletesThroughHarvestShortfall() public {
-        (uint256 owed, uint256 expected) = _shortfallFixture(1, 0, 0, 0);
+        (uint256 owed, uint256 expected) = _shortfallFixture(1, 0, 0);
         uint256 shares = pool.sharesOf(alice);
         uint256 supply = pool.totalShares();
 
@@ -680,19 +662,18 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     function test_directAcquireAdvancesPullsSinceListOfAListedGrail() public {
         _openReady();
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
-        pool.growTrack(0);
+        assertTrue(pool.stepGrail());
         warpPastCooldown(clone);
-        (,,,,,,,,, uint256 pullsBefore,, uint256 grailListing) = IPool(address(pool)).grail(0);
-        assertEq(pullsBefore, 0);
-        assertTrue(grailListing != 0);
+        IPoolTypes.GrailItem memory before = IPool(address(pool)).grailItems()[0];
+        assertEq(before.pullsSinceList, 0);
+        assertTrue(before.listingId != 0);
 
         _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, _listingOfRow(0, 0));
         pool.bookOnly(5);
 
-        (,,,,,,,,, uint256 pullsAfter,,) = IPool(address(pool)).grail(0);
-        assertEq(pullsAfter, 1);
+        assertEq(IPool(address(pool)).grailItems()[0].pullsSinceList, 1);
     }
 
     function test_poolPullIsBookedOnce() public {
@@ -712,7 +693,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _openReady();
         uint256 listingId = _listingOfRow(1, 0);
         uint256 value = pool.listedItem(listingId).value;
-        (uint256 minorBefore, uint256 majorBefore) = _grailBuckets();
+        uint256 fundBefore = _grailFund();
         _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         _capture(requestId, listingId);
@@ -728,13 +709,12 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).margin(), 0);
         assertEq(IPool(address(pool)).mintLineOwed(), 2 * mintFee - cover);
         assertEq(IPool(address(pool)).maintenanceReceivable(), maintenanceShare);
-        assertEq(pool.grailReceivable(0) + pool.grailReceivable(1), feedShare);
+        assertEq(pool.grailReceivable(), feedShare);
         assertEq(pool.receivable(), owed - maintenanceShare - feedShare);
 
         assertTrue(pool.harvest());
         assertEq(pool.maintenance(), maintenanceShare);
-        (uint256 minorBucket, uint256 majorBucket) = _grailBuckets();
-        assertEq(minorBucket + majorBucket - minorBefore - majorBefore, feedShare);
+        assertEq(_grailFund() - fundBefore, feedShare);
         _assertI1();
     }
 
@@ -758,7 +738,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
     }
 
     function _bookedReceivables() internal view returns (uint256) {
-        return pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable(0) + pool.grailReceivable(1);
+        return pool.receivable() + IPool(address(pool)).maintenanceReceivable() + pool.grailReceivable();
     }
 
     // ---------------------------------------------------------------- Shapes payment paths
@@ -1015,7 +995,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.deal(player, total);
 
         // Weight of a 0.01 ETH list price is about half of the board weight, above the 20% cap.
-        pool.setGrailListing(0, 1, 11, 0.01 ether);
+        pool.addGrailItem(SHAPES_ADDR, 1, 1 ether, 0.01 ether, 11, false);
         vm.prank(player);
         pool.acquireBatch{value: total}(player, 1, fee, 0, slip, version, block.timestamp + 1 hours);
         assertEq(clone.unsettledAcquisitionCount(), 1);
@@ -1070,8 +1050,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         b.margin = IPool(address(pool)).margin();
         b.mintLineOwed = IPool(address(pool)).mintLineOwed();
         b.maintenanceReceivable = IPool(address(pool)).maintenanceReceivable();
-        b.minorReceivable = pool.grailReceivable(0);
-        b.majorReceivable = pool.grailReceivable(1);
+        b.grailReceivable = pool.grailReceivable();
     }
 
     function test_griefedDeliveriesAreWrittenOffByTheWalk() public {

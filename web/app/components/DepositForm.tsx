@@ -92,7 +92,7 @@ export function DepositForm() {
             />
             {value && (
               <>
-                <Kv label="Entry contribution, goes to the GRAIL buckets" value={`${eth(contribution, 6)} ETH`} />
+                <Kv label="Entry contribution, goes to the GRAIL fund" value={`${eth(contribution, 6)} ETH`} />
                 <Kv label="Value at NAV after the contribution" value={`${eth(net, 6)} ETH`} />
                 <Kv label="Estimated shares" value={shares(newShares, 6)} strong />
               </>

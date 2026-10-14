@@ -88,16 +88,15 @@ abstract contract PoolBooks is PoolStorage {
         }
     }
 
-    /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the track's
-    ///      receivable and resets the track. An ordinary item leaves backing, its proceeds join
+    /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the GRAIL
+    ///      receivable and removes the item. An ordinary item leaves backing, its proceeds join
     ///      `receivable` and `margin`, and the row chosen by `_chooseRow` is queued for a
     ///      replacement.
     function _capture(uint256 requestId, uint256 listingId, uint256 paid, uint256 mintFee) internal {
         uint256 stored = _basePlusOne[requestId];
         uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
-        uint256 t = _grailTrack(listingId);
-        if (t <= MAJOR) {
-            _closeGrail(t, requestId, proceeds);
+        if (_grailAt[listingId] != 0) {
+            _closeGrail(listingId, requestId, proceeds);
             return;
         }
         Item memory it = _removeListed(listingId);
@@ -152,25 +151,18 @@ abstract contract PoolBooks is PoolStorage {
         );
     }
 
-    /// @dev Track whose pack is listed under `listingId`, or 2 when none is.
-    function _grailTrack(uint256 listingId) internal view returns (uint256 t) {
-        while (t <= MAJOR && _grail[t].listingId != listingId) ++t;
-    }
-
-    /// @dev Clears track `t` after its pack left the pool. `proceeds` joins the track's receivable.
-    function _closeGrail(uint256 t, uint256 requestId, uint256 proceeds) internal {
-        Grail storage g = _grail[t];
-        g.receivable += proceeds;
-        _resetGrail(g);
-        emit GrailCaptured(t, requestId, proceeds);
+    /// @dev Removes the GRAIL item listed under `listingId`. `proceeds` joins the GRAIL receivable.
+    function _closeGrail(uint256 listingId, uint256 requestId, uint256 proceeds) internal {
+        GrailItem memory it = _removeGrailItem(_grailAt[listingId] - 1);
+        _grail.receivable += proceeds;
+        emit GrailCaptured(requestId, listingId, it.backing, proceeds);
     }
 
     /// @dev Removes the listed item from backing and charges its value to `margin`. A GRAIL
-    ///      listing is cleared with no proceeds.
+    ///      item is removed with no proceeds.
     function _writeOff(uint256 requestId, uint256 listingId) internal {
-        uint256 t = _grailTrack(listingId);
-        if (t <= MAJOR) {
-            _closeGrail(t, requestId, 0);
+        if (_grailAt[listingId] != 0) {
+            _closeGrail(listingId, requestId, 0);
             return;
         }
         Item memory it = _removeListed(listingId);
@@ -179,12 +171,13 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Takes back a token that FWA quarantined after a refunded delivery and holds it
-    ///      unlisted. Backing is unchanged. A GRAIL pack stays the track's pack and is listed again
+    ///      unlisted. Backing is unchanged. A GRAIL item stays in `_grailItems` and is listed again
     ///      by the next `rotate`.
     function _recoverRefunded(IFWAClone fwa, uint256 listingId) internal {
-        uint256 t = _grailTrack(listingId);
-        if (t <= MAJOR) {
-            _grail[t].listingId = 0;
+        uint256 at = _grailAt[listingId];
+        if (at != 0) {
+            _grailItems[at - 1].listingId = 0;
+            delete _grailAt[listingId];
         } else {
             Item memory it = _removeListed(listingId);
             it.listingId = 0;
@@ -196,7 +189,7 @@ abstract contract PoolBooks is PoolStorage {
     /// @dev Splits positive `margin`. The mint line owed is covered first and stays in ordinary
     ///      NAV. The rest divides by `premiumBps : maintenanceBps : feedBps`. The premium share
     ///      stays in ordinary NAV. The maintenance and feed shares move from `receivable` to
-    ///      `maintenanceReceivable` and the GRAIL receivables, split by `minorShareBps`.
+    ///      `maintenanceReceivable` and the GRAIL receivable.
     function _splitMargin() internal {
         int256 signedMargin = _margin;
         if (signedMargin <= 0 || lifecycle == Lifecycle.Exported) return;
@@ -216,16 +209,14 @@ abstract contract PoolBooks is PoolStorage {
 
         receivable -= maintenanceShare + feedShare;
         _maintenanceReceivable += maintenanceShare;
-        uint256 minorFeed = feedShare * split.minorShareBps / BPS;
-        _grail[MINOR].receivable += minorFeed;
-        _grail[MAJOR].receivable += feedShare - minorFeed;
+        _grail.receivable += feedShare;
         _margin = 0;
         emit MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
     }
 
-    /// @dev Sum of the four receivables.
+    /// @dev Sum of the three receivables.
     function _bookedReceivables() internal view returns (uint256) {
-        return receivable + _maintenanceReceivable + _grail[MINOR].receivable + _grail[MAJOR].receivable;
+        return receivable + _maintenanceReceivable + _grail.receivable;
     }
 
     /// @dev Books `actual` FWA owner proceeds above the booked receivables as `receivable` and
@@ -259,18 +250,16 @@ abstract contract PoolBooks is PoolStorage {
         uint256 surplus = _bookSurplus(received);
         cash += receivable;
         maintenance += _maintenanceReceivable;
-        _grail[MINOR].bucket += _grail[MINOR].receivable;
-        _grail[MAJOR].bucket += _grail[MAJOR].receivable;
+        _grail.fund += _grail.receivable;
         receivable = 0;
         _maintenanceReceivable = 0;
-        _grail[MINOR].receivable = 0;
-        _grail[MAJOR].receivable = 0;
+        _grail.receivable = 0;
         emit Harvested(received, surplus);
         return true;
     }
 
     /// @dev Lowers the booked receivables by `gap`: `receivable` first, then `maintenanceReceivable`,
-    ///      then the MINOR and MAJOR GRAIL receivables. `gap` is at most their sum.
+    ///      then the GRAIL receivable. `gap` is at most their sum.
     function _writeDownReceivables(uint256 gap) internal {
         uint256 cut = gap < receivable ? gap : receivable;
         receivable -= cut;
@@ -278,12 +267,7 @@ abstract contract PoolBooks is PoolStorage {
         cut = gap < _maintenanceReceivable ? gap : _maintenanceReceivable;
         _maintenanceReceivable -= cut;
         gap -= cut;
-        for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = _grail[t];
-            cut = gap < g.receivable ? gap : g.receivable;
-            g.receivable -= cut;
-            gap -= cut;
-        }
+        _grail.receivable -= gap < _grail.receivable ? gap : _grail.receivable;
     }
 
     /// @dev Cash that a mint or a kept Shape may use: `cash` less `claims` and the reserve of
@@ -315,11 +299,10 @@ abstract contract PoolBooks is PoolStorage {
         if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
     }
 
-    /// @dev Each listed GRAIL track's `pullsSinceList` rises by `count`.
+    /// @dev Each GRAIL item's `pullsSinceList` rises by `count`.
     function _recordPulls(uint256 count) internal {
-        for (uint256 t; t <= MAJOR; ++t) {
-            Grail storage g = _grail[t];
-            if (g.listingId != 0) g.pullsSinceList += count;
+        for (uint256 i; i < _grailItems.length; ++i) {
+            _grailItems[i].pullsSinceList += count;
         }
     }
 
@@ -367,6 +350,23 @@ abstract contract PoolBooks is PoolStorage {
             paid := mload(add(m, 0x40))
             listingId := mload(add(m, 0x60))
             status := mload(add(m, 0x80))
+        }
+    }
+
+    /// @dev `status` of FWA listing `listingId`, the eighth word of `listings(listingId)`.
+    function _listingStatus(uint256 listingId) internal view returns (uint256 status) {
+        address fwa = address(fwaPool);
+        bytes4 selector = IFWAClone.listings.selector;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), listingId)
+            if iszero(staticcall(gas(), fwa, m, 0x24, m, 0x100)) {
+                returndatacopy(m, 0, returndatasize())
+                revert(m, returndatasize())
+            }
+            if lt(returndatasize(), 0x100) { revert(0, 0) }
+            status := mload(add(m, 0xe0))
         }
     }
 

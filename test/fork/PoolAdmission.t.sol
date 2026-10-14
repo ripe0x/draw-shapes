@@ -45,10 +45,6 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
         p.oldPool = oldPool_;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor.stepWei = 500 ether;
-        p.minor.targetWei = 1_000 ether;
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
     }
 
     function _deploy(address oldPool_) internal returns (PoolHarness p_, IFWAClone c_) {
@@ -70,6 +66,7 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
         vm.warp(t);
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         liveDay = vm.getBlockTimestamp() / DAY;
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
         warpPastCooldown(clone);
         assertEq(vm.getBlockTimestamp() / DAY, liveDay, "cooldown stays inside the Live day");
     }
@@ -136,7 +133,7 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
     /// @dev Entry fee in bps for the volume and NAV now, from the stored parameters.
     function _feeNow() internal view returns (uint256) {
         (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
-        (uint16 premiumBps,,,) = pool.feeSplit();
+        (uint16 premiumBps,,) = pool.feeSplit();
         uint256 raw = uint256(paybackDays) * premiumBps * pool.dailyVolume() / pool.nav();
         if (raw < floorBps) return floorBps;
         return raw > capBps ? capBps : raw;
@@ -253,7 +250,7 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
 
         uint256 volume = pool.dailyVolume();
         assertGt(volume, 0);
-        (uint16 premiumBps,,,) = pool.feeSplit();
+        (uint16 premiumBps,,) = pool.feeSplit();
         // paybackDays for a yield target of 1,500 bps at the NAV now.
         uint256 payback = 1_500 * pool.nav() / (uint256(premiumBps) * volume) + 1;
         _setEntryFee(1_000, 2_500, uint32(payback));
@@ -275,7 +272,7 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
         _toDay(1);
 
         uint256 volume = pool.dailyVolume();
-        (uint16 premiumBps,,,) = pool.feeSplit();
+        (uint16 premiumBps,,) = pool.feeSplit();
         uint256 payback = 1_500 * pool.nav() / (uint256(premiumBps) * volume) + 1;
 
         _setEntryFee(1_000, 2_500, uint32(payback * 3));

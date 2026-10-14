@@ -19,8 +19,12 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant BPS = 10_000;
-    uint256 internal constant MINOR = 0;
-    uint256 internal constant MAJOR = 1;
+    /// @dev Backing of one GRAIL piece, 100 ladder units.
+    uint256 internal constant GRAIL_PIECE = 100 * Denominations.UNIT;
+    /// @dev Smallest GRAIL target, 500 ladder units. Bounds `floorWei` with `listBps`.
+    uint256 internal constant GRAIL_MIN_TARGET = 500 * Denominations.UNIT;
+    uint256 internal constant MAX_GRAIL_ITEMS = 16;
+    uint256 internal constant MAX_PIECES = 6;
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant VOLUME_DAYS = 7;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
@@ -50,7 +54,11 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 public maintenance;
     /// @dev Maintenance share of booked margin, still held as FWA owner proceeds.
     uint256 internal _maintenanceReceivable;
-    Grail[2] internal _grail;
+    Grail internal _grail;
+    /// @dev GRAIL items owned by the pool, listed or not. At most `MAX_GRAIL_ITEMS`.
+    GrailItem[] internal _grailItems;
+    /// @dev Position plus one of each listed GRAIL item inside `_grailItems`, by FWA listing id.
+    mapping(uint256 listingId => uint256) internal _grailAt;
 
     uint256 public totalShares;
     mapping(address => uint256) public sharesOf;
@@ -149,7 +157,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal _importedFromShares;
     /// @dev Successor side: holders whose `oldPool` shares were converted by `migrateHolder`.
     mapping(address holder => bool) internal _migrated;
-    /// @dev True while the token is a held or listed ordinary item of this pool.
+    /// @dev True while the token is a held or listed ordinary item or a GRAIL item of this pool.
     mapping(address collection => mapping(uint256 tokenId => bool)) internal _registered;
 
     /// @dev FWA acquisition fees of booked captures, per UTC day in slot `day % 8`. A slot holds
@@ -168,6 +176,12 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
         _;
+    }
+
+    /// @dev Reverts `NotAdmin` for any other caller and logs the setter selector.
+    function _admin() internal {
+        if (msg.sender != admin) revert NotAdmin();
+        emit ParamSet(msg.sig);
     }
 
     // ------------------------------------------------------------------ views
@@ -215,7 +229,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     /// @dev I1 with `incoming` wei of the balance still outside the buckets.
     function _covered(uint256 incoming) internal view returns (bool) {
-        return address(this).balance >= incoming + cash + maintenance + _grail[MINOR].bucket + _grail[MAJOR].bucket;
+        return address(this).balance >= incoming + cash + maintenance + _grail.fund;
     }
 
     /// @dev Last listing id of `row`.
@@ -242,22 +256,27 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         _callFull(collection, 0, IERC721.transferFrom.selector, uint160(from), uint160(to), tokenId);
     }
 
-    /// @dev Clears the pack fields of a track whose pack left the pool.
-    function _resetGrail(Grail storage g) internal {
-        g.packId = 0;
-        g.backing = 0;
-        g.notional = 0;
-        g.listingId = 0;
-        g.pullsSinceList = 0;
+    /// @dev Appends GRAIL item `it` to `_grailItems` and registers its token. A nonzero
+    ///      `it.listingId` is indexed in `_grailAt`. Reverts `GrailItemsFull` at `MAX_GRAIL_ITEMS`.
+    function _addGrailItem(GrailItem memory it) internal {
+        if (_grailItems.length >= MAX_GRAIL_ITEMS) revert GrailItemsFull();
+        _grailItems.push(it);
+        if (it.listingId != 0) _grailAt[it.listingId] = _grailItems.length;
+        _registered[it.collection][it.tokenId] = true;
     }
 
-    /// @dev Withdraws the track's FWA listing to this contract when it is listed.
-    function _unlistGrail(Grail storage g) internal {
-        uint256 id = g.listingId;
-        if (id != 0) {
-            _withdrawListing(id, address(this));
-            g.listingId = 0;
+    /// @dev Removes the GRAIL item at `index` from `_grailItems`, `_grailAt` and `_registered`.
+    function _removeGrailItem(uint256 index) internal returns (GrailItem memory it) {
+        uint256 last = _grailItems.length - 1;
+        it = _grailItems[index];
+        if (index != last) {
+            GrailItem memory moved = _grailItems[last];
+            _grailItems[index] = moved;
+            if (moved.listingId != 0) _grailAt[moved.listingId] = index + 1;
         }
+        _grailItems.pop();
+        delete _grailAt[it.listingId];
+        delete _registered[it.collection][it.tokenId];
     }
 
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through
@@ -368,6 +387,26 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
     }
 
+    /// @dev `_call` that returns the failure instead of reverting. On failure `r` is zero, `ok` is false
+    ///      and `sel` holds the first four bytes of the revert data (zero when empty). The callee's
+    ///      state changes are rolled back.
+    function _tryCall(address target, bytes4 selector) internal returns (bool ok, uint256 r, bytes4 sel) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(0, 0)
+            ok := call(gas(), target, 0, m, 0x04, 0, 0x20)
+            switch ok
+            case 0 {
+                if gt(returndatasize(), 3) {
+                    returndatacopy(m, 0, 0x04)
+                    sel := mload(m)
+                }
+            }
+            default { r := mload(0) }
+        }
+    }
+
     /// @dev `_call` with `value` wei and a third word argument `c`. The calldata is 100 bytes.
     function _callFull(address target, uint256 value, bytes4 selector, uint256 a, uint256 b, uint256 c)
         internal
@@ -389,24 +428,35 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
     }
 
-    /// @dev Stores the parameters of track `track`. `stepWei` is a multiple of `Denominations.UNIT`
-    ///      and at least two units. `floorWei` is nonzero and at most the list price at full
-    ///      backing, `targetWei * listBps / 10_000`.
-    function _initGrail(uint256 track, GrailParams memory g) internal {
-        if (g.listBps == 0 || g.listBps > BPS) revert ListBpsOutOfRange();
-        if (g.stepWei < 2 * Denominations.UNIT || g.stepWei % Denominations.UNIT != 0) revert GrailStepInvalid();
-        if (g.floorWei == 0 || g.floorWei > g.targetWei * g.listBps / BPS) revert GrailFloorInvalid();
-        Grail storage t = _grail[track];
-        t.targetWei = g.targetWei;
-        t.stepWei = g.stepWei;
-        t.listBps = g.listBps;
-        t.decayWeiPerPull = g.decayWeiPerPull;
-        t.floorWei = g.floorWei;
+    /// @dev Stores the GRAIL parameters. `listBps` is 1 to 10,000. `pieceFloorWei` is nonzero and
+    ///      at most one piece. `floorWei` is nonzero and at most the list price of the smallest
+    ///      target, `GRAIL_MIN_TARGET * listBps / 10_000`.
+    function _setGrail(uint256 decayWeiPerPull, uint256 pieceFloorWei, uint256 floorWei, uint256 listBps) internal {
+        if (listBps == 0 || listBps > BPS) revert ListBpsOutOfRange();
+        if (
+            pieceFloorWei == 0 || pieceFloorWei > GRAIL_PIECE || floorWei == 0
+                || floorWei > GRAIL_MIN_TARGET * listBps / BPS
+        ) revert GrailFloorInvalid();
+        Grail storage g = _grail;
+        g.listBps = listBps;
+        g.decayWeiPerPull = decayWeiPerPull;
+        g.pieceFloorWei = pieceFloorWei;
+        g.floorWei = floorWei;
+    }
+
+    /// @dev Sets the target of the next cycle. It is 500, 1,000, 2,500, 5,000 or 10,000 ladder
+    ///      units.
+    function _setGrailTarget(uint256 targetWei) internal {
+        uint256 units = targetWei / Denominations.UNIT;
+        if (
+            targetWei != units * Denominations.UNIT
+                || (units != 500 && units != 1_000 && units != 2_500 && units != 5_000 && units != 10_000)
+        ) revert GrailTargetInvalid();
+        _grail.nextTargetWei = targetWei;
     }
 
     function _setFeeSplit(FeeSplit memory s) internal {
         if (uint256(s.premiumBps) + s.maintenanceBps + s.feedBps > MAX_FEE_SPLIT_BPS) revert FeeSplitTooHigh();
-        if (s.minorShareBps > BPS) revert MinorShareTooHigh();
         feeSplit = s;
     }
 

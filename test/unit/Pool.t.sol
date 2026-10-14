@@ -98,16 +98,19 @@ contract PoolHarness is Pool {
         lifecycle = state;
     }
 
-    /// @dev Setup helper for one track: books FWA results, then runs the growth step `rotate`
-    ///      applies to the track, without the spacing check, and restarts the spacing. Reverts
-    ///      `GrailNotReady` when the track cannot grow and `FwaBusy` while acquisitions are
-    ///      unsettled.
-    function growTrack(uint8 t) external {
+    /// @dev Setup helper: books FWA results, then runs the GRAIL step `rotate` applies (mint,
+    ///      relist and merge), without the spacing check, and restarts the spacing. Reverts
+    ///      `FwaBusy` while acquisitions are unsettled. Returns whether the step changed anything.
+    function stepGrail() external returns (bool changed) {
         _sync();
-        uint256 status = _growGrail(t, _unsettled() != 0);
-        if (status == 1) revert GrailNotReady();
-        if (status == 2) revert FwaBusy();
+        if (_busy()) revert FwaBusy();
+        changed = _call(address(this), IPool.grailStep.selector, 0, 0) != 0;
         lastRotateAt = block.timestamp;
+    }
+
+    /// @dev Runs the decay and probability cap lift `settle` applies, without the settle gates.
+    function repriceGrail() external returns (bool) {
+        return _call(address(this), IPool.grailReprice.selector, 0, 0) != 0;
     }
 
     /// @dev Runs the pass `open` repeats: pays claims, queues each row's missing items and lists
@@ -211,40 +214,62 @@ contract PoolHarness is Pool {
         nextSequenceToBook = sequence;
     }
 
-    /// @dev Raises the four booked receivables without moving ETH.
-    function addReceivables(uint256 ordinary, uint256 maintenanceWei, uint256 minorWei, uint256 majorWei) external {
+    /// @dev Raises the three booked receivables without moving ETH.
+    function addReceivables(uint256 ordinary, uint256 maintenanceWei, uint256 grailWei) external {
         receivable += ordinary;
         _maintenanceReceivable += maintenanceWei;
-        _grail[MINOR].receivable += minorWei;
-        _grail[MAJOR].receivable += majorWei;
+        _grail.receivable += grailWei;
     }
 
     function setMintLineOwed(uint256 amount) external {
         _mintLineOwed = amount;
     }
 
-    function setGrailListing(uint256 track, uint256 packId, uint256 listingId, uint256 notional) external {
-        Grail storage g = _grail[track];
-        g.packId = packId;
-        g.listingId = listingId;
-        g.notional = notional;
+    /// @dev Books a GRAIL item without moving a token or listing it at FWA. `listingId` zero leaves
+    ///      the item unlisted.
+    function addGrailItem(address collection, uint256 tokenId, uint256 backing_, uint256 notional, uint256 listingId, bool done)
+        external
+    {
+        _addGrailItem(GrailItem(collection, done, tokenId, backing_, notional, listingId, 0));
     }
 
-    /// @dev Credits `msg.value` to track `track`'s bucket.
-    function addGrailBucket(uint256 track) external payable {
-        _grail[track].bucket += msg.value;
+    /// @dev Credits `msg.value` to the GRAIL fund.
+    function addGrailFund() external payable {
+        _grail.fund += msg.value;
     }
 
-    /// @dev Sends `amount` of track `track`'s bucket out of the pool, as a loss of GRAIL ETH.
-    function loseGrailBucket(uint256 track, uint256 amount) external {
-        _grail[track].bucket -= amount;
+    /// @dev Sends `amount` of the GRAIL fund out of the pool, as a loss of GRAIL ETH.
+    function loseGrailFund(uint256 amount) external {
+        _grail.fund -= amount;
         SafeTransferLib.safeTransferETH(SINK, amount);
     }
 
-    /// @dev Withdraws the track's pack from FWA and leaves it unlisted, as a refunded delivery does.
-    function unlistGrail(uint256 track) external {
-        fwaPool.withdrawListing(_grail[track].listingId);
-        _grail[track].listingId = 0;
+    /// @dev Withdraws the GRAIL item's listing from FWA and leaves it unlisted, as a refunded
+    ///      delivery does.
+    function unlistGrail(uint256 index) external {
+        fwaPool.withdrawListing(_grailItems[index].listingId);
+        delete _grailAt[_grailItems[index].listingId];
+        _grailItems[index].listingId = 0;
+    }
+
+    /// @dev Points the unlisted GRAIL item at `index` to FWA listing `listingId`.
+    function setGrailListing(uint256 index, uint256 listingId) external {
+        _grailItems[index].listingId = listingId;
+        _grailAt[listingId] = index + 1;
+    }
+
+    function grailItemAt(uint256 index) external view returns (GrailItem memory) {
+        return _grailItems[index];
+    }
+
+    function grailItemCount() external view returns (uint256) {
+        return _grailItems.length;
+    }
+
+    function setGrailCycle(uint256 targetWei, uint256 nextTargetWei, uint256 cycleId) external {
+        _grail.targetWei = targetWei;
+        _grail.nextTargetWei = nextTargetWei;
+        _grail.cycleId = cycleId;
     }
 
     function writeOff(uint256 requestId, uint256 listingId) external {
@@ -255,8 +280,8 @@ contract PoolHarness is Pool {
         pullsPaused = paused;
     }
 
-    function grailReceivable(uint256 track) external view returns (uint256) {
-        return _grail[track].receivable;
+    function grailReceivable() external view returns (uint256) {
+        return _grail.receivable;
     }
 }
 
@@ -278,12 +303,13 @@ abstract contract PoolFixture is Test {
         p.mix[1].rungs[0] = 1;
         p.mix[1].rungs[1] = 2;
         p.mix[1].shareBps = 3_000;
-        p.feeSplit = IPoolTypes.FeeSplit({premiumBps: 200, maintenanceBps: 100, feedBps: 400, minorShareBps: 4_000});
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: 10 ether, stepWei: 0.1 ether, listBps: 10_000, decayWeiPerPull: 0.001 ether, floorWei: 0.5 ether
-        });
-        p.major = IPoolTypes.GrailParams({
-            targetWei: 100 ether, stepWei: 1 ether, listBps: 9_000, decayWeiPerPull: 0.01 ether, floorWei: 5 ether
+        p.feeSplit = IPoolTypes.FeeSplit({premiumBps: 200, maintenanceBps: 100, feedBps: 400});
+        p.grail = IPoolTypes.GrailParams({
+            targetWei: 25 ether,
+            listBps: 7_500,
+            decayWeiPerPull: 0.001 ether,
+            pieceFloorWei: 0.25 ether,
+            floorWei: 1 ether
         });
         p.navCapFloor = 1_000 ether;
         p.turnoverBps = 1_250;
@@ -325,12 +351,16 @@ contract PoolConstructorTest is PoolFixture {
         assertEq(pool.founderWindowSeconds(), 0);
         assertEq(pool.rotateInterval(), 3_600);
         assertEq(IPool(address(pool)).openingDeadline(), 24 hours);
-        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = IPool(address(pool)).grail(1);
-        assertEq(target, 100 ether);
-        assertEq(step, 1 ether);
-        assertEq(listBps, 9_000);
-        assertEq(decay, 0.01 ether);
-        assertEq(floor, 5 ether);
+        IPoolTypes.Grail memory g = IPool(address(pool)).grail();
+        assertEq(g.targetWei, 25 ether);
+        assertEq(g.nextTargetWei, 25 ether);
+        assertEq(g.cycleId, 1);
+        assertEq(g.fund, 0);
+        assertEq(g.listBps, 7_500);
+        assertEq(g.decayWeiPerPull, 0.001 ether);
+        assertEq(g.pieceFloorWei, 0.25 ether);
+        assertEq(g.floorWei, 1 ether);
+        assertEq(IPool(address(pool)).grailItems().length, 0);
     }
 
     function test_revert_adminZero() public {
@@ -351,13 +381,6 @@ contract PoolConstructorTest is PoolFixture {
         IPoolTypes.Params memory p = _params();
         p.feeSplit.feedBps = 700;
         _deploy(p);
-    }
-
-    function test_revert_minorShareTooHigh() public {
-        IPoolTypes.Params memory p = _params();
-        p.feeSplit.minorShareBps = 10_001;
-        vm.expectRevert(IPoolTypes.MinorShareTooHigh.selector);
-        new PoolHarness(p);
     }
 
     function test_revert_entryFeeCapAboveBps() public {
@@ -395,32 +418,56 @@ contract PoolConstructorTest is PoolFixture {
         new PoolHarness(p);
     }
 
-    function test_revert_listBpsZeroMinor() public {
+    function test_revert_listBpsZero() public {
         IPoolTypes.Params memory p = _params();
-        p.minor.listBps = 0;
+        p.grail.listBps = 0;
         vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
         new PoolHarness(p);
     }
 
-    function test_revert_listBpsTooHighMajor() public {
+    function test_revert_listBpsTooHigh() public {
         IPoolTypes.Params memory p = _params();
-        p.major.listBps = 10_001;
+        p.grail.listBps = 10_001;
         vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
         new PoolHarness(p);
     }
 
-    function test_revert_grailStepZero() public {
-        IPoolTypes.Params memory p = _params();
-        p.minor.stepWei = 0;
-        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
-        new PoolHarness(p);
+    function test_revert_grailTargetNotOnTheLadder() public {
+        uint256[4] memory bad = [uint256(0), 1 ether, 20 ether, 25 ether + 1];
+        for (uint256 i; i < bad.length; ++i) {
+            IPoolTypes.Params memory p = _params();
+            p.grail.targetWei = bad[i];
+            vm.expectRevert(IPoolTypes.GrailTargetInvalid.selector);
+            new PoolHarness(p);
+        }
     }
 
-    function test_revert_grailStepNotAUnitMultiple() public {
+    function test_grailTargetsOnTheLadderAccepted() public {
+        uint256[5] memory good = [uint256(5 ether), 10 ether, 25 ether, 50 ether, 100 ether];
+        for (uint256 i; i < good.length; ++i) {
+            IPoolTypes.Params memory p = _params();
+            p.grail.targetWei = good[i];
+            assertEq(IPool(address(_deploy(p))).grail().targetWei, good[i]);
+        }
+    }
+
+    function test_revert_grailFloorsInvalid() public {
         IPoolTypes.Params memory p = _params();
-        p.major.stepWei = 1 ether + 1;
-        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
+        p.grail.floorWei = 0;
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
         new PoolHarness(p);
+        p.grail.floorWei = 3.75 ether + 1;
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
+        new PoolHarness(p);
+        p.grail.floorWei = 3.75 ether;
+        p.grail.pieceFloorWei = 0;
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
+        new PoolHarness(p);
+        p.grail.pieceFloorWei = 1 ether + 1;
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
+        new PoolHarness(p);
+        p.grail.pieceFloorWei = 1 ether;
+        _deploy(p);
     }
 
     function test_revert_grailProbCapZero() public {
@@ -574,8 +621,8 @@ contract PoolTest is PoolFixture {
         pool.deposit{value: value}();
     }
 
-    function _bucket(uint256 track) internal view returns (uint256 bucket) {
-        (bucket,,,,,,,,,,,) = IPool(address(pool)).grail(track);
+    function _fund() internal view returns (uint256) {
+        return IPool(address(pool)).grail().fund;
     }
 
     function _claim(uint256 index) internal view returns (address to, uint256 requestedAt, uint256 amount) {
@@ -682,11 +729,9 @@ contract PoolTest is PoolFixture {
         assertEq(pool.cash(), 8.9 ether + 8.9 ether + 10 ether - contribution);
     }
 
-    function test_contributionSplitsBetweenTracks() public {
+    function test_contributionGoesToTheGrailFund() public {
         _deposit(alice, 10 ether);
-        assertEq(_bucket(0), 0.44 ether);
-        assertEq(_bucket(1), 0.66 ether);
-        assertEq(_bucket(0) + _bucket(1), 1.1 ether);
+        assertEq(_fund(), 1.1 ether);
     }
 
     function test_emitsDeposited() public {

@@ -69,10 +69,6 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         p.batchMin = 5;
         p.minItems = minItems_;
         p.rotateInterval = 900;
-        p.minor.stepWei = 500 ether;
-        p.minor.targetWei = 1_000 ether;
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
     }
 
     /// @dev Deploys a pool with `minItems_`, funds it with 100 ETH and builds its board.
@@ -88,6 +84,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), _target(minItems_), "board");
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
         warpPastCooldown(clone);
     }
 
@@ -944,28 +941,21 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertEq(uint8(lens.settleDue()), uint8(IPoolTypes.SettleTrigger.Batch));
     }
 
-    function test_fundGrail_creditsBucket() public {
+    function test_fundGrail_creditsFund() public {
         IPool p = IPool(address(pool));
-        (uint256 before_,,,,,,,,,,,) = p.grail(1);
+        uint256 before_ = p.grail().fund;
         uint256 balBefore = address(pool).balance;
-        vm.expectEmit(true, true, false, true, address(pool));
-        emit IPoolTypes.GrailFunded(alice, 1, 1 ether);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.GrailFunded(alice, 1 ether);
         vm.prank(alice);
-        p.fundGrail{value: 1 ether}(1);
-        (uint256 after_,,,,,,,,,,,) = p.grail(1);
-        assertEq(after_ - before_, 1 ether);
+        p.fundGrail{value: 1 ether}();
+        assertEq(p.grail().fund - before_, 1 ether);
         assertEq(address(pool).balance - balBefore, 1 ether);
     }
 
     function test_fundGrail_rejectsZero() public {
         vm.expectRevert(IPoolTypes.ZeroAmount.selector);
-        IPool(address(pool)).fundGrail(1);
-    }
-
-    function test_fundGrail_rejectsBadTrack() public {
-        vm.prank(alice);
-        vm.expectRevert(IPoolTypes.InvalidTrack.selector);
-        IPool(address(pool)).fundGrail{value: 1 ether}(2);
+        IPool(address(pool)).fundGrail();
     }
 
     function test_theModuleGettersMatchTheConstructor() public view {

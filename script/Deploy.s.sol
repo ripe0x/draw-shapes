@@ -35,9 +35,6 @@ contract Deploy is Script {
     uint256 internal constant SEPOLIA = 11155111;
     uint256 internal constant LOCAL = 31337;
 
-    uint256 internal constant MINOR = 0;
-    uint256 internal constant MAJOR = 1;
-
     /// @notice Deploys the pool, verifies it and writes the record.
     function run() external returns (Pool pool, PoolAdmin module, PoolListing listing, Lens lens) {
         IPoolTypes.Params memory p = _params();
@@ -71,22 +68,14 @@ contract Deploy is Script {
         p.feeSplit = IPoolTypes.FeeSplit({
             premiumBps: SafeCastLib.toUint16(vm.envUint("PREMIUM_BPS")),
             maintenanceBps: SafeCastLib.toUint16(vm.envUint("MAINTENANCE_BPS")),
-            feedBps: SafeCastLib.toUint16(vm.envUint("FEED_BPS")),
-            minorShareBps: SafeCastLib.toUint16(vm.envUint("MINOR_SHARE_BPS"))
+            feedBps: SafeCastLib.toUint16(vm.envUint("FEED_BPS"))
         });
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: vm.envUint("GRAIL_MINOR_TARGET_WEI"),
-            stepWei: vm.envUint("GRAIL_MINOR_STEP_WEI"),
-            listBps: vm.envUint("GRAIL_MINOR_LIST_BPS"),
-            decayWeiPerPull: vm.envUint("GRAIL_MINOR_DECAY_WEI_PER_PULL"),
-            floorWei: vm.envUint("GRAIL_MINOR_FLOOR_WEI")
-        });
-        p.major = IPoolTypes.GrailParams({
-            targetWei: vm.envUint("GRAIL_MAJOR_TARGET_WEI"),
-            stepWei: vm.envUint("GRAIL_MAJOR_STEP_WEI"),
-            listBps: vm.envUint("GRAIL_MAJOR_LIST_BPS"),
-            decayWeiPerPull: vm.envUint("GRAIL_MAJOR_DECAY_WEI_PER_PULL"),
-            floorWei: vm.envUint("GRAIL_MAJOR_FLOOR_WEI")
+        p.grail = IPoolTypes.GrailParams({
+            targetWei: vm.envUint("GRAIL_TARGET_WEI"),
+            listBps: vm.envUint("GRAIL_LIST_BPS"),
+            decayWeiPerPull: vm.envUint("GRAIL_DECAY_WEI_PER_PULL"),
+            pieceFloorWei: vm.envUint("GRAIL_PIECE_FLOOR_WEI"),
+            floorWei: vm.envUint("GRAIL_FLOOR_WEI")
         });
         uint256 navCapFloor = vm.envUint("NAV_CAP_FLOOR_WEI");
         p.navCapFloor = navCapFloor == 0 ? type(uint256).max : navCapFloor;
@@ -207,10 +196,9 @@ contract Deploy is Script {
         require(IPool(address(pool)).reserveBps() == p.reserveBps, "reserveBps");
         require(IPool(address(pool)).tipWei() == p.tipWei, "tipWei");
 
-        (uint16 premium, uint16 maint, uint16 feed, uint16 minorShare) = pool.feeSplit();
+        (uint16 premium, uint16 maint, uint16 feed) = pool.feeSplit();
         require(
-            premium == p.feeSplit.premiumBps && maint == p.feeSplit.maintenanceBps && feed == p.feeSplit.feedBps
-                && minorShare == p.feeSplit.minorShareBps,
+            premium == p.feeSplit.premiumBps && maint == p.feeSplit.maintenanceBps && feed == p.feeSplit.feedBps,
             "feeSplit"
         );
         (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
@@ -228,17 +216,18 @@ contract Deploy is Script {
                 "mixRow"
             );
         }
-        _checkGrail(pool, MINOR, p.minor);
-        _checkGrail(pool, MAJOR, p.major);
+        _checkGrail(pool, p.grail);
     }
 
-    function _checkGrail(Pool pool, uint256 track, IPoolTypes.GrailParams memory g) internal view {
-        (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = IPool(address(pool)).grail(track);
+    function _checkGrail(Pool pool, IPoolTypes.GrailParams memory g) internal view {
+        IPoolTypes.Grail memory s = IPool(address(pool)).grail();
         require(
-            target == g.targetWei && step == g.stepWei && listBps == g.listBps && decay == g.decayWeiPerPull
-                && floor == g.floorWei,
+            s.targetWei == g.targetWei && s.nextTargetWei == g.targetWei && s.cycleId == 1 && s.fund == 0
+                && s.listBps == g.listBps && s.decayWeiPerPull == g.decayWeiPerPull
+                && s.pieceFloorWei == g.pieceFloorWei && s.floorWei == g.floorWei,
             "grail"
         );
+        require(IPool(address(pool)).grailItems().length == 0, "grailItems");
     }
 
     // ------------------------------------------------------------------ record

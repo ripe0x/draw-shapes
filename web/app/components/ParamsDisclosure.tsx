@@ -45,7 +45,6 @@ export function ParamsDisclosure() {
       <Kv label="Depositor premium, of backing" value={bps(p.feeSplit.premiumBps)} />
       <Kv label="Maintenance, of backing" value={bps(p.feeSplit.maintenanceBps)} />
       <Kv label="GRAIL feed, of backing" value={bps(p.feeSplit.feedBps)} />
-      <Kv label="Minor share of the feed" value={bps(p.feeSplit.minorShareBps)} />
       <Kv label="Entry fee floor" value={bps(p.floorBps)} />
       <Kv label="Entry fee cap" value={bps(p.capBps)} />
       <Kv label="Entry fee payback target (days of yield)" value={count(p.paybackDays)} />

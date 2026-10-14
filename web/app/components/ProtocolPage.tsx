@@ -29,12 +29,12 @@ const FAQS = [
   {
     question: "How do deposits and withdrawals work?",
     answer:
-      "The entry contribution funds the GRAIL buckets. It is the depositor premium times the daily fee volume over NAV, for the payback days, kept between the floor and the cap. The rest of a deposit mints shares at ordinary NAV per share. Deposits are admitted while ordinary NAV is below the NAV cap, which is the larger of the floor and the daily fee volume divided by the turnover. Daily fee volume is the mean over the last seven complete UTC days. Deposits open after the founder window that follows the pool opening. A withdrawal burns shares and pays shares * NAV / total shares: the part cash covers is paid at once and the remainder joins a FIFO claim queue. Anyone can call payClaims, and rotate redeems items for the head claim once it is a rotate interval old. Shares are nontransferable.",
+      "The entry contribution funds the GRAIL. It is the depositor premium times the daily fee volume over NAV, for the payback days, kept between the floor and the cap. The rest of a deposit mints shares at ordinary NAV per share. Deposits are admitted while ordinary NAV is below the NAV cap, which is the larger of the floor and the daily fee volume divided by the turnover. Daily fee volume is the mean over the last seven complete UTC days. Deposits open after the founder window that follows the pool opening. A withdrawal burns shares and pays shares * NAV / total shares: the part cash covers is paid at once and the remainder joins a FIFO claim queue. Anyone can call payClaims, and rotate redeems items for the head claim once it is a rotate interval old. Shares are nontransferable.",
   },
   {
-    question: "What are the GRAIL tracks?",
+    question: "How does the GRAIL build?",
     answer:
-      "Minor and Major are two packs funded from their own buckets. Each grows by a step toward its target, lists at a share of its backing, drops in price by a fixed amount per pull down to a floor, and is lifted in price when its listed weight exceeds the probability cap. A captured pack pays its proceeds to the track's receivable and then its bucket, and the track starts again. Both tracks sit outside ordinary NAV.",
+      "One fund, fed by the entry contribution, the feed share of every settled ticket and fundGrail. Rotate mints 1 ETH pieces from the fund and lists each at face, then merges listed pieces by fixed recipes: five ones make a 5, two fives a 10, two tens and a five the 25, two 25s a 50, two 50s a 100. The target is one of those sizes and the admin sets the next cycle's target. Every listed GRAIL item drops in price by a fixed amount per pull down to its floor, 0.25 ETH for a piece and 1 ETH otherwise, and the decay stops while the listed GRAIL weight would pass the probability cap. A captured item pays its proceeds to the fund and the cycle carries on.",
   },
   {
     question: "Who pays for upkeep?",
@@ -101,7 +101,6 @@ function BoardTable() {
 function Buckets() {
   const pool = usePool().data;
   if (!pool) return null;
-  const [minor, major] = pool.grails;
   return (
     <div className="card">
       <Kv label="Cash" value={<Eth wei={pool.cash} digits={4} />} />
@@ -114,10 +113,9 @@ function Buckets() {
         label="Maintenance"
         value={`${eth(pool.maintenance, 4)} ETH, receivable ${eth(pool.maintenanceReceivable, 4)} ETH`}
       />
-      <Kv label="Minor GRAIL bucket" value={<Eth wei={minor.bucket} digits={4} />} />
-      <Kv label="Major GRAIL bucket" value={<Eth wei={major.bucket} digits={4} />} />
+      <Kv label="GRAIL fund" value={<Eth wei={pool.grail.fund} digits={4} />} />
       <p className="vault-note">
-        Ordinary NAV = cash + backing + receivable - claims, with backing counted at face. GRAIL buckets and maintenance
+        Ordinary NAV = cash + backing + receivable - claims, with backing counted at face. The GRAIL fund, the GRAIL items and maintenance
         sit outside ordinary NAV.
       </p>
     </div>
@@ -139,7 +137,7 @@ function Section({ n, title, lead, children }: { n: string; title: string; lead:
   );
 }
 
-/** `/protocol`: live pool state, the pull path, board, GRAIL tracks, buckets, upkeep, control and FAQ. */
+/** `/protocol`: live pool state, the pull path, board, GRAIL, buckets, upkeep, control and FAQ. */
 export function ProtocolPage() {
   const dep = useDeployment();
   const grailCapBps = usePool().data?.params.grailProbCapBps;
@@ -148,7 +146,7 @@ export function ProtocolPage() {
     <main className="protocol-page">
       <header className="protocol-hero">
         <h1>Protocol</h1>
-        <p>Live pool state, the path of a pull, the board and GRAIL tracks, the buckets behind NAV, upkeep and admin control.</p>
+        <p>Live pool state, the path of a pull, the board and the GRAIL, the buckets behind NAV, upkeep and admin control.</p>
       </header>
 
       {!dep.present && (
@@ -192,7 +190,7 @@ export function ProtocolPage() {
 
       <Section
         n="03"
-        title="GRAIL tracks"
+        title="GRAIL"
         lead="Two prize packs, Minor and Major, funded from their own buckets."
       >
         <div className="protocol-data-grid">
@@ -216,7 +214,7 @@ export function ProtocolPage() {
       <Section
         n="05"
         title="Upkeep"
-        lead="Settle books captures and lists replacements. Rotate pays claims, grows GRAIL tracks and lists held items."
+        lead="Settle books captures and lists replacements. Rotate pays claims, mints and merges GRAIL pieces and lists held items."
       >
         <Upkeep />
       </Section>
@@ -233,7 +231,7 @@ export function ProtocolPage() {
           </article>
           <article>
             <strong>Separate buckets</strong>
-            <p>GRAIL buckets, GRAIL backing and maintenance are accounted apart from ordinary NAV.</p>
+            <p>The GRAIL fund, GRAIL backing and maintenance are accounted apart from ordinary NAV.</p>
           </article>
           <article>
             <strong>One admin</strong>

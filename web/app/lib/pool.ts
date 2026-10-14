@@ -32,8 +32,7 @@ export function usePool() {
       { ...lens, functionName: "parameters" },
       { ...lens, functionName: "admission" },
       { ...lens, functionName: "board" },
-      { ...lens, functionName: "grail", args: [0] },
-      { ...lens, functionName: "grail", args: [1] },
+      { ...lens, functionName: "grail" },
       { ...lens, functionName: "reopenStatus" },
       { ...lens, functionName: "settleDue" },
       { ...lens, functionName: "rotateDue" },
@@ -51,14 +50,15 @@ export function usePool() {
     query: {
       enabled: dep.present,
       refetchInterval: POLL_MS,
-      select: ([nav, sharePrice, params, admission, board, minor, major, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
+      select: ([nav, sharePrice, params, admission, board, grail, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
         nav,
         sharePrice,
         params,
         /** Deposit cap, the volume it follows, the room under it and the entry fee now. */
         admission,
         board,
-        grails: [minor, major] as const,
+        /** GRAIL fund, cycle, parameters and every GRAIL item. */
+        grail,
         reopen,
         settleDue,
         rotateDue,
@@ -90,9 +90,8 @@ export function useClaimsQueue() {
 
 export type PoolData = NonNullable<ReturnType<typeof usePool>["data"]>;
 export type Row = PoolData["board"][number];
-export type Grail = PoolData["grails"][number];
-
-export const TRACK = ["Minor", "Major"] as const;
+export type Grail = PoolData["grail"];
+export type GrailItem = Grail["items"][number];
 
 // ------------------------------------------------------------------ odds
 
@@ -107,16 +106,16 @@ export interface OddsRow {
   listed: bigint;
   /** Chance a single pull draws an item of this row, in bps. */
   chanceBps: bigint;
-  /** Shape, Draw Pack (rung count) or a GRAIL track. */
-  kind: { shape: true } | { pack: number } | { grail: 0 | 1 };
+  /** Shape, Draw Pack (rung count) or a GRAIL item. */
+  kind: { shape: true } | { pack: number } | { grail: true };
 }
 
 /**
- * Selection odds of every listed row and listed GRAIL pack, from the board's list prices and the
- * tracks' notionals under FWA's rule (weight 1e36 / price). `averageBackingWei` is the
+ * Selection odds of every listed row and listed GRAIL item, from the board's list prices and the
+ * items' notionals under FWA's rule (weight 1e36 / price). `averageBackingWei` is the
  * weight-averaged redeemable backing of one draw.
  */
-export function drawOdds(board: readonly Row[], grails: readonly Grail[]) {
+export function drawOdds(board: readonly Row[], grail: Grail) {
   const parts: Omit<OddsRow, "chanceBps">[] = [];
   board.forEach((r, i) => {
     if (r.listed === 0n || r.listingPrice === 0n) return;
@@ -128,9 +127,9 @@ export function drawOdds(board: readonly Row[], grails: readonly Grail[]) {
       kind: r.rungs.length > 1 ? { pack: r.rungs.length } : { shape: true },
     });
   });
-  grails.forEach((g, t) => {
+  grail.items.forEach((g) => {
     if (g.listingId === 0n || g.notional === 0n) return;
-    parts.push({ key: `grail-${t}`, backingWei: g.backing, priceWei: g.notional, listed: 1n, kind: { grail: t as 0 | 1 } });
+    parts.push({ key: `grail-${g.listingId}`, backingWei: g.backing, priceWei: g.notional, listed: 1n, kind: { grail: true } });
   });
   const weights = parts.map((p) => weightOf(p.priceWei) * p.listed);
   const total = weights.reduce((a, b) => a + b, 0n);
@@ -145,9 +144,9 @@ export function drawOdds(board: readonly Row[], grails: readonly Grail[]) {
   return { rows, averageBackingWei, listedItems, listedBackingWei, largestWei };
 }
 
-/** Odds of one GRAIL pack per pull, in bps, under the same rule as `drawOdds`. */
-export function grailChanceBps(odds: ReturnType<typeof drawOdds>, t: 0 | 1): bigint {
-  return odds.rows.find((r) => "grail" in r.kind && r.kind.grail === t)?.chanceBps ?? 0n;
+/** Odds of one GRAIL item per pull, in bps, under the same rule as `drawOdds`. */
+export function grailChanceBps(odds: ReturnType<typeof drawOdds>, listingId: bigint): bigint {
+  return odds.rows.find((r) => r.key === `grail-${listingId}`)?.chanceBps ?? 0n;
 }
 
 // ------------------------------------------------------------------ quote

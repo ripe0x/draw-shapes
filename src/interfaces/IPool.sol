@@ -18,10 +18,9 @@ interface IPoolTypes {
         uint16 premiumBps;
         uint16 maintenanceBps;
         uint16 feedBps;
-        uint16 minorShareBps;
     }
 
-    /// @dev Share of a deposit routed to the GRAIL buckets, in bps, between `floorBps` and
+    /// @dev Share of a deposit routed to the GRAIL fund, in bps, between `floorBps` and
     ///      `capBps`. It targets `paybackDays` days of depositor yield.
     struct EntryFee {
         uint32 floorBps;
@@ -29,27 +28,42 @@ interface IPoolTypes {
         uint32 paybackDays;
     }
 
+    /// @dev Constructor and `setGrail` values. `targetWei` is the first cycle's target and seeds
+    ///      `nextTargetWei`. Wei amounts follow the Shapes ladder: the target is 500, 1,000, 2,500,
+    ///      5,000 or 10,000 units, a piece is 100 units.
     struct GrailParams {
         uint256 targetWei;
-        uint256 stepWei;
         uint256 listBps;
         uint256 decayWeiPerPull;
+        uint256 pieceFloorWei;
         uint256 floorWei;
     }
 
+    /// @dev The GRAIL fund and parameters. `fund` pays mints, `receivable` holds booked proceeds
+    ///      of captured GRAIL items and the feed share until harvest credits them to `fund`.
     struct Grail {
-        uint256 bucket;
-        uint256 packId;
-        uint256 backing;
-        uint256 notional;
+        uint256 fund;
+        uint256 receivable;
         uint256 targetWei;
-        uint256 stepWei;
+        uint256 nextTargetWei;
+        uint256 cycleId;
         uint256 listBps;
         uint256 decayWeiPerPull;
+        uint256 pieceFloorWei;
         uint256 floorWei;
-        uint256 pullsSinceList;
-        uint256 receivable;
+    }
+
+    /// @dev A GRAIL item owned by the pool: a piece, an intermediate, or a completed GRAIL.
+    ///      `listingId` is the FWA listing id, zero while the item is unlisted. `done` marks the
+    ///      completed GRAIL of a cycle, which is not an input to a merge.
+    struct GrailItem {
+        address collection;
+        bool done;
+        uint256 tokenId;
+        uint256 backing;
+        uint256 notional;
         uint256 listingId;
+        uint256 pullsSinceList;
     }
 
     struct Claim {
@@ -93,8 +107,7 @@ interface IPoolTypes {
         address oldPool;
         PricingLib.MixRow[] mix;
         FeeSplit feeSplit;
-        GrailParams minor;
-        GrailParams major;
+        GrailParams grail;
         uint256 navCapFloor;
         uint16 turnoverBps;
         EntryFee entryFee;
@@ -115,11 +128,10 @@ interface IPoolTypes {
     error ZeroAddress();
     error ZeroAmount();
     error FeeSplitTooHigh();
-    error MinorShareTooHigh();
     error EntryFeeOutOfRange();
     error TurnoverOutOfRange();
     error ListBpsOutOfRange();
-    error GrailStepInvalid();
+    error GrailTargetInvalid();
     error NotAdmin();
     error DepositsPaused();
     error NavCapReached();
@@ -148,7 +160,7 @@ interface IPoolTypes {
     error RotateTooSoon();
     error RotateNotDue();
     error RedeemMismatch();
-    error GrailNotReady();
+    error GrailItemsFull();
     error FwaBusy();
     error NotExiting();
     error InvalidDest();
@@ -167,7 +179,6 @@ interface IPoolTypes {
     error ImportInProgress();
     error UseMigrateHolder();
     error AlreadyRegistered();
-    error InvalidTrack();
     error NotDelegated();
     error NotSelf();
 
@@ -190,7 +201,9 @@ interface IPoolTypes {
     ///      the caller from `maintenance`.
     event Settled(uint256 listed, uint256 refund);
     event MaintenanceFunded(address indexed from, uint256 amount);
-    event GrailFunded(address indexed from, uint8 indexed track, uint256 amount);
+    event GrailFunded(address indexed from, uint256 amount);
+    /// @dev `rotate` skipped the GRAIL step because it reverted. `selector` is the first four bytes of the revert data.
+    event GrailStepSkipped(bytes4 selector);
     /// @dev `chosenRow` is the row queued to replace the capture of `capturedRow`. `surprise` is true
     ///      when the surprise draw selected it.
     event ReplacementChosen(uint256 indexed requestId, uint256 capturedRow, uint256 chosenRow, bool surprise);
@@ -200,16 +213,22 @@ interface IPoolTypes {
     ///      the remaining holders. `listingId` is zero for a held item.
     event Liquidated(uint256 indexed listingId, uint256 value, uint256 fee);
     event Rotated(bool changed, bool inventoryChanged, uint256 refund);
-    /// @dev `backing` is the track's backing after the step. `notional` is the list price after it.
-    event GrailGrown(uint256 indexed track, uint256 packId, uint256 backing, uint256 notional);
-    /// @dev Emitted when a track's pack is listed and when its list price decays.
-    event GrailListed(uint256 indexed track, uint256 listingId, uint256 notional);
+    /// @dev `quantity` pieces were minted from the GRAIL fund for `cost` wei, the backing plus mint
+    ///      fees. The token ids are consecutive from `firstTokenId`.
+    event GrailMinted(uint256 indexed firstTokenId, uint256 quantity, uint256 cost);
+    /// @dev Emitted when a GRAIL item is listed and when its list price changes.
+    event GrailListed(uint256 indexed listingId, address collection, uint256 tokenId, uint256 backing, uint256 notional);
+    /// @dev `inputs` GRAIL items were combined into `tokenId` of `backing`. `completed` is true when
+    ///      the output closed the cycle.
+    event GrailMerged(uint256 indexed tokenId, uint256 backing, uint256 inputs, bool completed);
+    /// @dev Emitted when a cycle completes. `nextTargetWei` is the target of the cycle that starts.
+    event GrailCycleCompleted(uint256 indexed cycleId, uint256 nextTargetWei);
     /// @dev `proceeds` is zero for a write-off of a pending delivery.
-    event GrailCaptured(uint256 indexed track, uint256 indexed requestId, uint256 proceeds);
+    event GrailCaptured(uint256 indexed requestId, uint256 indexed listingId, uint256 backing, uint256 proceeds);
     event ExitStarted(address indexed dest);
     /// @dev `nav` is `exportedNav`, `shares` is `exportedShares`.
     event Exported(uint256 shares, uint256 nav);
-    event GrailEstateTransferred(uint256 indexed track, address indexed to, uint256 packId, uint256 bucket);
+    event GrailEstateTransferred(address indexed to, uint256 fund, uint256 items);
     event Imported(uint256 nav, uint256 shares);
     event Migrated(address indexed holder, uint256 shares);
     /// @dev Emitted by every admin setter. `selector` is the setter's function selector.
@@ -237,31 +256,13 @@ interface IPool is IPoolTypes {
     function claims() external view returns (uint256);
     function maintenance() external view returns (uint256);
     function maintenanceReceivable() external view returns (uint256);
-    function grail(uint256 track)
-        external
-        view
-        returns (
-            uint256 bucket,
-            uint256 packId,
-            uint256 backing_,
-            uint256 notional,
-            uint256 targetWei,
-            uint256 stepWei,
-            uint256 listBps,
-            uint256 decayWeiPerPull,
-            uint256 floorWei,
-            uint256 pullsSinceList,
-            uint256 receivable_,
-            uint256 listingId
-        );
+    function grail() external view returns (Grail memory);
+    function grailItems() external view returns (GrailItem[] memory);
     function totalShares() external view returns (uint256);
     function sharesOf(address account) external view returns (uint256);
     function claimQueue(uint256 index) external view returns (address to, uint64 requestedAt, uint256 amount);
     function claimHead() external view returns (uint256);
-    function feeSplit()
-        external
-        view
-        returns (uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps);
+    function feeSplit() external view returns (uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps);
     function entryFee() external view returns (uint32 floorBps, uint32 capBps, uint32 paybackDays);
     function navCapFloor() external view returns (uint256);
     function navCap() external view returns (uint256);
@@ -324,9 +325,13 @@ interface IPool is IPoolTypes {
     function rotateDue() external view returns (RotateTrigger);
     function settleDue() external view returns (SettleTrigger);
     function chooseRow(uint256 requestId, uint256 capturedRow) external view returns (uint256 row, bool surprise);
-    /// @dev `PoolListing` entrypoints. Callable by the pool itself only.
+    /// @dev `PoolListing` entrypoints. Callable by the pool itself only, except the view
+    ///      `grailReady`.
     function listBatch(uint256 max) external returns (uint256 listed);
     function openBoard() external returns (uint256 listed);
+    function grailStep() external returns (bool changed);
+    function grailReprice() external returns (bool changed);
+    function grailReady() external view returns (bool);
     function acquire(
         address purchaser,
         uint256 maxAcquisitionFee,
@@ -354,25 +359,19 @@ interface IPool is IPoolTypes {
     function settle(uint256 maxCount) external;
     function payClaims() external;
     function fundMaintenance() external payable;
-    function fundGrail(uint8 t) external payable;
+    function fundGrail() external payable;
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4);
 
     // ------------------------------------------------------------------ PoolAdmin
 
-    function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps) external;
+    function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps) external;
     function setEntryFee(uint32 floorBps, uint32 capBps, uint32 paybackDays) external;
     function setNavCapFloor(uint256 wei_) external;
     function setTurnover(uint16 bps) external;
     function setFounderWindow(uint32 seconds_) external;
     function setMix(PricingLib.MixRow[] memory rows) external;
-    function setGrail(
-        uint8 t,
-        uint256 targetWei,
-        uint256 stepWei,
-        uint256 listBps,
-        uint256 decayWeiPerPull,
-        uint256 floorWei
-    ) external;
+    function setGrail(uint256 decayWeiPerPull, uint256 pieceFloorWei, uint256 floorWei, uint256 listBps) external;
+    function setGrailTarget(uint256 targetWei) external;
     function setMaxBatch(uint256 n) external;
     function setConcurrency(uint256 n) external;
     function setRotateInterval(uint256 seconds_) external;
@@ -389,9 +388,9 @@ interface IPool is IPoolTypes {
     function adminCall(address target, bytes calldata data, uint256 value) external payable;
     function startExit(address dest) external;
     function exportStep(uint256 maxItems) external returns (bool);
-    function transferGrailEstate(uint8 t, address to) external;
+    function transferGrailEstate(address to) external;
     function importItem(address collection, uint256 tokenId) external;
-    function importGrail(uint8 t, uint256 packId) external payable;
+    function importGrail(address collection, uint256 tokenId, bool done) external payable;
     function importCash() external payable;
     function finalizeImport(uint256 fromShares) external;
     function migrateHolder(address holder) external;

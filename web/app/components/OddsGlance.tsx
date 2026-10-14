@@ -1,21 +1,21 @@
 "use client";
 
-import { drawOdds, TRACK, usePool, type OddsRow } from "../lib/pool";
+import { drawOdds, usePool, type OddsRow } from "../lib/pool";
 import { eth } from "../lib/format";
 import { Eth, percent } from "./Measure";
 
 function madeOf(row: OddsRow): string {
-  if ("grail" in row.kind) return `${TRACK[row.kind.grail]} GRAIL pack`;
+  if ("grail" in row.kind) return "GRAIL item";
   if ("pack" in row.kind) return `Draw Pack of ${row.kind.pack} Shapes`;
   return "1 Shape";
 }
 
-/** Every listed row and listed GRAIL pack a pull can draw, with its listed count and chance per pull.
+/** Every listed row and listed GRAIL item a pull can draw, with its listed count and chance per pull.
  *  Chances follow FWA's selection rule: each listing weighs 1e36 / its list price. */
 export function OddsGlance() {
   const pool = usePool().data;
   if (!pool) return null;
-  const odds = drawOdds(pool.board, pool.grails);
+  const odds = drawOdds(pool.board, pool.grail);
   return (
     <div className="card">
       <h3 className="vault-h2">What a pull can draw</h3>

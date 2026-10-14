@@ -10,10 +10,10 @@ import { PoolGrid } from "./components/PoolGrid";
 import { PullCard } from "./components/PullCard";
 
 /** `/`: the pull promise and live board summary, the card carousel, the pull card, the listed items
- *  grid beside both GRAIL tracks, what a pull can draw and the deposit band. */
+ *  grid beside the GRAIL, what a pull can draw and the deposit band. */
 export default function Landing() {
   const pool = usePool().data;
-  const odds = pool ? drawOdds(pool.board, pool.grails) : undefined;
+  const odds = pool ? drawOdds(pool.board, pool.grail) : undefined;
   const smallestWei = odds?.rows[0]?.backingWei;
 
   return (
@@ -43,8 +43,8 @@ export default function Landing() {
           </div>
         </div>
         <div className="landing-fact">
-          <div className="landing-fact-title">Two GRAIL tracks</div>
-          <div className="landing-fact-sub">A minor and a major GRAIL pack list on the same board. Each list price drops a little with every pull.</div>
+          <div className="landing-fact-title">The GRAIL builds on the board</div>
+          <div className="landing-fact-sub">1 ETH pieces list as they mint and merge up to the target. Each list price drops a little with every pull.</div>
         </div>
         <div className="landing-fact">
           <div className="landing-fact-title">Built on FWA custom pools</div>
@@ -74,7 +74,7 @@ export default function Landing() {
           <div className="landing-supply-sub">
             Depositors own ordinary NAV and keep the premium share of every settled pull&apos;s margin
             {pool ? `: a ${pct(pool.params.feeSplit.premiumBps)} markup on each item's backing in its list price` : ""}. A deposit mints shares
-            at NAV after an entry contribution to the GRAIL buckets, and a withdrawal pays at NAV.
+            at NAV after an entry contribution to the GRAIL fund, and a withdrawal pays at NAV.
           </div>
         </div>
         <Link className="landing-supply-link" href="/deposit">

@@ -79,6 +79,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
             IPoolTypes.Item memory it = pool.listedItem(id);
+            if (it.value == 0) continue; // a GRAIL listing, tracked in `grailItems`
             assertEq(it.listingId, id, "registry id");
             (address collection, address depositor,, uint256 tokenId,, uint256 price,, IFWAClone.ListingStatus status) =
                 clone.listings(id);
@@ -240,7 +241,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).rowCount(0), 7);
         assertEq(IPool(address(pool)).rowCount(1), 3);
         assertEq(pool.heldCount(), 0);
-        assertEq(clone.activeListingCount(), 10);
+        assertEq(clone.activeListingCount(), 11, "ten ordinary items and the opening five");
 
         (uint256 sum, uint256 listedCount) = _checkListings();
         assertEq(listedCount, 10);
@@ -358,7 +359,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         clone.setBool(41, true);
         warpPastCooldown(clone);
 
-        uint256 listingId = 1;
+        uint256 listingId = 2; // listing 1 is the opening five
         _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         fulfill(clone, requestId, wordFor(clone, listingId));

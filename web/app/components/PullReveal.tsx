@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useListedItems, useTokenImages } from "../lib/art";
 import { eth } from "../lib/format";
-import { TRACK } from "../lib/pool";
 import { ACQ, type Batch, type Card } from "../lib/pulls";
 import { Eth } from "./Measure";
 import { TokenArt } from "./TokenArt";
@@ -151,10 +150,10 @@ function PullPack({ card, flip }: { card: Card; flip: boolean }) {
     );
   }
   const art = <TokenArt token={item} />;
-  const grail = item.grail !== undefined;
+  const grail = item.grail === true;
   return (
-    <div className={grail ? `pack pack-opened pack-grail pack-tier-${item.grail === 0 ? "minor" : "major"}` : "pack pack-opened"}>
-      {grail && <p className="pack-tier">{TRACK[item.grail!]} GRAIL pack</p>}
+    <div className={grail ? "pack pack-opened pack-grail pack-tier-major" : "pack pack-opened"}>
+      {grail && <p className="pack-tier">GRAIL</p>}
       {flip ? <PackFlip back={<PackBack />} front={art} /> : art}
       <p className="pack-value">{eth(item.value)} ETH</p>
       <p className="vault-note pack-result-line">

@@ -15,9 +15,8 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 ///         clones created by the pools.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
 ///      2 x 0.01 ETH (3,000 bps). `recordPulls(60)` before `open` builds a board of 42 + 18 items.
-///      Pool A holds two depositors, two captures, one replacement held unlisted and a listed pack
-///      on each GRAIL track. Minor track: step 0.05 ETH, list 80 percent. Major track: step 0.15 ETH,
-///      list 90 percent.
+///      Pool A holds two depositors, two captures, one replacement held unlisted and four listed GRAIL
+///      items (the opening five and three pieces) with a fund. GRAIL: target 25 ETH, list 75 percent.
 contract PoolExitForkTest is ForkBase, PoolFixture {
     struct Token {
         address collection;
@@ -63,12 +62,6 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         p.oldPool = oldPool_;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: 0.5 ether, stepWei: 0.05 ether, listBps: 8_000, decayWeiPerPull: 0.001 ether, floorWei: 0.1 ether
-        });
-        p.major = IPoolTypes.GrailParams({
-            targetWei: 1 ether, stepWei: 0.15 ether, listBps: 9_000, decayWeiPerPull: 0.002 ether, floorWei: 0.3 ether
-        });
     }
 
     function _deployPool(address oldPool_) internal returns (PoolHarness p_, IFWAClone c_) {
@@ -92,12 +85,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         warpPastCooldown(c_);
     }
 
-    function _grail(PoolHarness p_, uint256 t)
-        internal
-        view
-        returns (uint256 bucket, uint256 packId, uint256 backing_, uint256 notional, uint256 listingId)
-    {
-        (bucket, packId, backing_, notional,,,,,,,, listingId) = IPool(address(p_)).grail(t);
+    function _fund(PoolHarness p_) internal view returns (uint256) {
+        return IPool(address(p_)).grail().fund;
+    }
+
+    function _items(PoolHarness p_) internal view returns (IPoolTypes.GrailItem[] memory) {
+        return IPool(address(p_)).grailItems();
     }
 
     function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
@@ -112,8 +105,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         pool.settle(20);
     }
 
-    /// @dev Pool A: two depositors, a 60 item board, a listed pack on both GRAIL tracks, two
-    ///      settled captures and one replacement held unlisted.
+    /// @dev Pool A: two depositors, a 60 item board, the opening five and three pieces on the GRAIL,
+    ///      two settled captures and one replacement held unlisted.
     function _buildA() internal {
         _deposit(pool, holderOne, 100 ether);
         _deposit(pool, holderTwo, 50 ether);
@@ -122,10 +115,10 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         _open(pool, clone);
         assertEq(pool.listedCount(), 60, "board");
 
+        assertEq(_items(pool).length, 1, "the opening five");
         _warpPastRotateGate(pool);
-        pool.growTrack(0);
-        _warpPastRotateGate(pool);
-        pool.growTrack(1);
+        assertTrue(pool.stepGrail());
+        assertEq(_items(pool).length, 4, "three pieces minted");
         warpPastCooldown(clone);
 
         _captureRow(0);
@@ -167,9 +160,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
     }
 
     function _assertI1(PoolHarness p_) internal view {
-        (uint256 minorBucket,,,,) = _grail(p_, 0);
-        (uint256 majorBucket,,,,) = _grail(p_, 1);
-        assertGe(address(p_).balance, p_.cash() + p_.maintenance() + minorBucket + majorBucket, "I1");
+        assertGe(address(p_).balance, p_.cash() + p_.maintenance() + _fund(p_), "I1");
     }
 
     function _exportAll(PoolHarness p_, uint256 perCall) internal returns (uint256 calls) {
@@ -305,8 +296,8 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 value = pool.backing();
         uint256 cashBefore = pool.cash();
         uint256 maintenanceBefore = pool.maintenance();
-        (uint256 minorBucket, uint256 minorPack,, uint256 minorNotional, uint256 minorListing) = _grail(pool, 0);
-        (uint256 majorBucket, uint256 majorPack,,, uint256 majorListing) = _grail(pool, 1);
+        uint256 fund = _fund(pool);
+        IPoolTypes.GrailItem[] memory grailBefore = _items(pool);
         uint256 shares = pool.totalShares();
         uint256 navBefore = pool.nav();
         Token[] memory tokens = _tokens(pool, clone);
@@ -334,18 +325,16 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).exportedShares(), shares);
         assertEq(IPool(address(pool)).exportedNav(), navBefore + maintenanceBefore, "exported NAV is ordinary NAV plus maintenance");
         assertEq(pool.nav(), pool.cash());
-        assertEq(clone.activeListingCount(), 2, "only the GRAIL listings remain at FWA");
+        assertEq(clone.activeListingCount(), 4, "only the GRAIL listings remain at FWA");
 
-        (uint256 bucket0, uint256 pack0,, uint256 notional0, uint256 listing0) = _grail(pool, 0);
-        (uint256 bucket1, uint256 pack1,,, uint256 listing1) = _grail(pool, 1);
-        assertEq(bucket0, minorBucket);
-        assertEq(pack0, minorPack);
-        assertEq(notional0, minorNotional);
-        assertEq(listing0, minorListing);
-        assertEq(bucket1, majorBucket);
-        assertEq(pack1, majorPack);
-        assertEq(listing1, majorListing);
-        assertEq(drawPacks.ownerOf(minorPack), address(clone), "GRAIL pack untouched");
+        assertEq(_fund(pool), fund);
+        IPoolTypes.GrailItem[] memory grailAfter = _items(pool);
+        assertEq(grailAfter.length, grailBefore.length);
+        for (uint256 i; i < grailAfter.length; ++i) {
+            assertEq(grailAfter[i].listingId, grailBefore[i].listingId);
+            assertEq(grailAfter[i].notional, grailBefore[i].notional);
+            assertEq(IERC721(grailAfter[i].collection).ownerOf(grailAfter[i].tokenId), address(clone), "GRAIL item untouched");
+        }
         _assertI1(pool);
     }
 
@@ -395,57 +384,46 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
     function test_retirementTransferGrailEstate() public {
         _buildA();
-        (uint256 bucket, uint256 packId,,,) = _grail(pool, 0);
-        (uint256 majorBucket, uint256 majorPack,,,) = _grail(pool, 1);
+        uint256 fund = _fund(pool);
+        IPoolTypes.GrailItem[] memory items = _items(pool);
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.NotExiting.selector);
-        IPool(address(pool)).transferGrailEstate(0, estate);
+        IPool(address(pool)).transferGrailEstate(estate);
 
         vm.prank(admin);
         IPool(address(pool)).startExit(address(pool));
         _exportAll(pool, 25);
 
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).transferGrailEstate(0, estate);
+        IPool(address(pool)).transferGrailEstate(estate);
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.ZeroAddress.selector);
-        IPool(address(pool)).transferGrailEstate(0, address(0));
+        IPool(address(pool)).transferGrailEstate(address(0));
 
         vm.prank(admin);
-        vm.expectEmit(true, true, false, true, address(pool));
-        emit IPoolTypes.GrailEstateTransferred(0, estate, packId, bucket);
-        IPool(address(pool)).transferGrailEstate(0, estate);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.GrailEstateTransferred(estate, fund, items.length);
+        IPool(address(pool)).transferGrailEstate(estate);
 
-        assertEq(drawPacks.ownerOf(packId), estate, "pack sent");
-        assertEq(estate.balance, bucket, "bucket sent");
-        (uint256 bucketAfter, uint256 packAfter, uint256 backingAfter, uint256 notionalAfter, uint256 listingAfter) =
-            _grail(pool, 0);
-        assertEq(bucketAfter, 0);
-        assertEq(packAfter, 0);
-        assertEq(backingAfter, 0);
-        assertEq(notionalAfter, 0);
-        assertEq(listingAfter, 0);
-        _assertI1(pool);
-
-        (uint256 majorAfter, uint256 majorPackAfter,,,) = _grail(pool, 1);
-        assertEq(majorAfter, majorBucket, "other track untouched");
-        assertEq(majorPackAfter, majorPack);
-
-        vm.prank(admin);
-        IPool(address(pool)).transferGrailEstate(1, estate);
-        assertEq(drawPacks.ownerOf(majorPack), estate);
-        assertEq(estate.balance, bucket + majorBucket);
+        for (uint256 i; i < items.length; ++i) {
+            assertEq(IERC721(items[i].collection).ownerOf(items[i].tokenId), estate, "item sent");
+            assertFalse(IPool(address(pool)).registered(items[i].collection, items[i].tokenId), "item unregistered");
+        }
+        assertEq(estate.balance, fund, "fund sent");
+        assertEq(_fund(pool), 0);
+        assertEq(_items(pool).length, 0);
         assertEq(clone.activeListingCount(), 0);
+        _assertI1(pool);
     }
 
     function test_transferGrailEstateInExitingBeforeTheExportEnds() public {
         _buildA();
-        (, uint256 packId,,,) = _grail(pool, 1);
+        IPoolTypes.GrailItem[] memory items = _items(pool);
         vm.prank(admin);
         IPool(address(pool)).startExit(address(pool));
         vm.prank(admin);
-        IPool(address(pool)).transferGrailEstate(1, estate);
-        assertEq(drawPacks.ownerOf(packId), estate);
+        IPool(address(pool)).transferGrailEstate(estate);
+        assertEq(shapes.ownerOf(items[0].tokenId), estate);
         _exportAll(pool, 25);
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
     }
@@ -480,7 +458,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.NotOldPool.selector);
         IPool(address(succ)).importItem(SHAPES_ADDR, 1);
         vm.expectRevert(IPoolTypes.NotOldPool.selector);
-        IPool(address(succ)).importGrail{value: 1 wei}(0, 0);
+        IPool(address(succ)).importGrail{value: 1 wei}(address(0), 0, false);
         vm.expectRevert(IPoolTypes.NotOldPool.selector);
         IPool(address(succ)).finalizeImport(1);
         vm.stopPrank();
@@ -545,15 +523,14 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         uint256 aMaintenance = pool.maintenance();
         uint256 aShares = pool.totalShares();
         uint256 aNav = pool.nav();
-        (uint256 minorBucket, uint256 minorPack, uint256 minorBacking,,) = _grail(pool, 0);
-        (uint256 majorBucket, uint256 majorPack, uint256 majorBacking,,) = _grail(pool, 1);
+        uint256 aFund = _fund(pool);
+        IPoolTypes.GrailItem[] memory aItems = _items(pool);
         uint256 bBacking = succ.backing();
         uint256 bCash = succ.cash();
         uint256 bShares = succ.totalShares();
         uint256 bNav = succ.nav();
         uint256 carolClaim = succ.sharesOf(carol) * bNav / bShares;
-        (uint256 bMinorBucket,,,,) = _grail(succ, 0);
-        (uint256 bMajorBucket,,,,) = _grail(succ, 1);
+        uint256 bFund = _fund(succ);
         uint256 held = succ.heldCount();
 
         vm.prank(admin);
@@ -561,7 +538,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(pool.exitDest(), address(succ));
 
         uint256 calls = _exportAll(pool, 12);
-        assertEq(calls, 6, "59 items and 2 tracks at 12 per call");
+        assertEq(calls, 5, "59 items and the GRAIL estate at 12 per call");
 
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
         assertTrue(clone.retired());
@@ -574,10 +551,7 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).exportedShares(), aShares);
         assertEq(IPool(address(pool)).exportedNav(), aNav + aMaintenance, "exported NAV");
         assertEq(IPool(address(pool)).exportedNav(), succ.importedNav(), "the successor counted the same NAV");
-        (uint256 aMinorBucket, uint256 aMinorPack,,, uint256 aMinorListing) = _grail(pool, 0);
-        assertEq(aMinorBucket + aMinorPack + aMinorListing, 0, "old track cleared");
-        (uint256 aMajorBucket, uint256 aMajorPack,,, uint256 aMajorListing) = _grail(pool, 1);
-        assertEq(aMajorBucket + aMajorPack + aMajorListing, 0);
+        assertEq(_fund(pool) + _items(pool).length, 0, "old GRAIL estate cleared");
 
         assertEq(succ.backing(), bBacking + aBacking, "I2: backing is the sum of values");
         assertEq(succ.heldCount(), held + tokens.length, "imported items are held");
@@ -585,19 +559,24 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
             assertEq(IERC721(tokens[i].collection).ownerOf(tokens[i].id), address(succ), "token moved");
         }
         assertEq(succ.cash(), bCash + aCash + aMaintenance, "cash and maintenance imported as cash");
-        (uint256 sMinorBucket, uint256 sMinorPack, uint256 sMinorBacking, uint256 sMinorNotional, uint256 sMinorId) =
-            _grail(succ, 0);
-        (uint256 sMajorBucket, uint256 sMajorPack, uint256 sMajorBacking,, uint256 sMajorId) = _grail(succ, 1);
-        assertEq(sMinorPack, minorPack);
-        assertEq(sMajorPack, majorPack);
-        assertEq(sMinorBacking, minorBacking);
-        assertEq(sMajorBacking, majorBacking);
-        assertEq(sMinorBucket, bMinorBucket + minorBucket);
-        assertEq(sMajorBucket, bMajorBucket + majorBucket);
-        assertEq(sMinorNotional, minorBacking * 8_000 / 10_000, "notional at the successor listBps");
-        assertEq(sMinorId + sMajorId, 0, "relisted by rotate");
-        assertEq(drawPacks.ownerOf(minorPack), address(succ));
-        assertEq(drawPacks.ownerOf(majorPack), address(succ));
+        IPoolTypes.GrailItem[] memory sItems = _items(succ);
+        assertEq(sItems.length, aItems.length);
+        assertEq(_fund(succ), bFund + aFund);
+        for (uint256 i; i < aItems.length; ++i) {
+            // The old pool sends its items last first, so the successor holds them in reverse.
+            IPoolTypes.GrailItem memory it = sItems[aItems.length - 1 - i];
+            assertEq(it.tokenId, aItems[i].tokenId);
+            assertEq(it.collection, aItems[i].collection);
+            assertEq(it.backing, aItems[i].backing);
+            assertEq(it.listingId, 0, "listed by rotate");
+            assertEq(
+                it.notional,
+                it.backing == 1 ether ? it.backing : it.backing * 7_500 / 10_000,
+                "notional at the successor listBps"
+            );
+            assertEq(IERC721(it.collection).ownerOf(it.tokenId), address(succ));
+            assertTrue(IPool(address(succ)).registered(it.collection, it.tokenId));
+        }
 
         uint256 importedNav = succ.importedNav();
         assertEq(importedNav, aBacking + aCash + aMaintenance);
@@ -694,12 +673,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
 
         assertEq(succ.heldCount(), 0, "every imported item is listed");
         assertEq(succ.listedCount(), 10 + aItems);
-        (, uint256 packId,,, uint256 listingId) = _grail(succ, 0);
-        assertTrue(listingId != 0, "minor pack listed");
-        assertEq(drawPacks.ownerOf(packId), address(succClone));
-        (, uint256 majorId,,, uint256 majorListing) = _grail(succ, 1);
-        assertTrue(majorListing != 0, "major pack listed");
-        assertEq(drawPacks.ownerOf(majorId), address(succClone));
+        IPoolTypes.GrailItem[] memory sItems = _items(succ);
+        assertGt(sItems.length, 0, "the successor holds GRAIL items (rotate may have merged the imported ones)");
+        for (uint256 i; i < sItems.length; ++i) {
+            assertTrue(sItems[i].listingId != 0, "GRAIL item listed");
+            assertEq(IERC721(sItems[i].collection).ownerOf(sItems[i].tokenId), address(succClone));
+        }
         _assertI1(succ);
     }
 
@@ -974,39 +953,58 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         clone.acquire{value: total}(player, fee, 0, 10_000, version, block.timestamp + 1 hours);
     }
 
-    function test_importGrailRedeemsAPackArrivingAtAnOccupiedTrack() public {
+    function test_importGrailRedeemsAnItemArrivingAtAFullEstate() public {
         _buildA();
         _buildB();
-        _warpPastRotateGate(succ);
-        succ.growTrack(0);
-        (uint256 bucketBefore, uint256 packBefore, uint256 backingBefore,,) = _grail(succ, 0);
-        assertTrue(packBefore != 0);
-        (uint256 aBucket, uint256 aPack, uint256 aBacking,,) = _grail(pool, 0);
-        assertTrue(aPack != 0);
+        for (uint256 i; i < 16; ++i) {
+            succ.addGrailItem(SHAPES_ADDR, 900_000 + i, 1 ether, 1 ether, 0, false);
+        }
+        uint256 fundBefore = _fund(succ);
+        uint256 aFund = _fund(pool);
+        IPoolTypes.GrailItem[] memory aItems = _items(pool);
+        uint256 aBacking;
+        for (uint256 i; i < aItems.length; ++i) {
+            aBacking += aItems[i].backing;
+        }
 
         vm.prank(admin);
         IPool(address(pool)).startExit(address(succ));
         _exportAll(pool, 25);
 
-        (uint256 bucket, uint256 pack, uint256 backing_,,) = _grail(succ, 0);
-        assertEq(pack, packBefore, "the successor keeps its own pack");
-        assertEq(backing_, backingBefore);
-        assertEq(bucket, bucketBefore + aBucket + aBacking, "the incoming pack's value joined the bucket");
-        assertFalse(drawPacks.exists(aPack), "incoming pack redeemed");
+        assertEq(_items(succ).length, 16, "the estate stays at the cap");
+        assertEq(_fund(succ), fundBefore + aFund + aBacking, "the incoming items' value joined the fund");
+        for (uint256 i; i < aItems.length; ++i) {
+            assertFalse(shapes.exists(aItems[i].tokenId), "incoming item redeemed");
+        }
         _assertI1(succ);
     }
 
-    function test_importGrailAcceptsABucketOnlyImport() public {
+    function test_importGrailAcceptsAFundOnlyImport() public {
         _buildA();
         _buildB();
-        _warpPastRotateGate(succ);
-        succ.growTrack(0);
         vm.deal(address(pool), 1 ether);
-        (uint256 bucketBefore,,,,) = _grail(succ, 0);
+        uint256 fundBefore = _fund(succ);
         vm.prank(address(pool));
-        IPool(address(succ)).importGrail{value: 1 ether}(0, 0);
-        (uint256 bucket,,,,) = _grail(succ, 0);
-        assertEq(bucket, bucketBefore + 1 ether);
+        IPool(address(succ)).importGrail{value: 1 ether}(address(0), 0, false);
+        assertEq(_fund(succ), fundBefore + 1 ether);
+        assertEq(_items(succ).length, 0);
+    }
+
+    function test_revert_importGrailOfAnItemTheSuccessorDoesNotOwn() public {
+        _buildA();
+        _buildB();
+        uint256 id = mintShapes(stranger, 1 ether, 1);
+        vm.prank(address(pool));
+        vm.expectRevert(IPoolTypes.TokenNotReceived.selector);
+        IPool(address(succ)).importGrail(SHAPES_ADDR, id, false);
+    }
+
+    function test_revert_importGrailOfAnUnknownCollection() public {
+        _buildA();
+        _buildB();
+        vm.prank(address(pool));
+        vm.expectRevert();
+        IPool(address(succ)).importGrail(address(succClone), 1, false);
     }
 
     function test_migrateHolderUsesTheOldPoolShareCountAfterTheSuccessorExits() public {
@@ -1055,15 +1053,12 @@ contract PoolExitForkTest is ForkBase, PoolFixture {
         assertEq(IPool(address(pool)).margin(), 1 ether);
     }
 
-    function test_transferGrailEstateRejectsAnUnknownTrackAndThePool() public {
+    function test_transferGrailEstateRejectsThePool() public {
         _buildA();
         vm.prank(admin);
         IPool(address(pool)).startExit(address(pool));
         vm.prank(admin);
-        vm.expectRevert(IPoolTypes.InvalidTrack.selector);
-        IPool(address(pool)).transferGrailEstate(2, estate);
-        vm.prank(admin);
         vm.expectRevert(IPoolTypes.InvalidDest.selector);
-        IPool(address(pool)).transferGrailEstate(0, address(pool));
+        IPool(address(pool)).transferGrailEstate(address(pool));
     }
 }

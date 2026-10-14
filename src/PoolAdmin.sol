@@ -45,12 +45,9 @@ contract PoolAdmin is PoolBooks {
         emit FwaPoolCreated(address(clone));
     }
 
-    function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps)
-        external
-        onlyDelegated
-    {
+    function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps) external onlyDelegated {
         _admin();
-        _setFeeSplit(FeeSplit(premiumBps, maintenanceBps, feedBps, minorShareBps));
+        _setFeeSplit(FeeSplit(premiumBps, maintenanceBps, feedBps));
     }
 
     /// @dev `floorBps` is at most `capBps`, `capBps` is at most 10,000 and `paybackDays` is at
@@ -82,19 +79,6 @@ contract PoolAdmin is PoolBooks {
     function setMix(PricingLib.MixRow[] memory rows) external onlyDelegated {
         _admin();
         _setMix(rows);
-    }
-
-    function setGrail(
-        uint8 t,
-        uint256 targetWei,
-        uint256 stepWei,
-        uint256 listBps,
-        uint256 decayWeiPerPull,
-        uint256 floorWei
-    ) external onlyDelegated {
-        _admin();
-        if (t > MAJOR) revert InvalidTrack();
-        _initGrail(t, GrailParams(targetWei, stepWei, listBps, decayWeiPerPull, floorWei));
     }
 
     /// @dev `n` is at most the FWA factory's `maxAcquisitionsPerTx` and at least one.
@@ -177,11 +161,9 @@ contract PoolAdmin is PoolBooks {
     }
 
     /// @notice Sends an ERC-721 token the pool does not account for to `to`. Reverts `Accounted`
-    ///         for a held or listed ordinary item and for a track's pack.
+    ///         for a held or listed ordinary item and for a GRAIL item.
     function sweep(address token, uint256 id, address to) external onlyDelegated onlyAdmin {
-        if (_registered[token][id] || (token == drawPacks && (id == _grail[MINOR].packId || id == _grail[MAJOR].packId))) {
-            revert Accounted();
-        }
+        if (_registered[token][id]) revert Accounted();
         _transfer(token, address(this), to, id);
     }
 
@@ -239,10 +221,11 @@ contract PoolAdmin is PoolBooks {
         emit ExitStarted(dest);
     }
 
-    /// @notice Moves up to `maxItems` ordinary listings, held items and GRAIL tracks out of the
+    /// @notice Moves up to `maxItems` ordinary listings, held items and the GRAIL estate out of the
     ///         pool, then settles the exit. Ordinary items are redeemed into `cash` on retirement.
     ///         On migration they go to the successor while `cash` covers `claims` and the successor
-    ///         accepts the token (`canImport`), and are redeemed into `cash` otherwise. GRAIL tracks move on migration only. The call that moves
+    ///         accepts the token (`canImport`), and are redeemed into `cash` otherwise. The GRAIL estate (the
+    ///         fund and every GRAIL item) moves on migration only and counts as one item. The call that moves
     ///         the last item folds `maintenance` into `cash`, records `exportedShares` and
     ///         `exportedNav`, sends `cash - claims` to the successor, sets Exported, retires the FWA
     ///         pool and finalizes the import. Reverts `FwaBusy` while FWA holds unsettled
@@ -284,15 +267,11 @@ contract PoolAdmin is PoolBooks {
             }
         }
         bool pending = listedCount != 0 || _held.length != 0;
-        for (uint256 t; migrate && t <= MAJOR; ++t) {
-            Grail storage g = _grail[t];
-            if (g.packId == 0 && g.bucket == 0) continue;
+        if (migrate && (_grail.fund != 0 || _grailItems.length != 0)) {
             if (maxItems == 0) {
                 pending = true;
             } else {
-                --maxItems;
-                (uint256 packId, uint256 bucket) = _takeGrail(g, dest);
-                _callFull(dest, bucket, this.importGrail.selector, t, packId, 0);
+                _sendGrailEstate(dest, true);
             }
         }
         _exportedNav += movedNav;
@@ -318,18 +297,15 @@ contract PoolAdmin is PoolBooks {
         return true;
     }
 
-    /// @notice Sends track `t`'s pack and bucket to `to` and clears the track. Callable by the
-    ///         admin from `Exiting` on. Withdraws the track's FWA listing first, which FWA
+    /// @notice Sends the GRAIL fund and every GRAIL item to `to` and empties the estate. Callable
+    ///         by the admin from `Exiting` on. Withdraws the items' FWA listings first, which FWA
     ///         rejects while it holds unsettled acquisitions.
-    function transferGrailEstate(uint8 t, address to) external onlyDelegated onlyAdmin nonReentrant {
+    function transferGrailEstate(address to) external onlyDelegated onlyAdmin nonReentrant {
         if (lifecycle < Lifecycle.Exiting) revert NotExiting();
-        if (t > MAJOR) revert InvalidTrack();
         if (to == address(0)) revert ZeroAddress();
         if (to == address(this)) revert InvalidDest();
         _sync();
-        (uint256 packId, uint256 bucket) = _takeGrail(_grail[t], to);
-        emit GrailEstateTransferred(t, to, packId, bucket);
-        SafeTransferLib.safeTransferETH(to, bucket);
+        _sendGrailEstate(to, false);
     }
 
     // ------------------------------------------------------------------ views
@@ -398,11 +374,6 @@ contract PoolAdmin is PoolBooks {
     /// @notice Time the replacement queue last went from empty to nonempty, zero while it is empty.
     function oldestQueuedAt() external view onlyDelegated returns (uint256) {
         return _oldestQueuedAt;
-    }
-
-    /// @notice State of GRAIL track `track`.
-    function grail(uint256 track) external view onlyDelegated returns (Grail memory) {
-        return _grail[track];
     }
 
     /// @notice Queued withdrawal claim at `index`.
@@ -545,26 +516,28 @@ contract PoolAdmin is PoolBooks {
         return row != type(uint256).max;
     }
 
-    /// @notice Takes track `t`'s pack and bucket from `oldPool`. `packId` is zero when the track
-    ///         has no pack. The next `rotate` lists the pack at `listBps` of its backing. A pack
-    ///         that arrives while the track holds one is redeemed and its proceeds join the
-    ///         bucket.
-    function importGrail(uint8 t, uint256 packId) external payable onlyDelegated onlyOldPool {
-        Grail storage g = _grail[t];
-        g.bucket += msg.value;
-        if (packId != 0) {
-            _requireOwned(drawPacks, packId);
-            if (g.packId != 0) {
-                uint256 before = address(this).balance;
-                _call(drawPacks, IShapes.redeem.selector, packId, 0);
-                g.bucket += address(this).balance - before;
-                return;
-            }
-            uint256 value = _read(drawPacks, IERC721Value.valueOf.selector, packId);
-            g.packId = packId;
-            g.backing = value;
-            g.notional = PricingLib.grailNotional(value, g.listBps);
+    /// @notice Credits `msg.value` to the GRAIL fund and, when `collection` is nonzero, takes the
+    ///         GRAIL item `tokenId` of `collection` from `oldPool`. `done` keeps the completed-GRAIL
+    ///         flag. The item is unlisted on arrival, priced at its backing or at `listBps` of it
+    ///         when it is not a piece, and listed by the next `rotate`. When `MAX_GRAIL_ITEMS` items
+    ///         are held, the arriving item is redeemed and its proceeds join the fund.
+    function importGrail(address collection, uint256 tokenId, bool done) external payable onlyDelegated onlyOldPool {
+        _grail.fund += msg.value;
+        if (collection == address(0)) return;
+        _requireOwned(collection, tokenId);
+        if (_registered[collection][tokenId]) revert AlreadyRegistered();
+        if (_grailItems.length >= MAX_GRAIL_ITEMS) {
+            uint256 before = address(this).balance;
+            _call(collection, IShapes.redeem.selector, tokenId, 0);
+            _grail.fund += address(this).balance - before;
+            return;
         }
+        bool pack = collection == drawPacks;
+        if (!pack && collection != shapes) revert NoMatchingRow();
+        uint256 value = _read(collection, pack ? IERC721Value.valueOf.selector : IShapes.backingOf.selector, tokenId);
+        _addGrailItem(
+            GrailItem(collection, done, tokenId, value, value == GRAIL_PIECE ? value : value * _grail.listBps / BPS, 0, 0)
+        );
     }
 
     /// @notice Credits `msg.value` from `oldPool` to `cash`. It counts toward `importedNav` and
@@ -604,12 +577,6 @@ contract PoolAdmin is PoolBooks {
 
     // ------------------------------------------------------------------ internal
 
-    /// @dev Reverts `NotAdmin` for any other caller and logs the setter selector.
-    function _admin() internal {
-        if (msg.sender != admin) revert NotAdmin();
-        emit ParamSet(msg.sig);
-    }
-
     function _checkOldPool() internal view {
         if (msg.sender != oldPool) revert NotOldPool();
         _notExiting();
@@ -635,15 +602,24 @@ contract PoolAdmin is PoolBooks {
         return IPool(dest).canImport(it.collection, it.tokenId);
     }
 
-    /// @dev Withdraws the track's listing, transfers its pack to `to` and clears the track. Returns
-    ///      the pack id and the bucket, which the caller sends.
-    function _takeGrail(Grail storage g, address to) internal returns (uint256 packId, uint256 bucket) {
-        packId = g.packId;
-        bucket = g.bucket;
-        _unlistGrail(g);
-        if (packId != 0) _transfer(drawPacks, address(this), to, packId);
-        _resetGrail(g);
-        g.bucket = 0;
+    /// @dev Withdraws the listing of every GRAIL item and transfers the items and the fund to
+    ///      `to`. With `migrate` each item is registered at `to` through `importGrail`, and the first
+    ///      call carries the fund. Otherwise the fund is sent as ETH.
+    function _sendGrailEstate(address to, bool migrate) internal {
+        uint256 n = _grailItems.length;
+        uint256 fund = _grail.fund;
+        _grail.fund = 0;
+        emit GrailEstateTransferred(to, fund, n);
+        if (migrate && n == 0) _callFull(to, fund, this.importGrail.selector, 0, 0, 0);
+        for (uint256 i = n; i != 0; --i) {
+            GrailItem memory it = _removeGrailItem(i - 1);
+            if (it.listingId != 0) _withdrawListing(it.listingId, address(this));
+            _transfer(it.collection, address(this), to, it.tokenId);
+            if (migrate) {
+                _callFull(to, i == n ? fund : 0, this.importGrail.selector, uint160(it.collection), it.tokenId, it.done ? 1 : 0);
+            }
+        }
+        if (!migrate) SafeTransferLib.safeTransferETH(to, fund);
     }
 
     /// @dev Reverts `TokenNotReceived` unless this contract owns `tokenId` of `collection`.

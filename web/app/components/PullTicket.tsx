@@ -9,7 +9,7 @@ export function PullTicket({ count }: { count: number }) {
   const q = useQuote(count).data;
   const pool = usePool().data;
   if (!q || !pool) return null;
-  const odds = drawOdds(pool.board, pool.grails);
+  const odds = drawOdds(pool.board, pool.grail);
   const atLeastTicketBps = odds.rows.filter((r) => r.backingWei >= q.fee).reduce((sum, r) => sum + r.chanceBps, 0n);
   const returnBps = q.fee > 0n ? (odds.averageBackingWei * 10_000n) / q.fee : 0n;
   const s = pool.params.feeSplit;
@@ -37,7 +37,7 @@ export function PullTicket({ count }: { count: number }) {
       </h3>
       <Kv label="Depositor premium" value={`${percent(s.premiumBps, 2)} of backing`} />
       <Kv label="Maintenance" value={`${percent(s.maintenanceBps, 2)} of backing`} />
-      <Kv label="GRAIL feed" value={`${percent(s.feedBps, 2)} of backing, ${percent(s.minorShareBps, 0)} to the minor track`} />
+      <Kv label="GRAIL feed" value={`${percent(s.feedBps, 2)} of backing`} />
       <p className="vault-note">
         Each list price is the item&apos;s backing plus these markups and its replacement mint fee. FWA pays the pool the ticket less half the
         gap to the harmonic mean list price. The margin over the item&apos;s backing first repays the mint fee, then splits pro rata across

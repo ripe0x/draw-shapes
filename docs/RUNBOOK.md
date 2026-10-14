@@ -40,7 +40,7 @@ Lens (read-only, one call each):
 - `quote(count)`: fee, vrf, total and whether pulls are open.
 - `nav()`, `sharePrice()`, `position(account)`.
 - `board()`: per row backing, list price, count, listed count, target.
-- `grail(0)` and `grail(1)`: minor and major track state.
+- `grail()`: GRAIL fund, cycle, parameters and every GRAIL item.
 - `claims()`: unpaid withdrawal queue, `cash`, claims bucket.
 - `reopenStatus()`: each guard `acquireBatch` applies, with its numbers.
 - `settleDue()` and `rotateDue()`: reason codes the keeper acts on (0 means none).

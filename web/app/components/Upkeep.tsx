@@ -31,7 +31,7 @@ export function Upkeep() {
   const rotateMeaning = [
     `No reason holds, or the rotate interval of ${duration(Number(p.rotateInterval))} has not passed since the last rotate.`,
     "The head queued claim is at least one rotate interval old.",
-    "A GRAIL track below its target holds a bucket that covers a growth step and its mint fees.",
+    "The GRAIL fund covers a 1 ETH piece and its mint fee, or a recipe has its inputs listed.",
     "Settle may not list, and a held item exists or cash covers the head of the replacement queue.",
   ] as const;
 
