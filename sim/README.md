@@ -9,11 +9,11 @@ result with the FWA V2 main pool for players and for depositors. The page runs o
 | Block | Content |
 | --- | --- |
 | Run bar | Horizon (7, 30, 90, 180, 365 days), tickets per day (500 launch, FWA V2 observed 2,848 and 3,646), seed, reset, compute time. |
-| Parameters | Contract settings, Deposits (entry fee floor, cap and payback days; NAV cap floor and turnover; founder window days), Board (mix rows), Replacement and cash, Settle, rotate and refunds, Demand and depositors, GRAIL (target, list price, decay, piece floor, floor), Value received basis. Changed fields are marked. |
+| Parameters | Contract settings (minimum board depth is the floor of `boardItems`), Deposits (entry fee floor, cap and payback days; NAV cap floor and turnover; founder window days), Board (mix rows), Replacement and cash, Settle, rotate and refunds, Demand and depositors, GRAIL (target, list price, decay, piece floor, floor), Value received basis. Changed fields are marked. |
 | Players | Ticket, expected, median, p5, p95 return, shares at or above ticket, below half, 2x or more, 10x or more, house take, for FWA V2 and for Shapes at 90, 180 and 365 days. Shaded cells are better for the player. |
 | Depositors | NAV per share chart with cohort break-even and entry price, and a pool NAV chart with the deposit cap, the cap floor, the founder window and the days deposits are closed shaded. Start and end NAV per share, annualised rate, break-even day, entry fee, days deposits are closed, cap, premium, operator mint fees, FWA protocol fees, maintenance. FWA V2 owner margin as a reference. |
 | GRAIL | Fund, cycle and target, listed items by size, pieces minted and merges run, hits and largest hit, largest item reached. Chart of the fund, the largest listed item and listed GRAIL backing over 365 days. Hits and largest hit per 30 day month. |
-| Board and keeper | Settle and rotate counts, surprises, mint fees saved by held Shapes, average time a captured 0.1 row stays missing, listed items, keeper cost, refunds and the share of cost the maintenance bucket could not cover. Stacked area of listed items by row (daily mean) with a table of mean against target depth. Maintenance balance, cumulative keeper cost, refunds and unpaid cost over time. A side by side of decay reprice in rotate against inside settle. |
+| Board and keeper | Settle and rotate counts (Batch, Age, Thin, Deep), surprises, mint fees saved by held Shapes, average time a captured 0.1 row stays missing, listed items, keeper cost, refunds and the share of cost the maintenance bucket could not cover. Board items (the target depth), listed ordinary items and Deep settle count. Stacked area of listed items by row (daily mean) with a dashed line for the board items target, and a table of mean target depth against mean listed per row. Maintenance balance, cumulative keeper cost, refunds and unpaid cost over time. A side by side of decay reprice in rotate against inside settle. |
 | Where 1 ETH goes | Stacked split of a ticket, both sides. |
 | One pull | A single ticket traced into buckets, both sides. |
 | What moves what | Each parameter at a low and a high value, two seeds, relative change in player figures and in end NAV per share. |
@@ -33,11 +33,12 @@ result with the FWA V2 main pool for players and for depositors. The page runs o
 | Deposit cap `max(navCapFloor, dailyVolume x 10,000 / turnoverBps)`, deposits admitted while NAV is below it | SPEC 7 `navCap()`, `docs/VOLUME_CAP.md` |
 | Founder window: no deposit for `founderWindowDays` after the board opens; opening deposits are admitted at once | SPEC 7 `depositsOpenAt` |
 | Withdrawals paid from cash, remainder queued | SPEC 7 `withdraw`, `payClaims` |
-| Depth of a row = `max(minItems, pulls in the current and four previous clock hours) x share`, rounded up | SPEC 9 |
-| Replacement row sampled at each capture: weight `share x (1 + restoreK x deficit / target)`, deficit `max(target - count, 0)`, target `ceil(minItems x share)`, count = listed + held + queued | SPEC 9 replacement row, step 2 |
+| Board depth `boardItems = max(minItems, floor((NAV - NAV x reserveBps / 10,000) / meanRowCost))`, `meanRowCost` = share-weighted `backing + mintFee x rungs` of the mix rows (0.0308 ETH at the launch mix). Row target = `ceil(boardItems x share)`, recomputed at every capture and keeper tick. NAV is the model's ordinary NAV, already net of claims, so claims are subtracted once | SPEC 9 |
+| A capture in a row whose count (listed + held + queued) is above its target queues no replacement; nothing is delisted when NAV falls | SPEC 9 |
+| Replacement row sampled at each capture: weight `share x (1 + restoreK x deficit / target)`, deficit `max(target - count, 0)`, target `ceil(boardItems x share)`, count = listed + held + queued | SPEC 9 replacement row, step 2 |
 | Surprise with probability `surpriseBps`: single Shape row of at least 5 times the drawn backing, three lowest candidates weighted 60, 30, 10 and cut to the candidate count | SPEC 9 step 3 |
 | Band cap `max(target + 1, ceil(target x (1 + bandBps)))`, a capped row falls to the largest deficit, all rows at or above target keep the draw | SPEC 9 step 4 |
-| Queue listed by settle when `batchMin` entries wait, the oldest is `batchMaxAge` old, or listed ordinary items are below the concurrency guard plus 5; at most 25 items per call; held Shapes fill first; a mint needs cash above claims plus `reserveBps` of NAV | SPEC 9 filling, `settleDue`, SPEC 10 |
+| Queue listed by settle when `batchMin` entries wait, the oldest is `batchMaxAge` old, listed ordinary items are below the concurrency guard plus 5, or (Deep) listed, held and queued ordinary items are below `boardItems` by `batchMin` or more; a Deep settle first queues each row's `target - count` missing items in row order; at most 25 items per call; held Shapes fill first; a mint needs cash above claims plus `reserveBps` of NAV; the opening queues every row's target and lists in row order while spendable cash covers the mints | SPEC 9 filling, `settleDue`, SPEC 10 |
 | Share `payInShapesBps` of tickets paid with a Shape no larger than the ticket, drawn from the capture value distribution, kept as a held item while spendable cash covers it, NAV unchanged | SPEC 8 `pullWithShapes` |
 | Keeper tick every 300 s: settle when due, then rotate when due. Rotate spacing `rotateInterval`; with the toggle on the only reason is GrailStep | SPEC 9 `rotate` |
 | Refund `(100k + 150k per listed item + 30k) gas x gasPriceGwei + tipWei` (0.0002 ETH at launch) from the maintenance bucket, capped at its balance; paid by a settle that lists and by a rotate that changes inventory | SPEC 10 refunds |
@@ -70,13 +71,13 @@ VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs
 listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing, migration and
 exit, gas for GRAIL reprices, mints and merges inside a refund, the compose and pack steps of a GRAIL merge (the output lists at
 once), the unlisted state of a GRAIL item after a refund, the unsettled-acquisition gate on GRAIL mints and merges, FWA
-token and epoch rewards, resale value. Captures are booked at the moment of the ticket.
+token and epoch rewards, resale value. Captures are booked at the moment of the ticket. Board depth counts ordinary NAV only, without receivables (the model books proceeds at the capture). The Deep board count is listed + held + queued ordinary items.
 
 ## Validation
 
 The block on the page compares the model with the decision 9 fork run. The gates are ticket, expected return, end NAV
 per share, mint fees and settle count, each within 5 percent. The model column uses the lab defaults with the inputs the
-fork run used: a reprice on any decayed price, no tickets paid with Shapes and a gas price of 0, a tip of 0.0005 ETH,
+fork run used: a board fixed at `minItems` (no NAV depth, no Deep, no skip above target), a reprice on any decayed price, no tickets paid with Shapes and a gas price of 0, a tip of 0.0005 ETH,
 settle batch size 5 and the decay reprice in rotate. The recording predates the single GRAIL fund and the indexed entry
 fee (it ran a minor and a major track), so the GRAIL hit rows compare different mechanisms; the gated measures do not
 depend on GRAIL. The structure that matters is the keeper tick of 300 s with arrival groups of 1 to 5 tickets (batches reach 5 at a

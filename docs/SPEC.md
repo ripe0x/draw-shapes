@@ -229,7 +229,7 @@ nonempty and cleared when it empties. `randomWord` is FWA's word for the request
 2. Deficit draw: row weight `shareBps * (10_000 + restoreK * deficit * 10_000 / target) / 10_000`, `deficit =
    max(target - count, 0)`. The row is `uint256(h) % sum(weights)`, counted through the weights in row order.
 3. Surprise: when `(uint256(h) >> 64) % 10_000 < surpriseBps`, the draw moves to a single rung row of at least five
-   times the drawn row's backing. The three of lowest backing take the weights 60, 30 and 10, cut to the candidate
+   times the drawn row's backing that is below its target depth. The three of lowest backing take the weights 60, 30 and 10, cut to the candidate
    count, and `(uint256(h) >> 128) % 100` scaled to the weight sum picks one. Without a candidate the draw stands.
 4. Band: a chosen row with `count >= max(target + 1, ceil(target * (10_000 + bandBps) / 10_000))` becomes the row of
    largest deficit (lowest index on a tie). When no row is below target the step 2 row stands.

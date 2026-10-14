@@ -269,13 +269,13 @@ function defaultParams() {
       { backing: 0.1, rungs: 1, share: 4 },
       { backing: 0.5, rungs: 1, share: 1 },
     ],
-    minItems: 100, mintFee: 0.001,
+    minItems: 100, boardByNav: true, mintFee: 0.001,
     premiumBps: 200, maintBps: 100, feedBps: 400,
     entryFloorBps: 1000, entryCapBps: 2500, paybackDays: 20,
     navCapFloor: 69, turnoverBps: 1250, founderWindowDays: 30,
     edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
     grail: { target: 25, listBps: 7500, decay: 0.001, pieceFloor: 0.25, floor: 1 },
-    openingEth: 50, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
+    openingEth: 55, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
     ticketsPerDay: 500,
     rotateInterval: 900,
     restoreK: 8, surpriseBps: 200, bandBps: 3000, reserveBps: 1000, payInShapesBps: 1000,
@@ -329,15 +329,16 @@ function simulate(P, seed, days, snapDays, opts) {
     const k = Math.max(1, Math.round(r.rungs)), v = r.backing / k, key = Math.round(v * 1e9);
     if (!unitIdx.has(key)) { unitIdx.set(key, units.length); units.push({ v, hs: 0 }); }
     const s = r.share / shareSum;
-    R.push({ b: r.backing, k, v, u: unitIdx.get(key), s, p: r.backing * (1 + fees) + mintFee * k, tgt: Math.max(1, Math.ceil(P.minItems * s - 1e-9)),
+    R.push({ b: r.backing, k, v, u: unitIdx.get(key), s, p: r.backing * (1 + fees) + mintFee * k, tgt: 1,
       n: 0, queued: 0, missQ: [], missSum: 0, missN: 0 });
   }
   const nR = R.length;
+  const meanRowCost = R.reduce((a, r) => a + r.s * (r.b + mintFee * r.k), 0);
   const probe = R.findIndex(r => r.k === 1 && Math.abs(r.b - 0.1) < 1e-9);
 
   // GRAIL: one fund and a list of listed items { b: backing, notional: list price, since: pulls since the last list or reprice, done }
   const G = [];
-  const GR = { fund: 0, cycles: 0, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0 };
+  const GR = { fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0 };
   const grail = P.grail;
   const feeDay = new Float64Array(days + 2); // booked ticket fees per day
 
@@ -357,7 +358,7 @@ function simulate(P, seed, days, snapDays, opts) {
     entryContribution: 0, withdrawn: 0, deposited: 0, mass: 0, mGe1: 0, mLtHalf: 0, mGe2: 0, mGe10: 0,
     hist: newHist(),
     surprises: 0, payIns: 0, payInValue: 0, heldUses: 0,
-    settleCalls: 0, settleListed: 0, settleRefund: 0, settleDecays: 0, setBatch: 0, setAge: 0, setThin: 0,
+    settleCalls: 0, settleListed: 0, settleRefund: 0, settleDecays: 0, setBatch: 0, setAge: 0, setThin: 0, setDeep: 0,
     rotRefund: 0, keeperCost: 0, refunds: 0, shortfall: 0, pauseSeconds: 0, waitSeconds: 0,
     boardSum: 0, boardTicks: 0, minListed: 1e9,
   };
@@ -378,6 +379,17 @@ function simulate(P, seed, days, snapDays, opts) {
     return v > 0 ? v : 0;
   }
   function spendable() { return S.cash - claimsTotal - nav() * P.reserveBps / 1e4; }
+  // boardItems = max(minItems, (NAV - reserve) / meanRowCost); meanRowCost is the share-weighted backing plus the mint fee per rung; NAV is already net of claims. Row target = ceil(boardItems x share).
+  function boardItems() {
+    if (!P.boardByNav) return P.minItems;
+    const nv = nav();
+    return Math.max(P.minItems, Math.floor((nv - nv * P.reserveBps / 1e4) / meanRowCost + 1e-9));
+  }
+  function refreshTargets() {
+    const bi = boardItems();
+    for (let i = 0; i < nR; i++) R[i].tgt = Math.max(1, Math.ceil(bi * R[i].s - 1e-9));
+    return bi;
+  }
   function addToFund(x) { GR.fund += x; }
   // SPEC 7: mean of booked ticket fees over the complete days before `d`, at most 7; zero before the first complete day.
   function dailyVolume(d) {
@@ -435,6 +447,7 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // ---------- replacement choice (SPEC 9)
   function chooseRow() {
+    refreshTargets();
     let sum = 0;
     const w = new Array(nR);
     for (let i = 0; i < nR; i++) {
@@ -486,7 +499,7 @@ function simulate(P, seed, days, snapDays, opts) {
     const done = b === grail.target;
     G.push({ b, notional, since: 0, done });
     if (b > GR.largest) GR.largest = b;
-    if (done) GR.cycles++;
+    if (done) { GR.cycles++; if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
   }
   function merge() {
     const r = recipe();
@@ -532,36 +545,54 @@ function simulate(P, seed, days, snapDays, opts) {
     const r = R[i], used = Math.min(r.k, units[r.u].hs);
     return { used, cost: (r.k - used) * (r.v + mintFee) };
   }
+  // Missing items of row i against its target depth, counting listed, held and queued items.
+  function missing(i) { return Math.max(0, R[i].tgt - count(i)); }
   function settleDue(now) {
-    if (!Q.length) return 0;
+    const bi = refreshTargets();
+    let held = 0; for (const u of units) held += u.hs;
+    const deep = P.boardByNav && bi - (listedOrd() + held + Q.length) >= P.batchMin;
+    let head = -1;
+    if (Q.length) head = Q[0].i; else if (deep) for (let i = 0; i < nR; i++) if (missing(i) > 0) { head = i; break; }
+    if (head < 0) return 0;
     let anyHeld = false;
     for (const u of units) if (u.hs > 0) { anyHeld = true; break; }
-    if (!anyHeld && spendable() < fillPlan(Q[0].i).cost - 1e-12) return 0;
+    if (!anyHeld && spendable() < fillPlan(head).cost - 1e-12) return 0;
     if (Q.length >= P.batchMin) return 1;
-    if (now - Q[0].t >= P.batchMaxAge) return 2;
-    if (listedOrd() < CONCURRENCY + THIN_MARGIN) return 3;
-    return 0;
+    if (Q.length && now - Q[0].t >= P.batchMaxAge) return 2;
+    if (Q.length && listedOrd() < CONCURRENCY + THIN_MARGIN) return 3;
+    return deep ? 4 : 0;
   }
-  function doSettle(now, trig) {
+  // Deep: queue each row's missing items against its target depth.
+  function topUp(now) {
+    for (let i = 0; i < nR; i++) for (let m = missing(i); m > 0; m--) { R[i].queued++; Q.push({ i, t: now }); }
+  }
+  // List queue entries in order, at most cap, each needing spendable cash for its mints.
+  function fill(now, cap, opening) {
     let listed = 0;
     const keep = [];
     for (const e of Q) {
-      if (listed >= MAX_LIST) { keep.push(e); continue; }
+      if (listed >= cap) { keep.push(e); continue; }
       const r = R[e.i], pl = fillPlan(e.i);
       if (pl.cost > 0 && spendable() < pl.cost - 1e-12) { keep.push(e); continue; }
       units[r.u].hs -= pl.used;
       S.cash -= pl.cost;
-      A.mintReplace += (r.k - pl.used) * mintFee; A.mintSaved += pl.used * mintFee; A.heldUses += pl.used;
+      if (opening) A.mintOpening += (r.k - pl.used) * mintFee; else A.mintReplace += (r.k - pl.used) * mintFee;
+      A.mintSaved += pl.used * mintFee; A.heldUses += pl.used;
       r.queued--; r.n++; listed++;
       if (r.missQ.length) { r.missSum += now - r.missQ.shift(); r.missN++; }
     }
     Q = keep;
+    return listed;
+  }
+  function doSettle(now, trig) {
+    if (trig === 4) topUp(now);
+    const listed = fill(now, MAX_LIST, false);
     // SPEC 9, 10: a due settle reprices after its listing step and is refunded when it listed or repriced
     const repriced = P.decayInSettle ? reprice(true) : 0;
     if (listed === 0 && repriced === 0) return;
     A.settleDecays += repriced;
     A.settleCalls++; A.settleListed += listed;
-    if (trig === 1) A.setBatch++; else if (trig === 2) A.setAge++; else A.setThin++;
+    if (trig === 1) A.setBatch++; else if (trig === 2) A.setAge++; else if (trig === 3) A.setThin++; else A.setDeep++;
     A.settleRefund += keeperRefund(listed);
     if (listed) startPause(now);
   }
@@ -626,19 +657,18 @@ function simulate(P, seed, days, snapDays, opts) {
 
   const totalHours = days * 24;
   const series = { navPerShare: [], cash: [], backing: [], grailBacking: [], grailFund: [], grailMax: [], nav: [], shares: [], tickets: [], entryPrice: [], feeBps: [],
-    cap: [], gate: [], volume: [], board: R.map(() => []), listed: [], maintBal: [], refundCum: [], shortCum: [], costCum: [] };
+    cap: [], gate: [], volume: [], board: R.map(() => []), tgt: R.map(() => []), items: [], listed: [], maintBal: [], refundCum: [], shortCum: [], costCum: [] };
   const hourly = opts.hourly ? { nav: [], listed: [], cash: [] } : null;
   const snaps = {};
   const events = [];
   let carry = 0;
 
-  // opening: every row is minted to its target depth and listed
+  // opening: each row's missing items are queued against its target depth and listed in row order while spendable cash covers the mints
   const open = P.openingEth / P.openingDepositors;
   for (let i = 0; i < P.openingDepositors; i++) deposit(open, 0);
-  for (let i = 0; i < nR; i++) {
-    const r = R[i];
-    S.cash -= r.tgt * (r.b + mintFee * r.k); A.mintOpening += r.tgt * mintFee * r.k; r.n = r.tgt;
-  }
+  refreshTargets();
+  topUp(0);
+  fill(0, Infinity, true);
   // opening five (SPEC 11): five pieces composed into one 5 ETH item listed at face
   const openingFive = GR.fund >= FIVE_PIECES * (1 + mintFee) - 1e-12;
   if (openingFive) { GR.fund -= FIVE_PIECES * (1 + mintFee); A.mintGrail += FIVE_PIECES * mintFee; publish(5, 5); }
@@ -659,6 +689,7 @@ function simulate(P, seed, days, snapDays, opts) {
     let tot = 0;
     for (let i = 0; i < nR; i++) { const m = dayTicks ? dayBoard[i] / dayTicks : R[i].n; series.board[i].push(m); tot += m; dayBoard[i] = 0; }
     dayTicks = 0; series.listed.push(tot);
+    series.items.push(refreshTargets()); for (let i = 0; i < nR; i++) series.tgt[i].push(R[i].tgt);
     series.maintBal.push(S.maint); series.refundCum.push(A.refunds); series.shortCum.push(A.shortfall); series.costCum.push(A.keeperCost);
   }
   function snapshot(day) {
@@ -681,7 +712,7 @@ function simulate(P, seed, days, snapDays, opts) {
       navPerShare: nps, nav: nv, cash: S.cash, backing: backingOrd(), shares: S.shares,
       annualised: days > 0 && nps > 0 && navStart > 0 ? Math.pow(nps / navStart, 365 / day) - 1 : 0,
       breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
-      grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles,
+      grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles, grailFirstCycle: GR.firstCycleDay,
       grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
       grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length,
       capClosedDays: series.gate.slice(0, day).filter(g => g === 1).length, windowDays: series.gate.slice(0, day).filter(g => g === 2).length,
@@ -691,11 +722,11 @@ function simulate(P, seed, days, snapDays, opts) {
       cohortValue: cohortShares * nps, depositors: depositors.length,
       surprises: A.surprises, payIns: A.payIns, payInValue: A.payInValue, heldUses: A.heldUses,
       settleCalls: A.settleCalls, settleListed: A.settleListed, settleRefund: A.settleRefund, settleDecays: A.settleDecays,
-      setBatch: A.setBatch, setAge: A.setAge, setThin: A.setThin, rotRefund: A.rotRefund,
+      setBatch: A.setBatch, setAge: A.setAge, setThin: A.setThin, setDeep: A.setDeep, rotRefund: A.rotRefund,
       keeperCost: A.keeperCost, refunds: A.refunds, shortfall: A.shortfall, shortShare: A.keeperCost ? A.shortfall / A.keeperCost : 0,
       pauseSeconds: A.pauseSeconds, waitSeconds: A.waitSeconds,
       missSec: probe >= 0 && R[probe].missN ? R[probe].missSum / R[probe].missN : NaN, missN: probe >= 0 ? R[probe].missN : 0,
-      avgListed: A.boardTicks ? A.boardSum / A.boardTicks : 0, minListed: A.minListed, queueLen: Q.length,
+      boardItems: refreshTargets(), listedNow: listedOrd(), avgListed: A.boardTicks ? A.boardSum / A.boardTicks : 0, minListed: A.minListed, queueLen: Q.length,
     };
   }
 
@@ -754,13 +785,17 @@ function simulate(P, seed, days, snapDays, opts) {
       events.push({ t: t / DAY, prize: g.b, done: g.done });
     } else {
       const r = R[pick];
+      refreshTargets();
+      const above = P.boardByNav && count(pick) > r.tgt;
       r.n--; r.missQ.push(t);
       A.deliveredReal += r.b; A.ordinaryDelivered += r.b;
       S.cash += proceeds;
       settleMargin(proceeds, r.b, r.k);
-      const ch = chooseRow();
-      R[ch.row].queued++; Q.push({ i: ch.row, t });
-      if (ch.surprise) A.surprises++;
+      if (!above) {
+        const ch = chooseRow();
+        R[ch.row].queued++; Q.push({ i: ch.row, t });
+        if (ch.surprise) A.surprises++;
+      }
     }
     payClaims();
   }
@@ -799,7 +834,7 @@ function simulate(P, seed, days, snapDays, opts) {
     }
   }
   const labels = R.map(r => (r.k > 1 ? r.b + ' pack of ' + r.k : r.b + ' Shape'));
-  return { snaps, series, hourly, events, openingFive, cohortBreakEven, navStart, cohortShares, cohortEth, params: P, labels, targets: R.map(r => r.tgt),
+  return { snaps, series, hourly, events, openingFive, cohortBreakEven, navStart, cohortShares, cohortEth, params: P, labels, meanRowCost,
     check: { deposits: A.deposited, proceeds: A.proceeds, cash: S.cash, backing: backingOrd(), fund: GR.fund, grailBacking: G.reduce((a, it) => a + it.b, 0),
       withdrawn: A.withdrawn, claims: claimsTotal, delivered: A.deliveredReal, mintFees: A.mintReplace + A.mintGrail + A.mintOpening, refunds: A.refunds, maint: S.maint,
       grailTicket: A.grailPaidTicket, grailDelivered: A.grailDelivered, feedIn: A.feedIn, entry: A.entryContribution, maintIn: A.maintIn,
@@ -883,7 +918,7 @@ const GROUPS = [
     F('premiumBps', 'Premium', 'bps', 10, 0, 1000, 'Stays in ordinary NAV.'),
     F('maintBps', 'Maintenance', 'bps', 10, 0, 1000, 'Funds rotate refunds.'),
     F('feedBps', 'GRAIL feed', 'bps', 10, 0, 1000, 'Share of the margin that funds GRAIL.'),
-    F('minItems', 'Minimum board depth', 'items', 5, 1, 5000, 'Scaled by row share.'),
+    F('minItems', 'Minimum board depth', 'items', 5, 1, 5000, 'Floor of the board depth. Depth = max(minimum, (NAV - reserve) / mean row cost); a row targets ceil(depth x share).'),
     F('edgePct', 'FWA edge', 'percent', 0.5, 0, 50, 'Ticket = harmonic mean price x (1 + edge).'),
     F('grailProbCapBps', 'GRAIL probability cap', 'bps', 50, 1, 10000, 'Share of selection weight.'),
     F('rotateInterval', 'Rotate interval', 'seconds', 60, 60, 86400, 'Minimum spacing of rotate calls and of their refunds.'),
@@ -958,7 +993,7 @@ function buildForm() {
       const t = document.createElement('div'); t.style.gridColumn = '1/-1';
       let h = '<table class="mix"><tr><th>Backing (ETH)</th><th>Shapes minted</th><th>Share (%)</th></tr>';
       P.rows.forEach((r, i) => { h += '<tr><td><input type="number" step="0.01" min="0" id="m_b' + i + '" inputmode="decimal"></td><td><input type="number" step="1" min="1" max="20" id="m_k' + i + '" inputmode="numeric"></td><td><input type="number" step="1" min="0" max="100" id="m_s' + i + '" inputmode="decimal"></td></tr>'; });
-      h += '</table><p class="hint" style="font-size:11.5px;color:var(--ink3);margin-top:6px">Rows of two or more Shapes minted are Draw Packs. Listing price = backing x (1 + premium + maintenance + feed) + mint fee x Shapes minted. Shares normalise to 100. Target depth of a row = ceil(board depth x share).</p>';
+      h += '</table><p class="hint" style="font-size:11.5px;color:var(--ink3);margin-top:6px">Rows of two or more Shapes minted are Draw Packs. Listing price = backing x (1 + premium + maintenance + feed) + mint fee x Shapes minted. Shares normalise to 100. Board depth = max(minimum depth, (NAV - reserve) / mean row cost). Target depth of a row = ceil(board depth x share).</p>';
       t.innerHTML = h; box.appendChild(t);
     }
     det.appendChild(box); host.appendChild(det);
@@ -1193,7 +1228,7 @@ function renderGrail() {
   const perMonth = s.grailHits / (horizon / 30);
   const M = [
     ['Fund', fmt.eth(s.grailFund, 2) + ' ETH', 'covers a piece at ' + fmt.eth(1 + P.mintFee, 3) + ' ETH; fed by entry fees, ' + P.feedBps + ' of ' + (P.premiumBps + P.maintBps + P.feedBps) + ' margin parts and captures'],
-    ['Cycle', 'cycle ' + (s.grailCycles + 1), s.grailCycles + ' completed; target ' + g.target + ' ETH'],
+    ['Cycle', 'cycle ' + (s.grailCycles + 1), s.grailCycles + ' completed' + (s.grailFirstCycle >= 0 ? ', first at day ' + s.grailFirstCycle.toFixed(1) : '') + '; target ' + g.target + ' ETH'],
     ['Listed items', String(s.grailListed), sizeTxt + (s.grailDone ? '; ' + s.grailDone + ' completed' : '')],
     ['Pieces and merges', fmt.n0(s.grailMinted) + ' / ' + fmt.n0(s.grailMerged), 'pieces minted / merges run' + (R.openingFive ? '; opening five listed' : '; opening five skipped, fund below five pieces at open')],
     ['GRAIL hits', fmt.n0(s.grailHits), perMonth.toFixed(1) + ' per 30 days; ' + hitTxt],
@@ -1224,11 +1259,12 @@ function renderKeeper() {
   const perSettle = s.settleCalls ? s.settleListed / s.settleCalls : 0;
   const miss = isNaN(s.missSec) ? 'no 0.1 Shape row captured' : fmt.n0(s.missSec / 60) + ' minutes';
   const M = [
-    ['Settle calls', fmt.n0(s.settleCalls), fmt.n0(s.settleListed) + ' items, ' + perSettle.toFixed(1) + ' per call; Batch ' + fmt.n0(s.setBatch) + ', Age ' + fmt.n0(s.setAge) + ', Thin ' + fmt.n0(s.setThin)],
+    ['Settle calls', fmt.n0(s.settleCalls), fmt.n0(s.settleListed) + ' items, ' + perSettle.toFixed(1) + ' per call; Batch ' + fmt.n0(s.setBatch) + ', Age ' + fmt.n0(s.setAge) + ', Thin ' + fmt.n0(s.setThin) + ', Deep ' + fmt.n0(s.setDeep)],
     ['Rotate calls', fmt.n0(s.rotates), 'GrailStep ' + fmt.n0(s.rotGrail) + ', Decay ' + fmt.n0(s.rotDecay) + '; each one changed inventory'],
     ['Surprises', fmt.n0(s.surprises), fmt.pct(s.tickets ? s.surprises / s.tickets : 0, 2) + ' of replacements upgraded'],
     ['Mint fees saved', fmt.eth(s.mintSaved, 2) + ' ETH', fmt.n0(s.payIns) + ' tickets paid with a Shape, ' + fmt.n0(s.heldUses) + ' held Shapes reused'],
     ['A captured 0.1 row stays missing', miss, 'until a 0.1 Shape is listed again, ' + fmt.n0(s.missN) + ' matched'],
+    ['Board items', fmt.n0(s.boardItems), 'target depth at day ' + horizon + ' = max(' + P.minItems + ', (NAV - ' + P.reserveBps / 100 + ' percent reserve) / ' + fmt.eth(R.meanRowCost, 4) + ' mean row cost); ' + fmt.n0(s.listedNow) + ' listed ordinary items; Deep settles ' + fmt.n0(s.setDeep)],
     ['Listed ordinary items', s.avgListed.toFixed(1), 'mean at keeper ticks; lowest ' + fmt.n0(s.minListed)],
     ['Keeper cost', fmt.eth(s.keeperCost, 2) + ' ETH', 'settle refunds ' + fmt.eth(s.settleRefund, 2) + ', rotate refunds ' + fmt.eth(s.rotRefund, 2) + ' ETH, at ' + P.gasPriceGwei + ' gwei'],
     ['Cost the bucket could not cover', fmt.pct(s.shortShare, 2), fmt.eth(s.shortfall, 3) + ' ETH unpaid'],
@@ -1237,13 +1273,13 @@ function renderKeeper() {
   if (P.cooldownSeconds > 0) M.push(['Purchase pause', fmt.n0(s.pauseSeconds / 3600) + ' hours', 'tickets waited ' + fmt.n0(s.waitSeconds / 3600) + ' ticket-hours']);
   $('kmetrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
   const xs = ser.listed.map((_, i) => i);
-  $('blegend').innerHTML = R.labels.map((n, i) => '<span><i class="sq" style="background:' + COL[i % COL.length] + '"></i>' + n + '</span>').join('');
-  drawStack('bchart', { xs, xmax: 365, layers: R.labels.map((n, i) => ({ n, ys: ser.board[i], c: COL[i % COL.length] })), xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: v => 'Day ' + v });
+  $('blegend').innerHTML = R.labels.map((n, i) => '<span><i class="sq" style="background:' + COL[i % COL.length] + '"></i>' + n + '</span>').join('') + '<span><i style="background:repeating-linear-gradient(90deg,var(--ink) 0 4px,transparent 4px 7px)"></i>Board items (target)</span>';
+  drawStack('bchart', { xs, xmax: 365, line: { n: 'Board items (target)', ys: ser.items, c: 'var(--ink)' }, layers: R.labels.map((n, i) => ({ n, ys: ser.board[i], c: COL[i % COL.length] })), xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: v => 'Day ' + v });
   const mean = a => { let t = 0; for (let d = 1; d <= horizon; d++) t += a[d]; return t / horizon; };
-  let h = '<tr><th>Row</th><th>Target depth</th><th>Mean listed, ' + horizon + ' days</th><th>Mean over target</th></tr>';
-  R.labels.forEach((n, i) => { const m = mean(ser.board[i]); h += '<tr><td>' + n + '</td><td>' + R.targets[i] + '</td><td>' + m.toFixed(2) + '</td><td>' + fmt.sgn((m / R.targets[i] - 1) * 100, 0) + '</td></tr>'; });
+  let h = '<tr><th>Row</th><th>Mean target depth, ' + horizon + ' days</th><th>Mean listed</th><th>Mean over target</th></tr>';
+  R.labels.forEach((n, i) => { const m = mean(ser.board[i]), tg = mean(ser.tgt[i]); h += '<tr><td>' + n + '</td><td>' + tg.toFixed(1) + '</td><td>' + m.toFixed(2) + '</td><td>' + fmt.sgn((m / tg - 1) * 100, 0) + '</td></tr>'; });
   $('btbl').innerHTML = h;
-  $('bnote').innerHTML = 'Each captured item joins the replacement queue and is listed when the queue reaches ' + P.batchMin + ' entries, the oldest entry is ' + fmt.n0(P.batchMaxAge) + ' seconds old, or listed ordinary items fall below ' + (CONCURRENCY + THIN_MARGIN) + '. Between listings the board is thinner by the queue length. Rows above target come from surprise upgrades, which add single Shapes of 5 times the drawn backing or more, while the band cap and the deficit weight pull a full row back. Means come from the keeper ticks every 300 seconds.';
+  $('bnote').innerHTML = 'Board depth is max(' + P.minItems + ', (NAV - ' + P.reserveBps / 100 + ' percent reserve) / mean row cost), and a row targets ceil(depth x share). Each capture in a row at or below target queues a replacement, and a captured row above target queues none. A queued entry is listed when the queue reaches ' + P.batchMin + ' entries, the oldest entry is ' + fmt.n0(P.batchMaxAge) + ' seconds old, or listed ordinary items fall below ' + (CONCURRENCY + THIN_MARGIN) + '. Deep applies when listed, held and queued items are ' + P.batchMin + ' or more below the depth: the settle queues each row\'s missing items and lists at most ' + MAX_LIST + '. Nothing is delisted when NAV falls. Surprise upgrades add single Shapes of 5 times the drawn backing or more, and the band cap and the deficit weight pull a full row back. Means come from the keeper ticks every 300 seconds. The dashed line is the target depth at the end of each day.';
   const mx = xs;
   $('mlegend').innerHTML = lineHtmlLegend([{ n: 'Maintenance balance', c: 'var(--shapes)' }, { n: 'Cumulative keeper cost', c: 'var(--c5)', dash: 1 }, { n: 'Cumulative refunds paid', c: 'var(--c3)' }, { n: 'Cumulative cost not covered', c: 'var(--c6)' }]);
   drawChart('mchart', { xs: mx, xmax: 365, series: [
@@ -1387,7 +1423,7 @@ function drawStack(hostId, o) {
   chartRefs[hostId] = Object.assign({ stack: true }, o);
   const host = $(hostId); const W = Math.max(280, host.clientWidth || 320), H = 250, m = { l: 40, r: 10, t: 10, b: 26 };
   const n = o.xs.length, tot = o.xs.map((_, i) => o.layers.reduce((a, l) => a + l.ys[i], 0));
-  const hi = (Math.max(...tot) || 1) * 1.05;
+  const hi = (Math.max(...tot, ...(o.line ? o.line.ys : [])) || 1) * 1.05;
   const X = x => m.l + x / o.xmax * (W - m.l - m.r), Y = y => H - m.b - y / hi * (H - m.t - m.b);
   let g = '';
   for (const t of niceTicks(0, hi, 5)) g += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(t) + '" y2="' + Y(t) + '" stroke="var(--line)"/><text x="' + (m.l - 5) + '" y="' + (Y(t) + 3.5) + '" text-anchor="end">' + o.yfmt(t) + '</text>';
@@ -1400,6 +1436,7 @@ function drawStack(hostId, o) {
     g += '<path d="' + top + bot + 'Z" fill="' + l.c + '" fill-opacity=".85" stroke="var(--surface)" stroke-width=".6"/>';
     for (let i = 0; i < n; i++) cum[i] += l.ys[i];
   }
+  if (o.line) { let d = ''; o.line.ys.forEach((y, i) => { d += (i ? 'L' : 'M') + X(o.xs[i]).toFixed(1) + ' ' + Y(y).toFixed(1); }); g += '<path d="' + d + '" fill="none" stroke="' + o.line.c + '" stroke-width="1.6" stroke-dasharray="5 4" stroke-linejoin="round"/>'; }
   g += '<line id="' + hostId + '_x" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink2)" style="display:none"/>';
   host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Stacked area chart">' + g + '</svg><div class="tip" id="' + hostId + '_t"></div>';
   const svg = host.firstChild, tip = $(hostId + '_t'), cur = $(hostId + '_x');
@@ -1408,7 +1445,7 @@ function drawStack(hostId, o) {
     const x = Math.min(o.xmax, Math.max(0, (px - m.l) / (W - m.l - m.r) * o.xmax));
     let idx = 0, best = Infinity; for (let i = 0; i < n; i++) { const dd = Math.abs(o.xs[i] - x); if (dd < best) { best = dd; idx = i; } }
     cur.setAttribute('x1', X(o.xs[idx])); cur.setAttribute('x2', X(o.xs[idx])); cur.style.display = '';
-    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.layers.map(l => '<span style="color:' + l.c + '">' + l.n + '</span> <b>' + l.ys[idx].toFixed(1) + '</b>').join('<br>') + '<br>Total <b>' + tot[idx].toFixed(1) + '</b>';
+    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.layers.map(l => '<span style="color:' + l.c + '">' + l.n + '</span> <b>' + l.ys[idx].toFixed(1) + '</b>').join('<br>') + '<br>Total <b>' + tot[idx].toFixed(1) + '</b>' + (o.line ? '<br><span style="color:' + o.line.c + '">' + o.line.n + '</span> <b>' + o.line.ys[idx].toFixed(0) + '</b>' : '');
     tip.style.display = 'block';
     const tw = tip.offsetWidth, left = X(o.xs[idx]) / W * r.width + 10;
     tip.style.left = Math.min(left, r.width - tw - 4) + 'px'; tip.style.top = '8px';
@@ -1469,7 +1506,7 @@ const FORK9 = { tickets: 3413, ticket: 0.02233, exp: 0.859, median: 0.462, p5: 0
   mint: 5.15, delivered: 65.47, paid: 76.21, settleCalls: 505, settleListed: 3409, settleRefund: 0.2525, rotates: 609, rotDecay: 568, avgListed: 98.7 };
 // Inputs of the fork run that differ from the lab defaults: batch size 5, tip 0.0005 ETH, decay in rotate, any decayed price reprices, no tickets paid with Shapes, basefee 0.
 // The recording predates the single GRAIL fund and the indexed entry fee: it ran a minor and a major track, so the GRAIL rows compare different mechanisms.
-function forkInputs() { const Q = defaultParams(); Q.repriceMinBps = 0; Q.decayInSettle = false; Q.batchMin = 5; Q.tipWei = 5e14; Q.payInShapesBps = 0; Q.gasPriceGwei = 0; return Q; }
+function forkInputs() { const Q = defaultParams(); Q.repriceMinBps = 0; Q.decayInSettle = false; Q.batchMin = 5; Q.tipWei = 5e14; Q.payInShapesBps = 0; Q.gasPriceGwei = 0; Q.boardByNav = false; Q.openingEth = 50; return Q; }
 function validationRun(Pv, N) {
   const acc = {}, add = (k, v) => { acc[k] = (acc[k] || 0) + v / N; };
   let path = null, firstHrs = [], s1 = null;
