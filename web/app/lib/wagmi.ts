@@ -9,7 +9,7 @@ export const anvil = defineChain({
   id: 31337,
   name: "Anvil",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: [process.env.NEXT_PUBLIC_ANVIL_RPC || "http://127.0.0.1:8645"] } },
+  rpcUrls: { default: { http: [process.env.NEXT_PUBLIC_ANVIL_RPC || "http://127.0.0.1:8545"] } },
   contracts: { multicall3: { address: "0xcA11bde05977b3631167028862bE2a173976CA11" } },
 });
 

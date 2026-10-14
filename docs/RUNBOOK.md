@@ -11,11 +11,11 @@ ONCE=1 script/local.sh keeper   # one keeper pass; drop ONCE=1 to loop every INT
 script/local.sh stop
 ```
 
-`start` forks mainnet on port 8645 (`FORK_RPC` overrides the upstream), deploys through
+`start` forks mainnet on port 8545 (`FORK_RPC` overrides the upstream), deploys through
 `script/deploy.sh anvil`, sets the FWA `inventoryChangeCooldown` to 0, deposits `LOCAL_OPENING_ETH`
 (default 50) from the admin, warps past `openingDeadlineAt` and calls `open()` until the pool is
 Live. It prints the pool, lens and FWA pool addresses, `Lens.quote(1)`, `nav()`, `settleDue()` and
-`rotateDue()`. The record is `deployments/31337-8645.json`. Anvil accounts 1, 2 and 3 are the
+`rotateDue()`. The record is `deployments/31337-8545.json`. Anvil accounts 1, 2 and 3 are the
 keeper and two test wallets, each funded with `LOCAL_WALLET_ETH` (default 1000).
 
 A local pull stays unfulfilled until the FWA VRF service is impersonated on the fork, so `settle`

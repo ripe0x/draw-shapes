@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local run on an anvil fork of mainnet (port 8645): script/local.sh <start|keeper|stop>
+# Local run on an anvil fork of mainnet (port 8545): script/local.sh <start|keeper|stop>
 #   start   fork, deploy, create the FWA pool, fund wallets, deposit, warp, open() until Live, print state
 #   keeper  exec script/keeper.sh against the local record with the anvil keeper wallet
 #   stop    kill anvil
@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT=8645
+PORT=8545
 export RPC_URL="http://127.0.0.1:$PORT"
 PIDFILE=".anvil-$PORT.pid"
 RECORD="deployments/31337-$PORT.json"

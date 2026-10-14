@@ -13,8 +13,8 @@ readback and record code.
 DRY_RUN=1 script/deploy.sh mainnet
 
 # Local fork: broadcasts with the unlocked anvil account and creates the FWA pool.
-anvil --fork-url https://ethereum-rpc.publicnode.com --port 8645 --chain-id 31337
-RPC_URL=http://127.0.0.1:8645 script/deploy.sh anvil
+anvil --fork-url https://ethereum-rpc.publicnode.com --port 8545 --chain-id 31337
+RPC_URL=http://127.0.0.1:8545 script/deploy.sh anvil
 
 # Mainnet: keystore signer, Etherscan verification.
 ETHERSCAN_API_KEY=... script/deploy.sh mainnet

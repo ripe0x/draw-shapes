@@ -16,13 +16,13 @@ The generated files are committed, so `pnpm build` works without forge.
 ## Run against anvil
 
 ```
-anvil --fork-url https://ethereum-rpc.publicnode.com --port 8645 --chain-id 31337
-RPC_URL=http://127.0.0.1:8645 script/deploy.sh anvil      # repo root, writes deployments/31337-8645.json
-NEXT_PUBLIC_DEPLOYMENT=../deployments/31337-8645.json pnpm dev
+anvil --fork-url https://ethereum-rpc.publicnode.com --port 8545 --chain-id 31337
+RPC_URL=http://127.0.0.1:8545 script/deploy.sh anvil      # repo root, writes deployments/31337-8545.json
+NEXT_PUBLIC_DEPLOYMENT=../deployments/31337-8545.json pnpm dev
 ```
 
 `script/local.sh start` does the same and also opens the pool. For another port set `NEXT_PUBLIC_ANVIL_RPC`
-(default `http://127.0.0.1:8645`) and point `NEXT_PUBLIC_DEPLOYMENT` at that port's record.
+(default `http://127.0.0.1:8545`) and point `NEXT_PUBLIC_DEPLOYMENT` at that port's record.
 
 ## Run against Sepolia
 
