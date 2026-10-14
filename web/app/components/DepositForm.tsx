@@ -27,7 +27,8 @@ function closedReason(pool: PoolData): string | undefined {
   if (lifecycle === 2) return "Closed, the pool is exiting";
   if (lifecycle === 3) return "Closed, the pool has exported";
   if (depositsPaused) return "Paused by the admin";
-  if (lifecycle === 1 && BigInt(Math.floor(Date.now() / 1000)) < depositsOpenAt) {
+  // `admission.open` is computed on chain, so the founder window is judged by chain time.
+  if (lifecycle === 1 && !pool.admission.open && pool.nav < navCap) {
     return `Deposits open ${utc(depositsOpenAt)}`;
   }
   if (pool.nav >= navCap) return "Closed, ordinary NAV has reached the NAV cap";
