@@ -232,6 +232,7 @@ export function Pulls() {
     return dep.fwaPool ?? client!.readContract({ address: dep.pool, abi: poolAbi, functionName: "fwaPool" });
   }
 
+  const anyReady = !!data && Object.values(data.cards).some((c) => c.status === 5);
   return (
     <section>
       <h2>Your pulls</h2>
@@ -259,24 +260,27 @@ export function Pulls() {
       <div className="row">
         <TxButton
           tx={tx}
-          label="Settle now"
+          label="Settle"
           outline
           onClick={() => void tx.run(() => tx.write({ address: dep.pool, abi: poolAbi, functionName: "settle", args: [20n], chainId: dep.chainId }))}
         />
-        <TxButton
-          tx={tx}
-          label="Process on FWA"
-          outline
-          onClick={() =>
-            void tx.run(async () =>
-              tx.write({ address: await fwaAddress(), abi: fwaCloneAbi, functionName: "processAcquisitions", args: [20n], chainId: dep.chainId }),
-            )
-          }
-        />
+        {anyReady && (
+          <TxButton
+            tx={tx}
+            label="Process on FWA"
+            outline
+            onClick={() =>
+              void tx.run(async () =>
+                tx.write({ address: await fwaAddress(), abi: fwaCloneAbi, functionName: "processAcquisitions", args: [20n], chainId: dep.chainId }),
+              )
+            }
+          />
+        )}
       </div>
       <p className="note">
-        Settle now books up to 20 requests on the pool. When the pool is due to list replacements, the pool refunds the caller&apos;s gas
-        from its maintenance bucket. Process on FWA processes up to 20 ready requests directly, for the case where the pool is not due.
+        FWA delivers a pull in the same transaction that brings its randomness. Settle makes the pool record the delivery, collect the
+        proceeds and, when a batch is due, list replacements; the pool then refunds the caller&apos;s gas from maintenance. Process on FWA
+        appears only when a pull is stuck at Ready, the one case FWA&apos;s own callback could not finish.
       </p>
       <TxStatus tx={tx} />
     </section>
