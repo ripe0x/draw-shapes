@@ -104,7 +104,6 @@ export const poolAbi = [
   {"type":"function","name":"setMix","inputs":[{"name":"rows","type":"tuple[]","internalType":"struct PricingLib.MixRow[]","components":[{"name":"rungs","type":"uint8[]","internalType":"uint8[]"},{"name":"shareBps","type":"uint16","internalType":"uint16"}]}],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"setNavCapFloor","inputs":[{"name":"wei_","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"setPaused","inputs":[{"name":"pulls","type":"bool","internalType":"bool"},{"name":"deposits","type":"bool","internalType":"bool"}],"outputs":[],"stateMutability":"nonpayable"},
-  {"type":"function","name":"setPurchaseGate","inputs":[{"name":"on","type":"bool","internalType":"bool"}],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"setReplacement","inputs":[{"name":"surpriseBps_","type":"uint256","internalType":"uint256"},{"name":"restoreK_","type":"uint256","internalType":"uint256"},{"name":"bandBps_","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"setReserve","inputs":[{"name":"reserveBps_","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"setRotateInterval","inputs":[{"name":"seconds_","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},

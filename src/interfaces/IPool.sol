@@ -384,7 +384,6 @@ interface IPool is IPoolTypes {
     function setTip(uint256 tipWei_) external;
     function setListWhilePaused(bool on) external;
     function setPaused(bool pulls, bool deposits) external;
-    function setPurchaseGate(bool on) external;
     function setAdmin(address newAdmin) external;
     function sweep(address token, uint256 id, address to) external;
     function adminCall(address target, bytes calldata data, uint256 value) external payable;

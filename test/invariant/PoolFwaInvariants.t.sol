@@ -82,8 +82,8 @@ contract PoolFwaHandler is ForkBase {
     uint256 public liquidatedItems;
     uint256 public liquidatedListed;
     uint256 public paramChanges;
-    /// @dev Number of `setPurchaseGate` calls, from `toggleGate` and from the direct purchase actions.
-    uint256 public gateToggles;
+    /// @dev Number of `setPurchaseOperator` calls, from `toggleOperator` and from the direct purchase actions.
+    uint256 public operatorChanges;
     uint256 public exportSteps;
 
     receive() external payable {}
@@ -492,27 +492,28 @@ contract PoolFwaHandler is ForkBase {
         _direct(playerSeed, pick, fulfillNow);
     }
 
-    /// @dev Sets the purchase gate as the admin: the FWA purchase operator becomes the pool (`on`) or zero.
-    function _setGate(bool on) internal {
-        vm.prank(pool.admin());
-        IPool(address(pool)).setPurchaseGate(on);
-        ++gateToggles;
+    /// @dev Sets the FWA purchase operator from the pool, the FWA owner, to the pool (`on`) or zero. The zero state is
+    ///      reachable through `adminCall`.
+    function _setOperator(bool on) internal {
+        vm.prank(address(pool));
+        clone.setPurchaseOperator(on ? address(pool) : address(0));
+        ++operatorChanges;
     }
 
-    /// @dev Clears the purchase gate when it is set, so a wallet can acquire at the FWA pool directly.
-    function _gateOff() internal {
-        if (clone.purchaseOperator() != address(0)) _setGate(false);
+    /// @dev Clears the FWA purchase operator when it is set, so a wallet can acquire at the FWA pool directly.
+    function _clearOperator() internal {
+        if (clone.purchaseOperator() != address(0)) _setOperator(false);
     }
 
-    /// @dev Flips the purchase gate. Pool acquisitions work in both states.
-    function toggleGate(bool on) external recorded {
+    /// @dev Flips the FWA purchase operator. Pool acquisitions work in both states.
+    function toggleOperator(bool on) external recorded {
         if (clone.retired()) return;
-        _setGate(on);
+        _setOperator(on);
     }
 
     function _direct(uint8 playerSeed, uint256 pick, bool fulfillNow) internal {
         if (clone.retired() || !clone.localPurchasesEnabled()) return;
-        _gateOff();
+        _clearOperator();
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         address player = _players[playerSeed % _players.length];
@@ -529,7 +530,7 @@ contract PoolFwaHandler is ForkBase {
     ///      Delivery reverts in the Shapes contract, which leaves the acquisition DeliveryPending.
     function griefShapes(uint256 pick) external recorded {
         if (clone.retired() || !clone.localPurchasesEnabled()) return;
-        _gateOff();
+        _clearOperator();
         _warpToResume();
         if (clone.totalWeight() == 0 || clone.unsettledAcquisitionCount() >= 3) return;
         acquireAs(SHAPES_ADDR, SHAPES_ADDR, clone, block.timestamp + 1 hours);
@@ -731,7 +732,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         selectors[27] = PoolFwaHandler.exportStep.selector;
         selectors[28] = PoolFwaHandler.setPaused.selector;
         selectors[29] = PoolFwaHandler.setFeeSplit.selector;
-        selectors[30] = PoolFwaHandler.toggleGate.selector;
+        selectors[30] = PoolFwaHandler.toggleOperator.selector;
         selectors[31] = PoolFwaHandler.setCooldown.selector;
         selectors[32] = PoolFwaHandler.bookOnly.selector;
         targetContract(address(handler));
@@ -752,7 +753,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
             }
             if (i == 6) handler.setPaused(false, false);
             if (i == 8) handler.setFeeSplit(300, 200, 100, 7_500);
-            if (i == 9) handler.toggleGate(true);
+            if (i == 9) handler.toggleOperator(true);
             handler.pull(uint8(i), uint8(i), i, i % 3 != 0);
             handler.directAcquire(uint8(i), i, i % 2 == 0);
             handler.fulfillOutstanding(i);
@@ -797,7 +798,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertGt(handler.grailGrowths(), 0);
         assertGt(handler.grailCaptures(), 0);
         assertEq(handler.paramChanges(), 3);
-        assertGt(handler.gateToggles(), 0);
+        assertGt(handler.operatorChanges(), 0);
         invariant_I1_balanceCoversBuckets();
         invariant_I2_backingMatchesRegistry();
         invariant_queueMatchesRowCounters();
@@ -889,7 +890,7 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         emit log_named_uint("last run: harvests", handler.harvests());
         emit log_named_uint("last run: export steps", handler.exportSteps());
         emit log_named_uint("last run: param changes", handler.paramChanges());
-        emit log_named_uint("last run: gate toggles", handler.gateToggles());
+        emit log_named_uint("last run: operator changes", handler.operatorChanges());
         emit log_named_uint("last run: lifecycle", uint256(pool.lifecycle()));
     }
 

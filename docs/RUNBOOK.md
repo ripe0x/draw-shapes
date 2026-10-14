@@ -69,23 +69,18 @@ SIGN="--account $KEYSTORE_ACCOUNT --password-file $KEYSTORE_PASSWORD_FILE"
    `cast send --rpc-url $RPC $SIGN $POOL 'createFwaPool(uint256)' $FEE`
 2. Deposit the opening cohort. Opening NAV is cash, so shares mint 1:1.
    `cast send --rpc-url $RPC $SIGN $POOL 'deposit()' --value $AMOUNT`
-3. Let the FWA site buy at the FWA pool directly. This sets the `purchaseOperator` to zero.
-   `cast send --rpc-url $RPC $SIGN $POOL 'setPurchaseGate(bool)' false`
-4. After `openingDeadlineAt`, call `open()` until `lifecycle()` returns 1 (Live). Each call lists at
+3. After `openingDeadlineAt`, call `open()` until `lifecycle()` returns 1 (Live). Each call lists at
    most 20 items; anyone may call it.
    `cast send --rpc-url $RPC $SIGN $POOL 'open()'`
-5. Founder window premium. Right after the pool is Live, move 100 bps from the feed to the premium.
+4. Founder window premium. Right after the pool is Live, move 100 bps from the feed to the premium.
    The sum stays 700, so list prices and tickets are unchanged. `admission()` on Lens shows
    `depositsOpenAt`; revert the split in the same block or later.
    `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16,uint16)' 300 100 300 2000`
    At `depositsOpenAt`:
    `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16,uint16)' 200 100 400 2000`
-6. Start the keeper once the pool is Live.
+5. Start the keeper once the pool is Live.
    `WALLET_MODE=keystore KEYSTORE_ACCOUNT=$KEYSTORE_ACCOUNT KEYSTORE_PASSWORD_FILE=$KEYSTORE_PASSWORD_FILE RPC_URL=$RPC POOL=$POOL INTERVAL=15 script/keeper.sh`
-7. Route purchases through the pool once the FWA site calls `acquire` and `acquireBatch` on it.
-   `cast send --rpc-url $RPC $SIGN $POOL 'setPurchaseGate(bool)' true`
-   `cast call --rpc-url $RPC $FWA_POOL 'purchaseOperator()(address)'` shows the state.
-8. Refill the keeper bucket from Shapes mint fee revenue when the basefee is high.
+6. Refill the keeper bucket from Shapes mint fee revenue when the basefee is high.
    `cast send --rpc-url $RPC $SIGN $POOL 'fundMaintenance()' --value $AMOUNT`
 
 ## Pause and exit

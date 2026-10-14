@@ -41,9 +41,7 @@ day (FWA's observed cadence): 63 ETH a day, cap 504 ETH. Back to 500 a day: the 
 
 Booked ticket fees: the FWA acquisition fee of every acquisition the pool books as a capture in
 `_walk` (the `paid` value already read there). Excluded: VRF, gas, refunded and expired requests,
-and requests the pool has not booked yet. Direct FWA purchases count once settle books them, which
-keeps the rule the same with the purchase gate on or off.
-
+and requests the pool has not booked yet. 
 Using booked fees rather than requested fees makes the measure resistant to a buyer who opens
 requests and lets them expire, and ties volume to tickets that actually paid the pool.
 

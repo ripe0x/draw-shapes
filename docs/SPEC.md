@@ -17,7 +17,7 @@ prize tracks. Depositors exit at NAV in ETH.
 | Depositor | `deposit`, `withdraw`, read position. |
 | Player | `acquire`, `acquireBatch`, `pullWithShapes`, `redeemAndDeposit`, claim FWA refunds at the FWA pool. |
 | Anyone | `settle`, `rotate`, `payClaims`, `exportStep`, `migrateHolder` on a successor. |
-| Admin | One address, transferable. `createFwaPool`, pause flags, parameter setters, `setPurchaseGate`, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
+| Admin | One address, transferable. `createFwaPool`, pause flags, parameter setters, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
 
 Shares are nontransferable. There is one admin role.
 
@@ -179,11 +179,9 @@ row stays in the pool as a held item at its `backingOf` while the running total 
 (section 9). `cash` pays FWA for the value those Shapes cover, `msg.value` pays the rest, and NAV is unchanged. Any
 other Shape is redeemed at Shapes and its proceeds join `msg.value`. Excess returns to the caller.
 
-Purchase gate. `createFwaPool` sets the pool as the FWA `purchaseOperator`, so FWA accepts a purchase while the pool's
+Purchase operator. `createFwaPool` sets the pool as the FWA `purchaseOperator`, so FWA accepts a purchase while the pool's
 `canPurchase(wallet)` is true, which holds inside the pool's forwarding call for that purchaser. Every purchase passes
-the reopen guards and the upkeep slice. `setPurchaseGate(bool)` sets the operator to the pool or to zero. The launch
-runs with the gate off until the FWA site routes buys through the pool: direct FWA buys skip the reopen guards, and the
-next `settle` books them.
+the reopen guards and the upkeep slice. The operator is fixed from creation.
 
 Refunds for slippage, timeout and failed delivery are FWA credits that the purchaser claims at the FWA pool. Listing
 price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps + feedBps + mintLineBps) / 10_000`, where
@@ -298,7 +296,7 @@ listing and no unsettled acquisitions, and it resets `pullsSinceList`. The board
 
 ## 12. Admin
 
-`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`), `setPurchaseGate`, `startExit`, `exportStep`,
+`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`), `startExit`, `exportStep`,
 `transferGrailEstate(t, to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and the getters of the
 replacement, batch and reserve parameters, row counts, mix rows, held Shapes by denomination, queue and claim entries
 and GRAIL tracks. `chooseRow(requestId, capturedRow)` returns the replacement row for a fulfilled request.

@@ -20,10 +20,8 @@ the named place; none of them is load bearing for the others unless the entry sa
    FWA's purchase ABI (`acquire`, `acquireBatch`, `quoteAcquisitionPrice`) so the FWA site can
    target the pool unchanged; `purchaser` must equal `msg.sender`; the caller's slippage, minimum
    weighted value, inventory version and deadline are forwarded; `canPurchase` is true only inside
-   the pool's own forwarding call for the recorded purchaser. `PoolAdmin.setPurchaseGate(bool)`
-   toggles the operator. External dependency: the FWA site update that routes buys through the
-   pool. Until it ships the gate stays off at launch unless the owner says otherwise, which is why
-   settlement keeps counting booked acquisitions for demand sizing and decay. Entry 9 superseded.
+   the pool's own forwarding call for the recorded purchaser. The operator toggle was removed
+   (entry 40). Entry 9 superseded.
 3. GRAIL probability cap decided: enforced by price only. The `GrailProbTooHigh` revert leaves the
    purchase path; `rotate` lifts a track's notional back toward `backing * listBps / 10_000` when
    its listed weight exceeds `grailProbCapBps`; growth and decay keep their cap checks.
@@ -212,7 +210,7 @@ No entry is open.
    acquire from the pool directly; the pool books those captures at the next `settle` with zero
    proceeds and the harvest surplus repays them (entry 1). Setting the operator to the pool would
    close direct buys and make harvest equality exact again. Superseded by owner decision 2: `createFwaPool` sets the pool as
-   the operator and `setPurchaseGate(bool)` toggles it (entry 34). Place: `Pool.createFwaPool`, `PoolAdmin.setPurchaseGate`.
+   the operator (entries 34 and 40). Place: `Pool.createFwaPool`.
 
 14. **Launch values in `script/env/*.env`.** (decided, in SPEC) The launch profile (old repo,
    `project/launch-profile.json`) gives premium 200, maintenance 100, feed 400, entry base 1,100, slope 2,000, cap 2,500,
@@ -326,13 +324,11 @@ No entry is open.
    GRAIL weight exceeds `grailProbCapBps`, the mirror of decay. Decay keeps its cap check. Place: `Pool._rotateGrail`,
    `Pool._liftedNotional`. SPEC 9 and 11.
 
-34. **FWA-shaped purchase ABI and the purchase gate.** (decided, in SPEC) Owner decision 2. The pool exposes `acquire`,
+34. **FWA-shaped purchase ABI.** (decided, in SPEC) Owner decision 2. The pool exposes `acquire`,
    `acquireBatch` and `quoteAcquisitionPrice`; `purchaser` must equal the caller; the caller's slippage, minimum weighted
    value, inventory version and deadline are forwarded; `pullWithShapes` uses the pool defaults. `createFwaPool` sets the
-   pool as `purchaseOperator`; `canPurchase` is true only inside the pool's forwarding call; `setPurchaseGate(bool)`
-   toggles the operator. External dependency: the FWA site update that routes buys through the pool. The gate is off at
-   launch until it ships, and settlement books direct FWA buys and counts them for demand sizing and decay. Place:
-   `Pool.acquire`, `Pool.acquireBatch`, `Pool.canPurchase`, `PoolAdmin.setPurchaseGate`. SPEC 8 and 12.
+   pool as `purchaseOperator`; `canPurchase` is true only inside the pool's forwarding call. Entry 40 fixes the operator.
+   Place: `Pool.acquire`, `Pool.acquireBatch`, `Pool.canPurchase`. SPEC 8.
 
 35. **Relisting an unlisted GRAIL pack whose decayed price breaks the cap.** (deferred) In `_rotateGrail`
    an unlisted pack whose decayed price would exceed `grailProbCapBps` stays unlisted until the board
@@ -375,3 +371,8 @@ No entry is open.
    `PoolAdmin.setEntryFee`, `setNavCapFloor`, `setTurnover`, `setFounderWindow`, `Lens.admission`,
    `script/env/*.env` (`NAV_CAP_FLOOR_WEI`, `TURNOVER_BPS`, `ENTRY_FLOOR_BPS`, `ENTRY_CAP_BPS`, `ENTRY_PAYBACK_DAYS`,
    `FOUNDER_WINDOW_SECONDS`). SPEC 5 and 7.
+
+40. **Purchase operator is fixed.** (decided, in SPEC) Owner decision of 2026-10-14. The pool is the FWA
+   `purchaseOperator` from `createFwaPool` and every ticket is bought through `acquire`, `acquireBatch` or
+   `pullWithShapes` on the pool. `setPurchaseGate(bool)` is removed. The FWA site calls the pool's purchase ABI.
+   Place: `PoolAdmin.createFwaPool`, `Pool.canPurchase`. SPEC 8.

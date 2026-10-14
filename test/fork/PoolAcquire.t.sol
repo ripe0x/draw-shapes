@@ -62,7 +62,7 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         assertEq(clone.purchaseOperator(), address(pool));
     }
 
-    function test_directAcquireRevertsWhileTheGateIsOnAndWorksAfterItIsOff() public {
+    function test_directFwaBuysRevertBecauseThePoolIsTheOperator() public {
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice();
         uint256 version = clone.inventoryVersion();
         vm.deal(player, 2 * total);
@@ -71,30 +71,10 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()"));
         clone.acquire{value: total}(player, fee, 0, 10_000, version, _deadline());
 
-        vm.prank(admin);
-        IPool(address(pool)).setPurchaseGate(false);
-        assertEq(clone.purchaseOperator(), address(0));
+        (uint256 batchFee,, uint256 batchTotal) = clone.quoteAcquisitionPrice(2);
         vm.prank(player);
-        uint256 requestId = clone.acquire{value: total}(player, fee, 0, 10_000, version, _deadline());
-        (address purchaser,,,,) = clone.acquisitions(requestId);
-        assertEq(purchaser, player);
-
-        vm.prank(admin);
-        IPool(address(pool)).setPurchaseGate(true);
-        assertEq(clone.purchaseOperator(), address(pool));
-    }
-
-    function test_revert_setPurchaseGateNotAdmin() public {
-        vm.prank(player);
-        vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setPurchaseGate(false);
-    }
-
-    function test_revert_setPurchaseGateBeforeTheFwaPoolExists() public {
-        PoolHarness fresh = new PoolHarness(_params());
-        vm.prank(admin);
-        vm.expectRevert(IPoolTypes.FwaPoolMissing.selector);
-        IPool(address(fresh)).setPurchaseGate(true);
+        vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()"));
+        clone.acquireBatch{value: batchTotal}(player, 2, batchFee, 0, 10_000, version, _deadline());
     }
 
     function test_canPurchaseIsFalseOutsideAPoolCall() public {

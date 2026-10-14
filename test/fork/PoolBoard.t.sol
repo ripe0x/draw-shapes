@@ -44,10 +44,11 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs[1] = 0;
     }
 
-    /// @dev Clears the purchase operator of the FWA pool so wallets can acquire from it directly.
+    /// @dev Clears the purchase operator of the FWA pool from the pool (its owner), the state `adminCall` can produce, so a wallet
+    ///      can acquire from the FWA pool directly and the walk books unrecorded captures.
     function _gateOff() internal {
-        vm.prank(admin);
-        IPool(address(pool)).setPurchaseGate(false);
+        vm.prank(address(pool));
+        clone.setPurchaseOperator(address(0));
     }
 
     function _create(IPoolTypes.Params memory p) internal {
