@@ -295,7 +295,7 @@ holds no unsettled acquisition, and at most `MAX_GRAIL_MINTS_PER_ROTATE` (3) per
 Shape, list it at `notional = backing`, `fund -= 1 ETH + mintFee`.
 
 Merge (same trigger, after mint). Recipes by target, inputs taken from `grailItems`:
-- 5 ETH from five pieces, while a sixth piece stays listed.
+- 5 ETH from five pieces.
 - 10 ETH from two 5 ETH items.
 - 25 ETH from two 10 ETH items and one 5 ETH item.
 - 50 ETH from two 25 ETH items.
@@ -313,11 +313,8 @@ compose one 5 ETH Shape, list it at `notional = backing`. It is the first item o
 Decay, inside `settle` after the listing step and under the same listing condition, per listed item:
 `next = max(floor, notional - decayWeiPerPull * pullsSinceList)`, with `floor = pieceFloorWei` for a piece
 and `floorWei` otherwise. The reprice runs when the listing is Active and `next` is at least 1 percent
-below `notional`. It calls `updatePrice` and resets `pullsSinceList`.
-
-Probability cap, inside `settle` after the decay. When the listed GRAIL weight exceeds `grailProbCapBps`,
-every listed item's `notional` is raised by the same factor, at most to `backing * listBps / 10_000`
-(`backing` for a piece), until the cap holds. Needs Active listings and no unsettled acquisitions.
+below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls
+`updatePrice` and resets `pullsSinceList`. There is no lift: when the cap binds, the item keeps its price.
 
 Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
 A captured intermediate does not stop the cycle; the recipe waits for new inputs.
