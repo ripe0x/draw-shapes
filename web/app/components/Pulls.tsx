@@ -190,7 +190,7 @@ function PullCard({ card, fresh }: { card: Card; fresh: boolean }) {
           {CHIP[status] ?? STATUS[status]}
         </span>
         {item?.grail && <span className="chip grail">GRAIL</span>}
-        <span className="note">Request {card.id.toString()}</span>
+        <span className="note" title={card.id.toString()}>Request {card.id.toString().slice(0, 6)}…{card.id.toString().slice(-4)}</span>
       </div>
       {item ? (
         <>
@@ -245,10 +245,28 @@ export function Pulls() {
         .reverse()
         .map((b) => (
           <div key={`${b.block}-${b.ids[0]}`} className="pull-batch">
-            <p className="note">
-              Block {b.block.toString()}, {b.count.toString()} {b.count === 1n ? "ticket" : "tickets"} at {eth(b.fee, 6)} ETH, paid{" "}
-              {eth(b.fee * b.count, 6)} ETH plus the VRF fee
-            </p>
+            {(() => {
+              const cards = b.ids.map((id) => data.cards[id.toString()]).filter(Boolean);
+              const delivered = cards.filter((c) => c.item);
+              const received = delivered.reduce((sum, c) => sum + c.item!.value, 0n);
+              const paid = b.fee * b.count;
+              const pct = paid === 0n ? 0 : Number((received * 10_000n) / paid) / 100;
+              return (
+                <p className="note">
+                  Block {b.block.toString()}, {b.count.toString()} {b.count === 1n ? "ticket" : "tickets"} at {eth(b.fee, 6)} ETH, paid{" "}
+                  {eth(paid, 6)} ETH plus the VRF fee.{" "}
+                  {delivered.length === cards.length ? (
+                    <strong className={received >= paid ? "up" : undefined}>
+                      Received {eth(received, 6)} ETH, {pct}% of the tickets
+                    </strong>
+                  ) : (
+                    <>
+                      {delivered.length} of {cards.length} delivered, received {eth(received, 6)} ETH so far
+                    </>
+                  )}
+                </p>
+              );
+            })()}
             <div className="pull-cards">
               {b.ids.map((id) => {
                 const card = data.cards[id.toString()];
