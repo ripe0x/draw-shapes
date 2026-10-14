@@ -130,10 +130,10 @@ export default function Landing() {
     refetchInterval: POLL_MS,
   });
   const quote = quoteQuery.data;
-  const balance = useBalance({ address, query: { refetchInterval: 12_000 } });
+  const ethBalance = useBalance({ address, query: { refetchInterval: 12_000 } });
   // Sent value is total plus 10 percent; a pull uses about 1.2M gas at the quoted gas price.
   const needed = quote ? (quote.total * 110n) / 100n + 1_200_000n * quote.gasPrice : 0n;
-  const short = !!address && !!balance.data && !!quote && balance.data.value < needed;
+  const short = !!address && !!ethBalance.data && !!quote && ethBalance.data.value < needed;
   const balance = (read.data?.[0]?.result as bigint | undefined) ?? 0n;
   const approved = read.data?.[1]?.result === true;
   const shapes = ids.map((id, i) => ({
@@ -212,11 +212,11 @@ export default function Landing() {
               <dd>{gwei(quote.gasPrice)} gwei</dd>
               <dt>Purchasable</dt>
               <dd>{quote.purchasable ? "Yes" : `No (${QUOTE_REASON[quote.reason]})`}</dd>
-              {address && balance.data && (
+              {address && ethBalance.data && (
                 <>
                   <dt>Your balance</dt>
                   <dd className={short ? "error" : undefined}>
-                    {eth(balance.data.value, 4)} ETH{short ? ` (need about ${eth(needed, 4)} ETH with gas)` : ""}
+                    {eth(ethBalance.data.value, 4)} ETH{short ? ` (need about ${eth(needed, 4)} ETH with gas)` : ""}
                   </dd>
                 </>
               )}
