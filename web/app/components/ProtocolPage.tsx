@@ -29,7 +29,7 @@ const FAQS = [
   {
     question: "How do deposits and withdrawals work?",
     answer:
-      "The entry contribution, min(capBps, baseBps + slopeBps * NAV / referenceWei) of the deposit, funds the GRAIL buckets. The rest of a deposit mints shares at ordinary NAV per share. Deposits close at the NAV cap. A withdrawal burns shares and pays shares * NAV / total shares: the part cash covers is paid at once and the remainder joins a FIFO claim queue. Anyone can call payClaims, and rotate redeems items for the head claim once it is a rotate interval old. Shares are nontransferable.",
+      "The entry contribution funds the GRAIL buckets. It is the depositor premium times the daily fee volume over NAV, for the payback days, kept between the floor and the cap. The rest of a deposit mints shares at ordinary NAV per share. Deposits are admitted while ordinary NAV is below the NAV cap, which is the larger of the floor and the daily fee volume divided by the turnover. Daily fee volume is the mean over the last seven complete UTC days. Deposits open after the founder window that follows the pool opening. A withdrawal burns shares and pays shares * NAV / total shares: the part cash covers is paid at once and the remainder joins a FIFO claim queue. Anyone can call payClaims, and rotate redeems items for the head claim once it is a rotate interval old. Shares are nontransferable.",
   },
   {
     question: "What are the GRAIL tracks?",
@@ -44,7 +44,7 @@ const FAQS = [
   {
     question: "What can the admin change?",
     answer:
-      "One admin address pauses pulls and deposits and sets the parameters listed above, each within a bound: the premium, maintenance and feed rates sum to at most 1,000 bps, the entry curve cap is at most 2,500 bps and the tip is at most 0.01 ETH. Setters take effect immediately. The admin also creates the FWA pool, calls adminCall, which checks the book invariants afterward, and starts an exit.",
+      "One admin address pauses pulls and deposits and sets the parameters listed above, each within a bound: the premium, maintenance and feed rates sum to at most 1,000 bps, the entry fee cap is at most 10,000 bps and the tip is at most 0.01 ETH. Setters take effect immediately. The admin also creates the FWA pool, calls adminCall, which checks the book invariants afterward, and starts an exit.",
   },
   {
     question: "What does an exit do?",

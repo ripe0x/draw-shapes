@@ -46,11 +46,12 @@ export function ParamsDisclosure() {
       <Kv label="Maintenance, of backing" value={bps(p.feeSplit.maintenanceBps)} />
       <Kv label="GRAIL feed, of backing" value={bps(p.feeSplit.feedBps)} />
       <Kv label="Minor share of the feed" value={bps(p.feeSplit.minorShareBps)} />
-      <Kv label="Entry curve base" value={bps(p.curve.baseBps)} />
-      <Kv label="Entry curve slope at reference NAV" value={bps(p.curve.slopeBps)} />
-      <Kv label="Entry curve cap" value={bps(p.curve.capBps)} />
-      <Kv label="Entry curve reference NAV" value={wei(p.curve.referenceWei)} />
-      <Kv label="NAV cap" value={wei(p.navCap)} />
+      <Kv label="Entry fee floor" value={bps(p.floorBps)} />
+      <Kv label="Entry fee cap" value={bps(p.capBps)} />
+      <Kv label="Entry fee payback target (days of yield)" value={count(p.paybackDays)} />
+      <Kv label="NAV cap floor" value={wei(p.navCapFloor)} />
+      <Kv label="Turnover, daily fee volume over NAV" value={bps(p.turnoverBps)} />
+      <Kv label="Founder window after open" value={secs(p.founderWindowSeconds)} />
       <Kv label="Rotate interval" value={secs(p.rotateInterval)} />
       <Kv label="Opening deadline length" value={secs(p.openingDeadline)} />
       <Kv label="Opening deadline at" value={utc(p.openingDeadlineAt)} />

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { parseEther } from "viem";
 import { useAccount, useBalance } from "wagmi";
 import { poolAbi } from "../lib/abi/pool";
-import { eth } from "../lib/format";
+import { eth, utc } from "../lib/format";
 import { usePool, type PoolData } from "../lib/pool";
 import { useDeployment } from "../Providers";
 import { Kv, percent, shares } from "./Measure";
@@ -20,19 +20,16 @@ export function parseEthInput(text: string): bigint | undefined {
   }
 }
 
-/** Entry contribution rate in bps: min(capBps, baseBps + slopeBps * nav / referenceWei). */
-export function entryBps(params: PoolData["params"], nav: bigint): bigint {
-  const { baseBps, slopeBps, capBps, referenceWei } = params.curve;
-  const rate = BigInt(baseBps) + (referenceWei > 0n ? (BigInt(slopeBps) * nav) / referenceWei : 0n);
-  return rate < BigInt(capBps) ? rate : BigInt(capBps);
-}
-
 /** Why `deposit()` reverts at the current state, or undefined when deposits are open. */
 function closedReason(pool: PoolData): string | undefined {
-  const { lifecycle, depositsPaused, navCap } = pool.params;
+  const { lifecycle, depositsPaused } = pool.params;
+  const { depositsOpenAt, navCap } = pool.admission;
   if (lifecycle === 2) return "Closed, the pool is exiting";
   if (lifecycle === 3) return "Closed, the pool has exported";
   if (depositsPaused) return "Paused by the admin";
+  if (lifecycle === 1 && BigInt(Math.floor(Date.now() / 1000)) < depositsOpenAt) {
+    return `Deposits open ${utc(depositsOpenAt)}`;
+  }
   if (pool.nav >= navCap) return "Closed, ordinary NAV has reached the NAV cap";
   if (pool.totalShares > 0n && pool.nav === 0n) return "Closed, ordinary NAV is zero";
   return undefined;
@@ -49,7 +46,7 @@ export function DepositForm() {
 
   const value = parseEthInput(amount);
   const closed = pool ? closedReason(pool) : undefined;
-  const rateBps = pool ? entryBps(pool.params, pool.nav) : 0n;
+  const rateBps = pool ? pool.admission.contributionBps : 0n;
   const contribution = value ? (value * rateBps) / 10_000n : 0n;
   const net = value ? value - contribution : 0n;
   const newShares = !pool || !value ? 0n : pool.totalShares === 0n ? net : pool.nav > 0n ? (net * pool.totalShares) / pool.nav : 0n;
@@ -68,7 +65,8 @@ export function DepositForm() {
             <span>Deposits</span>
             <strong>{closed ?? "Open"}</strong>
             <small>
-              Ordinary NAV {eth(pool.nav, 2)} ETH, NAV cap {eth(pool.params.navCap, 2)} ETH
+              Ordinary NAV {eth(pool.nav, 2)} ETH, NAV cap {eth(pool.admission.navCap, 2)} ETH, room{" "}
+              {eth(pool.admission.headroom, 2)} ETH
             </small>
           </div>
           <div className="field deposit-amount-field">
@@ -88,6 +86,10 @@ export function DepositForm() {
               <span>ETH</span>
             </div>
             <Kv label="Entry contribution, share of the deposit" value={percent(rateBps, 2)} />
+            <Kv
+              label="Entry contribution target"
+              value={`${pool.params.paybackDays} days of depositor yield, ${percent(pool.params.floorBps, 2)} to ${percent(pool.params.capBps, 2)}`}
+            />
             {value && (
               <>
                 <Kv label="Entry contribution, goes to the GRAIL buckets" value={`${eth(contribution, 6)} ETH`} />

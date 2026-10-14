@@ -40,7 +40,7 @@ result with the FWA V2 main pool for players and for depositors. The page runs o
 | `cooldownSeconds` pauses ticket arrival after a listing batch | factory `inventoryChangeCooldown` |
 | GRAIL growth by step when the bucket covers step plus mint fees, decay by pull when the decayed price is at least 1 percent below the list price, probability cap lift, capture and reset | SPEC 11 |
 | Toggle "decay reprice inside settle" (on at launch): a settle call that lists items reprices the GRAIL tracks and lifts them to the probability cap, and rotate keeps GRAIL growth. Off gives rotate the Decay reason | owner decision 9 open item |
-| NAV cap closes deposits | SPEC 5 `navCap` |
+| NAV cap closes deposits | SPEC 7 `navCap()` |
 | Concurrency guard: fewer than 10 listed ordinary items rejects a ticket | SPEC 9 reopen guards |
 
 Ordinary NAV = cash + ordinary backing (held and listed) - queued claims. GRAIL buckets, GRAIL backing and the

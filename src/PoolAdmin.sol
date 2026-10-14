@@ -53,17 +53,28 @@ contract PoolAdmin is PoolBooks {
         _setFeeSplit(FeeSplit(premiumBps, maintenanceBps, feedBps, minorShareBps));
     }
 
-    function setEntryCurve(uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei)
-        external
-        onlyDelegated
-    {
+    /// @dev `floorBps` is at most `capBps`, `capBps` is at most 10,000 and `paybackDays` is at
+    ///      least one.
+    function setEntryFee(uint32 floorBps, uint32 capBps, uint32 paybackDays) external onlyDelegated {
         _admin();
-        _setCurve(EntryCurve(baseBps, slopeBps, capBps, referenceWei));
+        _setEntryFee(EntryFee(floorBps, capBps, paybackDays));
     }
 
-    function setNavCap(uint256 wei_) external onlyDelegated {
+    function setNavCapFloor(uint256 wei_) external onlyDelegated {
         _admin();
-        navCap = wei_;
+        navCapFloor = wei_;
+    }
+
+    /// @dev `bps` is between 1 and 10,000.
+    function setTurnover(uint16 bps) external onlyDelegated {
+        _admin();
+        _setTurnover(bps);
+    }
+
+    /// @dev Applies to the next `open()` only.
+    function setFounderWindow(uint32 seconds_) external onlyDelegated {
+        _admin();
+        _founderWindowSeconds = seconds_;
     }
 
     /// @notice Replaces the mix table. A row that holds items keeps its rungs, and rows that hold
@@ -565,7 +576,7 @@ contract PoolAdmin is PoolBooks {
     }
 
     /// @notice Credits `msg.value` from `oldPool` to `cash`. It counts toward `importedNav` and
-    ///         bypasses `navCap`.
+    ///         bypasses `navCap()` and the founder window.
     function importCash() external payable onlyDelegated onlyOldPool {
         cash += msg.value;
         importedNav += msg.value;

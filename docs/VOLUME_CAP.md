@@ -1,7 +1,7 @@
 # Volume-responsive deposit cap
 
-Status: design for owner review, 2026-10-14. Nothing built. Supersedes the fixed `navCap` as the
-admission rule if adopted; `navCap` becomes the floor.
+Status: Built, 2026-10-14. Section 7b is the implementation. `navCapFloor` is the former fixed
+`navCap`, and `navCap()` is the volume-responsive cap.
 
 ## 1. Purpose
 
@@ -30,12 +30,12 @@ economic knob. With premium at 200 bps the implied depositor yield at the cap is
 | 250 | 40 x daily volume | 0.05% | 18% |
 
 The old system's "0.25 turnover line" is the first row. Recommended launch: `turnoverBps` 1,250,
-`navCapFloor` 100 ETH (today's `navCap`), `W` 7 days.
+`navCapFloor` 69 ETH, `W` 7 days.
 
 Worked example at launch volume, 500 tickets a day at 0.021 ETH: daily volume 10.5 ETH, dynamic
-cap 84 ETH, so the 100 ETH floor binds. At 1,500 a day: 31.5 ETH a day, cap 252 ETH. At 3,000 a
-day (FWA's observed cadence): 63 ETH a day, cap 504 ETH. Back to 500 a day: the cap falls to the
-floor over the 7 day window and deposits close until NAV is below it again.
+cap 84 ETH, above the 69 ETH floor. At 1,500 a day: 31.5 ETH a day, cap 252 ETH. At 3,000 a
+day (FWA's observed cadence): 63 ETH a day, cap 504 ETH. Back to 500 a day: the cap falls to
+84 ETH over the 7 day window and deposits close until NAV is below it again.
 
 ## 3. What counts as volume
 
@@ -66,48 +66,39 @@ A withdrawal is never blocked by the cap. The cap only closes new deposits.
 - Live, growing: the cap rises with the trailing mean, one day of volume at a time. A spike of play
   raises the cap by one seventh of its size per day and the rise fades over the next week.
 - Live, slowing: the cap falls the same way. NAV above the cap simply closes deposits; nothing is
-  forced out, and the entry curve still prices every deposit that gets in.
+  forced out, and the entry fee still prices every deposit that gets in.
 - Migration import: imported NAV bypasses the cap (SPEC 13), unchanged.
 - Exiting and Exported: deposits are closed by lifecycle, unchanged.
 - Pause: `depositsPaused` still overrides.
 
 ## 6. Interaction with other rules
 
-- Entry curve: unchanged. It prices the GRAIL contribution per deposit against NAV; the cap only
-  decides whether the deposit is accepted. Both are read at deposit time.
+- Entry fee: `paybackDays` days of depositor yield, clamped to `[floorBps, capBps]`, from the same
+  `dailyVolume()`. It prices the GRAIL contribution per deposit; the cap decides whether the
+  deposit is accepted. Both are read at deposit time.
 - Cash reserve: unchanged. More NAV means more cash above the reserve, so replacements are always
   funded when the cap is open.
 - GRAIL feed: more volume means more feed; the cap does not touch the GRAIL buckets.
 - Board depth: independent. `minItems` sizes the board; the cap sizes capital. The board tide
   idea (parked) would use the same volume measure, so one ring buffer serves both.
 
-## 7. Two implementations
+## 7. Implementation
 
-### 7a. Off-chain, first
+### 7b. On-chain
 
-The keeper computes `dailyVolume` from the pool's `Captured` events (or from the FWA clone's
-processed acquisitions) over the trailing 7 days and calls `setNavCap(max(floor, volume x 10_000
-/ turnoverBps))` once per UTC day when the value moves by more than 5 percent. No contract
-change. `navCap` keeps its meaning as the live cap, and Lens shows it. Reversible by stopping the
-rule. Downside: the cap is only as live as the keeper, and the rule lives in a script rather than
-in the protocol.
-
-### 7b. On-chain, after the rule has been watched
-
-- Storage: `uint128[8] _dailyFees` (slot `day % 8`, written in `_walk` per booked capture with the
-  day stamped in a parallel `uint32[8]` so a stale slot reads as zero), `uint16 turnoverBps`,
-  `navCapFloor` reusing today's `navCap`.
-- `navCapDynamic() view`: mean of the 7 complete days before today (today's partial day is
-  excluded so the cap does not jump within a day), times `10_000 / turnoverBps`, floored at
-  `navCap`. `_deposit` checks `nav() < navCapDynamic()`.
-- Setters: `setTurnover(turnoverBps)` with bound 1 to 10,000; `setNavCap` stays as the floor.
-- Lens: `parameters` gains `turnoverBps`; `reopenStatus` or a new `admission()` view returns the
-  cap, the trailing daily volume, headroom, and the day boundary at which the cap next changes.
-- Size: about 350 bytes in Pool (room exists), one setter in PoolAdmin (555 B margin there, so
-  it may go through the existing `setBounds` style or the setter moves with the views).
-- Tests: cap equals floor with no volume; cap follows a ramp up and down over 7 days; today's
-  partial day excluded; deposit accepted at cap minus one wei and rejected at cap; migration
-  import ignores the cap; invariant: `navCapDynamic() >= navCap` always.
+- Storage, appended to `PoolStorage`: `uint128[8] _dailyFees` (slot `day % 8`, written in `_walk` per
+  booked capture), `uint32[8] _dailyFeesDay` (the day stamped on each slot, so a stale slot reads as
+  zero), `uint16 _turnoverBps`, `uint32 _liveDay`, and the founder window fields. `navCapFloor`
+  is the former `navCap` slot.
+- `dailyVolume() view`: mean of the complete days before today since `_liveDay`, at most 7.
+  Today's partial day is excluded so the cap does not jump within a day.
+- `navCap() view`: `max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`. `_deposit` admits
+  while `nav() < navCap()`.
+- Setters: `setTurnover(bps)` with bound 1 to 10,000; `setNavCapFloor(wei)`.
+- Lens: `parameters` carries `turnoverBps` and `navCapFloor`. `admission()` returns the cap, the
+  floor, the trailing daily volume, headroom, `depositsOpenAt`, the entry fee a deposit pays now
+  and whether a deposit is admitted.
+- Tests: `test/fork/PoolAdmission.t.sol`.
 
 ## 8. Lab
 
@@ -117,9 +108,8 @@ from the depositor outcome before anything ships. The 365 day default run today 
 day 30 at the fixed 100 ETH cap; the same run with `turnoverBps` 1,250 should keep them open
 whenever volume supports it.
 
-## 9. Open decisions for the owner
+## 9. Owner decisions, 2026-10-14
 
-1. `turnoverBps` at launch (recommended 1,250, which targets a quarter percent a day for
-   depositors at the cap).
-2. Floor at 100 ETH or lower.
-3. 7a now and 7b later, or 7b directly.
+1. `turnoverBps` 1,250.
+2. `navCapFloor` 69 ETH.
+3. On-chain implementation (7b) built directly.

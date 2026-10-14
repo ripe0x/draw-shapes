@@ -96,9 +96,13 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setFeeSplit(1, 1, 1, 1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setEntryCurve(1, 1, 1, 1);
+        IPool(address(pool)).setEntryFee(1, 1, 1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setTurnover(1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setFounderWindow(1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setMix(_currentRows());
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
@@ -134,7 +138,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
     }
 
-    // ---------------------------------------------------------------- fee split and curve
+    // ---------------------------------------------------------------- fee split and entry fee
 
     function test_setFeeSplitStoresTheSplitAndLogsTheSelector() public {
         _expectParamSet(IPool.setFeeSplit.selector);
@@ -157,35 +161,38 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
     }
 
-    function test_setEntryCurveStoresTheCurveAndBoundsIt() public {
+    function test_setEntryFeeStoresTheFeeAndBoundsIt() public {
         vm.startPrank(admin);
-        _expectParamSet(IPool.setEntryCurve.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_500, 10 ether);
-        (uint32 base, uint32 slope, uint32 cap, uint128 ref_) = pool.curve();
-        assertEq(base, 500);
-        assertEq(slope, 1_000);
-        assertEq(cap, 2_500);
-        assertEq(ref_, 10 ether);
+        _expectParamSet(IPool.setEntryFee.selector);
+        IPool(address(pool)).setEntryFee(500, 3_000, 10);
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        assertEq(floorBps, 500);
+        assertEq(capBps, 3_000);
+        assertEq(paybackDays, 10);
 
-        vm.expectRevert(IPoolTypes.CurveCapTooHigh.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_501, 10 ether);
-        vm.expectRevert(IPoolTypes.CurveReferenceZero.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_500, 0);
+        IPool(address(pool)).setEntryFee(0, 10_000, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(0, 10_001, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(2_501, 2_500, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(500, 2_500, 0);
         vm.stopPrank();
     }
 
-    function test_setEntryCurveChangesTheNextDeposit() public {
+    function test_setEntryFeeChangesTheNextDeposit() public {
         vm.prank(admin);
-        IPool(address(pool)).setEntryCurve(0, 0, 0, 1 ether);
+        IPool(address(pool)).setEntryFee(0, 0, 1);
         vm.prank(alice);
         pool.deposit{value: 10 ether}();
-        assertEq(pool.sharesOf(alice), 10 ether, "no entry contribution at a zero curve");
+        assertEq(pool.sharesOf(alice), 10 ether, "no entry contribution at a zero fee");
     }
 
-    function test_setNavCapStoresTheCap() public {
-        _expectParamSet(IPool.setNavCap.selector);
+    function test_setNavCapFloorStoresTheFloor() public {
+        _expectParamSet(IPool.setNavCapFloor.selector);
         vm.prank(admin);
-        IPool(address(pool)).setNavCap(5 ether);
+        IPool(address(pool)).setNavCapFloor(5 ether);
+        assertEq(pool.navCapFloor(), 5 ether);
         assertEq(pool.navCap(), 5 ether);
 
         vm.prank(alice);
@@ -193,6 +200,28 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.prank(alice);
         vm.expectRevert(IPoolTypes.NavCapReached.selector);
         pool.deposit{value: 1 ether}();
+    }
+
+    function test_setTurnoverStoresTheTurnoverAndBoundsIt() public {
+        vm.startPrank(admin);
+        _expectParamSet(IPool.setTurnover.selector);
+        IPool(address(pool)).setTurnover(2_500);
+        assertEq(pool.turnoverBps(), 2_500);
+        IPool(address(pool)).setTurnover(10_000);
+        IPool(address(pool)).setTurnover(1);
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
+        IPool(address(pool)).setTurnover(0);
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
+        IPool(address(pool)).setTurnover(10_001);
+        vm.stopPrank();
+    }
+
+    function test_setFounderWindowAppliesToTheNextOpenOnly() public {
+        _expectParamSet(IPool.setFounderWindow.selector);
+        vm.prank(admin);
+        IPool(address(pool)).setFounderWindow(7 days);
+        assertEq(pool.founderWindowSeconds(), 7 days);
+        assertEq(pool.depositsOpenAt(), 0, "unset before open");
     }
 
     // ---------------------------------------------------------------- mix
@@ -543,11 +572,11 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         _expectParamSet(IPool.setAdmin.selector);
         IPool(address(pool)).setAdmin(stranger);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
         vm.stopPrank();
         assertEq(pool.admin(), stranger);
         vm.prank(stranger);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
     }
 
     // ---------------------------------------------------------------- sweep

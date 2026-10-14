@@ -58,17 +58,20 @@ abstract contract PoolBooks is PoolStorage {
     ///      `_bookSurplus` books them. If the purchaser later refunds, the admin recovers the token
     ///      with `adminCall(recoverRefundedNFT)` and `sweep`. Expired, Refunded and TimedOut
     ///      acquisitions book nothing. FWA only advances its processing queue past acquisitions in
-    ///      those statuses, so any other status books nothing and the walk passes it.
+    ///      those statuses, so any other status books nothing and the walk passes it. The `paid`
+    ///      values of the captures add to the fee volume of the current UTC day.
     function _walk(IFWAClone fwa, uint64 end, uint256 maxItems) internal returns (uint64 seq) {
         seq = nextSequenceToBook;
         if (seq >= end) return seq;
 
         uint64 start = seq;
         uint256 mintFee = _mintFee();
+        uint256 fees;
         for (uint256 n; seq < end && n < maxItems; ++n) {
             uint256 requestId = _read(address(fwa), IFWAClone.requestIdAtSequence.selector, seq);
             (uint256 paid, uint256 listingId, uint256 status) = _acquisition(requestId);
             if (status == uint256(IFWAClone.AcquisitionStatus.Fulfilled)) {
+                fees += paid;
                 _capture(requestId, listingId, paid, mintFee);
             } else if (status == uint256(IFWAClone.AcquisitionStatus.DeliveryRefunded)) {
                 _recoverRefunded(fwa, listingId);
@@ -77,6 +80,7 @@ abstract contract PoolBooks is PoolStorage {
             }
             ++seq;
         }
+        if (fees != 0) _recordFees(fees);
         if (seq != start) {
             nextSequenceToBook = seq;
             _recordPulls(seq - start);

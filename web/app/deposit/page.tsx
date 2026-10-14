@@ -5,7 +5,7 @@ import { eth } from "../lib/format";
 import { usePool } from "../lib/pool";
 import { ClaimsQueue } from "../components/ClaimsQueue";
 import { DepositCardFan } from "../components/DepositCardFan";
-import { DepositForm, entryBps } from "../components/DepositForm";
+import { DepositForm } from "../components/DepositForm";
 import { Disclosures } from "../components/Disclosures";
 import { Eth, percent } from "../components/Measure";
 import { PositionsList } from "../components/PositionsList";
@@ -49,8 +49,8 @@ export default function DepositPage() {
             </div>
             <div>
               <span>Entry contribution now</span>
-              <strong>{pool ? percent(entryBps(pool.params, pool.nav), 2) : "-"}</strong>
-              <small>of each deposit, goes to the GRAIL buckets</small>
+              <strong>{pool ? percent(pool.admission.contributionBps, 2) : "-"}</strong>
+              <small>{pool ? `of each deposit, targets ${pool.params.paybackDays} days of yield` : "of each deposit"}</small>
             </div>
           </div>
           <PositionsList />

@@ -79,12 +79,14 @@ contract Pool is PoolBooks {
         fwaFactory = p.fwaFactory;
         oldPool = p.oldPool;
         admin = p.admin;
-        navCap = p.navCap;
+        navCapFloor = p.navCapFloor;
+        _founderWindowSeconds = p.founderWindowSeconds;
         rotateInterval = p.rotateInterval;
         _openingDeadline = p.openingDeadline;
         minItems = p.minItems;
         _setFeeSplit(p.feeSplit);
-        _setCurve(p.curve);
+        _setEntryFee(p.entryFee);
+        _setTurnover(p.turnoverBps);
         _setProbCap(p.grailProbCapBps);
         _setBatch(p.batchMin, p.batchMaxAge);
         _setReplacement(p.surpriseBps, p.restoreK, p.bandBps);
@@ -117,6 +119,8 @@ contract Pool is PoolBooks {
         if (_call(address(this), IPool.openBoard.selector, 0, 0) < MAX_OPEN_MINTS) {
             lifecycle = Lifecycle.Live;
             lastRotateAt = block.timestamp;
+            _liveDay = uint32(block.timestamp / 1 days);
+            _depositsOpenAt = uint64(block.timestamp + _founderWindowSeconds);
             emit Opened();
         }
     }
@@ -424,22 +428,58 @@ contract Pool is PoolBooks {
         }
     }
 
+    /// @notice Ordinary NAV below which deposits are admitted:
+    ///         `max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`.
+    function navCap() public view returns (uint256) {
+        return _navCap(_dailyVolume());
+    }
+
+    /// @notice Mean booked FWA acquisition fees per day over the complete UTC days since the pool
+    ///         went Live, at most seven. Today's partial day is excluded.
+    function dailyVolume() external view returns (uint256) {
+        return _dailyVolume();
+    }
+
+    function turnoverBps() external view returns (uint16) {
+        return _turnoverBps;
+    }
+
+    function founderWindowSeconds() external view returns (uint32) {
+        return _founderWindowSeconds;
+    }
+
+    /// @notice Timestamp from which deposits are admitted while Live. Zero before `open()`.
+    function depositsOpenAt() external view returns (uint64) {
+        return _depositsOpenAt;
+    }
+
+    function _navCap(uint256 volume) internal view returns (uint256) {
+        uint256 dynamic = volume * BPS / _turnoverBps;
+        return dynamic > navCapFloor ? dynamic : navCapFloor;
+    }
+
+    /// @dev Share of a deposit made at ordinary NAV `currentNav` that goes to the GRAIL buckets.
+    function _entryFeeBps(uint256 currentNav, uint256 volume) internal view returns (uint256) {
+        EntryFee memory f = entryFee;
+        return PricingLib.entryFeeBps(feeSplit.premiumBps, volume, currentNav, f.floorBps, f.capBps, f.paybackDays);
+    }
+
     /// @dev Mints shares to `to` for `value`. The entry contribution goes to the GRAIL buckets,
-    ///      split by `minorShareBps`. Shares are priced on NAV before the deposit. `keptValue` is
-    ///      the part of `value` that arrived as held Shapes: `cash` is reduced by it, so `cash`
-    ///      changes by `net - keptValue`.
+    ///      split by `minorShareBps`. Reverts `DepositsClosed` while Live before `depositsOpenAt`
+    ///      and `NavCapReached` at or above `navCap()`. Shares are priced on NAV before the
+    ///      deposit. `keptValue` is the part of `value` that arrived as held Shapes: `cash` is
+    ///      reduced by it, so `cash` changes by `net - keptValue`.
     function _deposit(address to, uint256 value, uint256 keptValue) internal {
         _notImporting();
         if (depositsPaused) revert DepositsPaused();
         if (value == 0) revert ZeroAmount();
         uint256 currentNav = nav();
         if (currentNav == 0 && totalShares != 0) revert NavZero();
-        if (currentNav >= navCap) revert NavCapReached();
+        if (lifecycle == Lifecycle.Live && block.timestamp < _depositsOpenAt) revert DepositsClosed();
+        uint256 volume = _dailyVolume();
+        if (currentNav >= _navCap(volume)) revert NavCapReached();
 
-        EntryCurve memory c = curve;
-        uint256 contribution = PricingLib.entryContribution(
-            value, PricingLib.entryCurveBps(currentNav, c.baseBps, c.slopeBps, c.capBps, c.referenceWei)
-        );
+        uint256 contribution = PricingLib.entryContribution(value, _entryFeeBps(currentNav, volume));
         uint256 net = value - contribution;
         uint256 shares = PricingLib.sharesFor(net, currentNav, totalShares);
         if (shares == 0) revert ZeroShares();

@@ -99,6 +99,19 @@ contract Lens {
         uint256 concurrency;
     }
 
+    /// @dev Deposit admission state. `contributionBps` is the entry fee a deposit pays now.
+    ///      `open` holds when the pool is Live, deposits are not paused, `depositsOpenAt` has
+    ///      passed and ordinary NAV is below `navCap`.
+    struct Admission {
+        uint256 navCap;
+        uint256 navCapFloor;
+        uint256 dailyVolume;
+        uint256 headroom;
+        uint256 depositsOpenAt;
+        uint256 contributionBps;
+        bool open;
+    }
+
     struct Parameters {
         address shapes;
         address drawPacks;
@@ -111,8 +124,12 @@ contract Lens {
         bool pullsPaused;
         bool depositsPaused;
         IPoolTypes.FeeSplit feeSplit;
-        IPoolTypes.EntryCurve curve;
-        uint256 navCap;
+        uint256 floorBps;
+        uint256 capBps;
+        uint256 paybackDays;
+        uint256 navCapFloor;
+        uint256 turnoverBps;
+        uint256 founderWindowSeconds;
         uint256 rotateInterval;
         uint256 openingDeadline;
         uint256 openingDeadlineAt;
@@ -315,6 +332,24 @@ contract Lens {
         r.boardDeep = r.listedCount >= r.unsettled + r.concurrency;
     }
 
+    // ------------------------------------------------------------------ admission
+
+    /// @notice The deposit cap, the volume it follows, the room left under it and the entry fee a
+    ///         deposit pays now.
+    function admission() external view returns (Admission memory a) {
+        uint256 currentNav = pool.nav();
+        a.navCap = pool.navCap();
+        a.navCapFloor = pool.navCapFloor();
+        a.dailyVolume = pool.dailyVolume();
+        a.headroom = a.navCap > currentNav ? a.navCap - currentNav : 0;
+        a.depositsOpenAt = pool.depositsOpenAt();
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        (uint16 premiumBps,,,) = pool.feeSplit();
+        a.contributionBps = PricingLib.entryFeeBps(premiumBps, a.dailyVolume, currentNav, floorBps, capBps, paybackDays);
+        a.open = pool.lifecycle() == IPoolTypes.Lifecycle.Live && !pool.depositsPaused()
+            && block.timestamp >= a.depositsOpenAt && a.headroom != 0;
+    }
+
     // ------------------------------------------------------------------ rotation
 
     /// @notice First reason `Pool.rotate` is due, or `None`. `None` includes the case where
@@ -344,8 +379,13 @@ contract Lens {
         p.depositsPaused = pool.depositsPaused();
         (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps, p.feeSplit.minorShareBps) =
             pool.feeSplit();
-        (p.curve.baseBps, p.curve.slopeBps, p.curve.capBps, p.curve.referenceWei) = pool.curve();
-        p.navCap = pool.navCap();
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        p.floorBps = floorBps;
+        p.capBps = capBps;
+        p.paybackDays = paybackDays;
+        p.navCapFloor = pool.navCapFloor();
+        p.turnoverBps = pool.turnoverBps();
+        p.founderWindowSeconds = pool.founderWindowSeconds();
         p.rotateInterval = pool.rotateInterval();
         p.openingDeadline = _ip().openingDeadline();
         p.openingDeadlineAt = _ip().openingDeadlineAt();

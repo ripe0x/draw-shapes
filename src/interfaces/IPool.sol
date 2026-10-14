@@ -21,11 +21,12 @@ interface IPoolTypes {
         uint16 minorShareBps;
     }
 
-    struct EntryCurve {
-        uint32 baseBps;
-        uint32 slopeBps;
+    /// @dev Share of a deposit routed to the GRAIL buckets, in bps, between `floorBps` and
+    ///      `capBps`. It targets `paybackDays` days of depositor yield.
+    struct EntryFee {
+        uint32 floorBps;
         uint32 capBps;
-        uint128 referenceWei;
+        uint32 paybackDays;
     }
 
     struct GrailParams {
@@ -94,8 +95,10 @@ interface IPoolTypes {
         FeeSplit feeSplit;
         GrailParams minor;
         GrailParams major;
-        uint256 navCap;
-        EntryCurve curve;
+        uint256 navCapFloor;
+        uint16 turnoverBps;
+        EntryFee entryFee;
+        uint32 founderWindowSeconds;
         uint256 rotateInterval;
         uint256 openingDeadline;
         uint256 minItems;
@@ -113,13 +116,14 @@ interface IPoolTypes {
     error ZeroAmount();
     error FeeSplitTooHigh();
     error MinorShareTooHigh();
-    error CurveCapTooHigh();
-    error CurveReferenceZero();
+    error EntryFeeOutOfRange();
+    error TurnoverOutOfRange();
     error ListBpsOutOfRange();
     error GrailStepInvalid();
     error NotAdmin();
     error DepositsPaused();
     error NavCapReached();
+    error DepositsClosed();
     error PoolExiting();
     error ZeroShares();
     error InsufficientShares();
@@ -258,8 +262,13 @@ interface IPool is IPoolTypes {
         external
         view
         returns (uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps);
-    function curve() external view returns (uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei);
+    function entryFee() external view returns (uint32 floorBps, uint32 capBps, uint32 paybackDays);
+    function navCapFloor() external view returns (uint256);
     function navCap() external view returns (uint256);
+    function dailyVolume() external view returns (uint256);
+    function turnoverBps() external view returns (uint16);
+    function founderWindowSeconds() external view returns (uint32);
+    function depositsOpenAt() external view returns (uint64);
     function rotateInterval() external view returns (uint256);
     function openingDeadline() external view returns (uint256);
     function openingDeadlineAt() external view returns (uint256);
@@ -350,8 +359,10 @@ interface IPool is IPoolTypes {
     // ------------------------------------------------------------------ PoolAdmin
 
     function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps, uint16 minorShareBps) external;
-    function setEntryCurve(uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei) external;
-    function setNavCap(uint256 wei_) external;
+    function setEntryFee(uint32 floorBps, uint32 capBps, uint32 paybackDays) external;
+    function setNavCapFloor(uint256 wei_) external;
+    function setTurnover(uint16 bps) external;
+    function setFounderWindow(uint32 seconds_) external;
     function setMix(PricingLib.MixRow[] memory rows) external;
     function setGrail(
         uint8 t,

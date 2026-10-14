@@ -11,14 +11,6 @@ contract PricingLibHarness {
         return PricingLib.rowBacking(row);
     }
 
-    function entryCurveBps(uint256 nav, uint256 base, uint256 slope, uint256 cap, uint256 ref)
-        external
-        pure
-        returns (uint256)
-    {
-        return PricingLib.entryCurveBps(nav, base, slope, cap, ref);
-    }
-
     function mintLineBps(uint256 feeWei, uint256 backingWei) external pure returns (uint256) {
         return PricingLib.mintLineBps(feeWei, backingWei);
     }
@@ -88,34 +80,40 @@ contract PricingLibTest is Test {
         assertEq(PricingLib.rowDepth(10, 3_333), 4);
     }
 
-    // ------------------------------------------------------------------ entry curve
+    // ------------------------------------------------------------------ entry fee
 
-    function test_theEntryCurveStartsAtTheBase() public pure {
-        assertEq(PricingLib.entryCurveBps(0, 1_100, 2_000, 2_500, 55 ether), 1_100);
+    function test_theEntryFeeIsTheFloorWithoutVolume() public pure {
+        assertEq(PricingLib.entryFeeBps(200, 0, 50 ether, 1_000, 2_500, 20), 1_000);
     }
 
-    function test_theEntryCurveRisesLinearlyWithNav() public pure {
-        // 1_100 + 2_000 * 27.5 / 55 = 2_100
-        assertEq(PricingLib.entryCurveBps(27.5 ether, 1_100, 2_000, 2_500, 55 ether), 2_100);
+    function test_theEntryFeeIsTheFloorWithoutNav() public pure {
+        assertEq(PricingLib.entryFeeBps(200, 10 ether, 0, 1_000, 2_500, 20), 1_000);
     }
 
-    function test_theEntryCurveIsCapped() public pure {
-        assertEq(PricingLib.entryCurveBps(55 ether, 1_100, 2_000, 2_500, 55 ether), 2_500);
-        assertEq(PricingLib.entryCurveBps(type(uint128).max, 1_100, 2_000, 2_500, 55 ether), 2_500);
+    function test_theEntryFeeIsPaybackDaysOfYieldInsideTheBand() public pure {
+        // 200 bps of 6.25 ETH over 50 ETH is 25 bps a day; 20 days is 500 bps, below the floor.
+        assertEq(PricingLib.entryFeeBps(200, 6.25 ether, 50 ether, 1_000, 2_500, 20), 1_000);
+        // 200 bps of 15 ETH over 50 ETH is 60 bps a day; 20 days is 1,200 bps.
+        assertEq(PricingLib.entryFeeBps(200, 15 ether, 50 ether, 1_000, 2_500, 20), 1_200);
     }
 
-    function test_theEntryCurveNeedsAReference() public {
-        vm.expectRevert(PricingLib.ZeroDivisor.selector);
-        h.entryCurveBps(1 ether, 1_100, 2_000, 2_500, 0);
+    function test_theEntryFeeIsCapped() public pure {
+        assertEq(PricingLib.entryFeeBps(200, 100 ether, 50 ether, 1_000, 2_500, 20), 2_500);
+        assertEq(PricingLib.entryFeeBps(200, type(uint128).max, 1, 1_000, 2_500, 20), 2_500);
     }
 
-    function testFuzz_theEntryCurveStaysBetweenBaseAndCap(uint128 nav) public pure {
-        uint256 curve = PricingLib.entryCurveBps(nav, 1_100, 2_000, 2_500, 55 ether);
-        assertGe(curve, 1_100);
-        assertLe(curve, 2_500);
+    function test_theEntryFeeDividesOnceAfterThePaybackProduct() public pure {
+        // 200 * 20 * 1 / 7 = 571.4, not 20 * (200 * 1 / 7) = 560.
+        assertEq(PricingLib.entryFeeBps(200, 1 ether, 7 ether, 0, 2_500, 20), 571);
     }
 
-    function test_theContributionIsTheCurveShareOfTheDeposit() public pure {
+    function testFuzz_theEntryFeeStaysBetweenFloorAndCap(uint128 volume, uint128 nav) public pure {
+        uint256 fee = PricingLib.entryFeeBps(200, volume, nav, 1_000, 2_500, 20);
+        assertGe(fee, 1_000);
+        assertLe(fee, 2_500);
+    }
+
+    function test_theContributionIsTheFeeShareOfTheDeposit() public pure {
         assertEq(PricingLib.entryContribution(10 ether, 1_100), 1.1 ether);
         assertEq(PricingLib.entryContribution(10 ether, 0), 0);
     }

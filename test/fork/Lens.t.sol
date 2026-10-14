@@ -282,6 +282,44 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertTrue(lens.reopenStatus().cooldownPassed);
     }
 
+    function test_admissionReportsCapFeeAndWindow() public {
+        vm.prank(admin);
+        IPool(address(pool)).setFounderWindow(3 days);
+        Lens.Admission memory a = lens.admission();
+        assertFalse(a.open, "not Live");
+        assertEq(a.depositsOpenAt, 0);
+        assertEq(a.navCap, 1_000 ether);
+        assertEq(a.navCapFloor, 1_000 ether);
+        assertEq(a.dailyVolume, 0);
+        assertEq(a.headroom, 1_000 ether);
+        assertEq(a.contributionBps, 1_100, "entry fee floor with no volume");
+
+        _open(false);
+        uint256 openAt = pool.depositsOpenAt();
+        assertEq(openAt, vm.getBlockTimestamp() + 3 days);
+        a = lens.admission();
+        assertEq(a.depositsOpenAt, openAt);
+        assertEq(a.headroom, a.navCap - pool.nav());
+        assertFalse(a.open, "inside the founder window");
+
+        vm.warp(openAt);
+        a = lens.admission();
+        assertTrue(a.open);
+
+        vm.prank(admin);
+        IPool(address(pool)).setPaused(false, true);
+        assertFalse(lens.admission().open, "deposits paused");
+        vm.prank(admin);
+        IPool(address(pool)).setPaused(false, false);
+
+        uint256 navNow = pool.nav();
+        vm.prank(admin);
+        IPool(address(pool)).setNavCapFloor(navNow);
+        a = lens.admission();
+        assertEq(a.headroom, 0, "NAV at the cap");
+        assertFalse(a.open);
+    }
+
     function test_parametersMirrorThePool() public {
         _open(false);
         vm.prank(admin);
@@ -301,11 +339,12 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(p.feeSplit.maintenanceBps, 100);
         assertEq(p.feeSplit.feedBps, 400);
         assertEq(p.feeSplit.minorShareBps, 4_000);
-        assertEq(p.curve.baseBps, 1_100);
-        assertEq(p.curve.slopeBps, 2_000);
-        assertEq(p.curve.capBps, 2_500);
-        assertEq(p.curve.referenceWei, 55 ether);
-        assertEq(p.navCap, 1_000 ether);
+        assertEq(p.floorBps, 1_100);
+        assertEq(p.capBps, 2_500);
+        assertEq(p.paybackDays, 20);
+        assertEq(p.navCapFloor, 1_000 ether);
+        assertEq(p.turnoverBps, 1_250);
+        assertEq(p.founderWindowSeconds, 0);
         assertEq(p.rotateInterval, 3_600);
         assertEq(p.openingDeadline, 24 hours);
         assertEq(p.openingDeadlineAt, IPool(address(pool)).openingDeadlineAt());

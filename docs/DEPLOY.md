@@ -36,7 +36,7 @@ ETHERSCAN_API_KEY=... script/deploy.sh mainnet
 
 `Deploy.s.sol` deploys `PoolAdmin`, `PoolListing`, `Pool` (constructed with both module addresses) and `Lens`, in that
 order. It then checks the chain: mainnet pins Shapes, the factory, the fee split, the entry
-curve, `rotateInterval` 900 and the 24 hour opening deadline. Draw Packs must have a minimum pack
+fee, the turnover, the founder window, `rotateInterval` 900 and the 24 hour opening deadline. Draw Packs must have a minimum pack
 value of two ladder units and wrap the same Shapes. After the broadcast it reads every constructor
 value back from the pool, including `tipWei`, `adminModule` and `listingModule`.
 

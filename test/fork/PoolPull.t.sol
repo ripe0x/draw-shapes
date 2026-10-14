@@ -836,10 +836,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         uint256 navBefore = pool.nav();
         uint256 supplyBefore = pool.totalShares();
         uint256 balanceBefore = address(pool).balance;
-        (uint256 baseBps, uint256 slopeBps, uint256 capBps, uint256 referenceWei) = _curve();
-        uint256 contribution = PricingLib.entryContribution(
-            0.1 ether, PricingLib.entryCurveBps(navBefore, baseBps, slopeBps, capBps, referenceWei)
-        );
+        uint256 contribution = pool.contributionFor(0.1 ether, navBefore);
         uint256 expectedShares = PricingLib.sharesFor(0.1 ether - contribution, navBefore, supplyBefore);
 
         vm.expectEmit(true, false, false, true, address(pool));
@@ -862,11 +859,6 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         vm.prank(player);
         vm.expectRevert();
         pool.redeemAndDeposit(tokenId);
-    }
-
-    function _curve() internal view returns (uint256, uint256, uint256, uint256) {
-        (uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei) = pool.curve();
-        return (baseBps, slopeBps, capBps, referenceWei);
     }
 
     // ---------------------------------------------------------------- reopen guards
@@ -1194,10 +1186,7 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
 
     /// @dev Entry contribution and shares a deposit of `value` receives at ordinary NAV `atNav`.
     function _depositAt(uint256 value, uint256 atNav) internal view returns (uint256 contribution, uint256 shares) {
-        (uint256 baseBps, uint256 slopeBps, uint256 capBps, uint256 referenceWei) = _curve();
-        contribution = PricingLib.entryContribution(
-            value, PricingLib.entryCurveBps(atNav, baseBps, slopeBps, capBps, referenceWei)
-        );
+        contribution = pool.contributionFor(value, atNav);
         shares = PricingLib.sharesFor(value - contribution, atNav, pool.totalShares());
     }
 

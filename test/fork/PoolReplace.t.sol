@@ -870,10 +870,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         uint256 supplyBefore = pool.totalShares();
         uint256 cashBefore = pool.cash();
         uint256 balanceBefore = address(pool).balance;
-        (uint32 baseBps, uint32 slopeBps, uint32 capBps, uint128 referenceWei) = pool.curve();
-        uint256 contribution = PricingLib.entryContribution(
-            0.01 ether, PricingLib.entryCurveBps(navBefore, baseBps, slopeBps, capBps, referenceWei)
-        );
+        uint256 contribution = pool.contributionFor(0.01 ether, navBefore);
         uint256 expectedShares = PricingLib.sharesFor(0.01 ether - contribution, navBefore, supplyBefore);
 
         vm.prank(player);

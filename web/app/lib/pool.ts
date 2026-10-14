@@ -30,6 +30,7 @@ export function usePool() {
       { ...lens, functionName: "nav" },
       { ...lens, functionName: "sharePrice" },
       { ...lens, functionName: "parameters" },
+      { ...lens, functionName: "admission" },
       { ...lens, functionName: "board" },
       { ...lens, functionName: "grail", args: [0] },
       { ...lens, functionName: "grail", args: [1] },
@@ -50,10 +51,12 @@ export function usePool() {
     query: {
       enabled: dep.present,
       refetchInterval: POLL_MS,
-      select: ([nav, sharePrice, params, board, minor, major, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
+      select: ([nav, sharePrice, params, admission, board, minor, major, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
         nav,
         sharePrice,
         params,
+        /** Deposit cap, the volume it follows, the room under it and the entry fee now. */
+        admission,
         board,
         grails: [minor, major] as const,
         reopen,

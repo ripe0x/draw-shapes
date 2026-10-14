@@ -18,6 +18,12 @@ contract PoolHarness is Pool {
 
     constructor(Params memory p) Pool(p, address(new PoolAdmin()), address(new PoolListing())) {}
 
+    /// @dev Entry contribution a deposit of `value` pays at ordinary NAV `atNav` with the current
+    ///      trailing volume.
+    function contributionFor(uint256 value, uint256 atNav) external view returns (uint256) {
+        return PricingLib.entryContribution(value, _entryFeeBps(atNav, _dailyVolume()));
+    }
+
     /// @dev Moves `amount` from `cash` to `backing` and sends the ETH out, as a mint does.
     function spendOnBacking(uint256 amount) external {
         cash -= amount;
@@ -279,8 +285,9 @@ abstract contract PoolFixture is Test {
         p.major = IPoolTypes.GrailParams({
             targetWei: 100 ether, stepWei: 1 ether, listBps: 9_000, decayWeiPerPull: 0.01 ether, floorWei: 5 ether
         });
-        p.navCap = 1_000 ether;
-        p.curve = IPoolTypes.EntryCurve({baseBps: 1_100, slopeBps: 2_000, capBps: 2_500, referenceWei: 55 ether});
+        p.navCapFloor = 1_000 ether;
+        p.turnoverBps = 1_250;
+        p.entryFee = IPoolTypes.EntryFee({floorBps: 1_100, capBps: 2_500, paybackDays: 20});
         p.rotateInterval = 3_600;
         p.openingDeadline = 24 hours;
         p.minItems = 10;
@@ -312,7 +319,10 @@ contract PoolConstructorTest is PoolFixture {
         assertEq(pool.admin(), admin);
         assertEq(uint256(pool.lifecycle()), uint256(IPoolTypes.Lifecycle.Opening));
         assertEq(IPool(address(pool)).mixLength(), 2);
+        assertEq(pool.navCapFloor(), 1_000 ether);
         assertEq(pool.navCap(), 1_000 ether);
+        assertEq(pool.turnoverBps(), 1_250);
+        assertEq(pool.founderWindowSeconds(), 0);
         assertEq(pool.rotateInterval(), 3_600);
         assertEq(IPool(address(pool)).openingDeadline(), 24 hours);
         (,,,, uint256 target, uint256 step, uint256 listBps, uint256 decay, uint256 floor,,,) = IPool(address(pool)).grail(1);
@@ -350,17 +360,38 @@ contract PoolConstructorTest is PoolFixture {
         new PoolHarness(p);
     }
 
-    function test_revert_capBpsTooHigh() public {
+    function test_revert_entryFeeCapAboveBps() public {
         IPoolTypes.Params memory p = _params();
-        p.curve.capBps = 2_501;
-        vm.expectRevert(IPoolTypes.CurveCapTooHigh.selector);
+        p.entryFee.capBps = 10_001;
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
         new PoolHarness(p);
     }
 
-    function test_revert_referenceZero() public {
+    function test_revert_entryFeeFloorAboveCap() public {
         IPoolTypes.Params memory p = _params();
-        p.curve.referenceWei = 0;
-        vm.expectRevert(IPoolTypes.CurveReferenceZero.selector);
+        p.entryFee.floorBps = 2_501;
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_entryFeePaybackZero() public {
+        IPoolTypes.Params memory p = _params();
+        p.entryFee.paybackDays = 0;
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_turnoverZero() public {
+        IPoolTypes.Params memory p = _params();
+        p.turnoverBps = 0;
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
+        new PoolHarness(p);
+    }
+
+    function test_revert_turnoverAboveBps() public {
+        IPoolTypes.Params memory p = _params();
+        p.turnoverBps = 10_001;
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
         new PoolHarness(p);
     }
 
@@ -641,8 +672,8 @@ contract PoolTest is PoolFixture {
         pool.bookProceeds{value: 8.9 ether}();
         assertEq(pool.nav(), 17.8 ether);
 
-        uint256 curveBps = PricingLib.entryCurveBps(17.8 ether, 1_100, 2_000, 2_500, 55 ether);
-        uint256 contribution = PricingLib.entryContribution(10 ether, curveBps);
+        uint256 feeBps = PricingLib.entryFeeBps(200, 0, 17.8 ether, 1_100, 2_500, 20);
+        uint256 contribution = PricingLib.entryContribution(10 ether, feeBps);
         uint256 expected = PricingLib.sharesFor(10 ether - contribution, 17.8 ether, 8.9 ether);
 
         _deposit(bob, 10 ether);
@@ -666,7 +697,7 @@ contract PoolTest is PoolFixture {
 
     function test_revert_navCap() public {
         IPoolTypes.Params memory p = _params();
-        p.navCap = 5 ether;
+        p.navCapFloor = 5 ether;
         pool = _deploy(p);
         _deposit(alice, 10 ether);
         vm.expectRevert(IPoolTypes.NavCapReached.selector);

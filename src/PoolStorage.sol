@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
+import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
@@ -21,7 +22,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant MINOR = 0;
     uint256 internal constant MAJOR = 1;
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
-    uint256 internal constant MAX_CURVE_CAP_BPS = 2_500;
+    uint256 internal constant VOLUME_DAYS = 7;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
     uint256 internal constant MAX_OPEN_MINTS = 20;
     uint256 internal constant MAX_TIP = 0.01 ether;
@@ -59,8 +60,9 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     PricingLib.MixRow[] internal _mix;
     FeeSplit public feeSplit;
-    EntryCurve public curve;
-    uint256 public navCap;
+    EntryFee public entryFee;
+    /// @notice Lower bound of `navCap()`: deposits are admitted while ordinary NAV is below it.
+    uint256 public navCapFloor;
     uint256 public rotateInterval;
     /// @dev Duration in seconds from FWA pool creation to the earliest `open()`.
     uint256 internal _openingDeadline;
@@ -150,6 +152,19 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     /// @dev True while the token is a held or listed ordinary item of this pool.
     mapping(address collection => mapping(uint256 tokenId => bool)) internal _registered;
 
+    /// @dev FWA acquisition fees of booked captures, per UTC day in slot `day % 8`. A slot holds
+    ///      the day in `_dailyFeesDay` and reads as zero for any other day.
+    uint128[8] internal _dailyFees;
+    uint32[8] internal _dailyFeesDay;
+    /// @dev Target daily fee volume over NAV, in bps. Sets the volume term of `navCap()`.
+    uint16 internal _turnoverBps;
+    /// @dev UTC day index of the Opening to Live transition.
+    uint32 internal _liveDay;
+    /// @dev Seconds after the Opening to Live transition during which deposits revert.
+    uint32 internal _founderWindowSeconds;
+    /// @dev Timestamp from which `deposit` is admitted while Live.
+    uint64 internal _depositsOpenAt;
+
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
         _;
@@ -165,6 +180,33 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------ internal
+
+    /// @dev Mean booked fee volume per day over the complete UTC days before today since
+    ///      `_liveDay`, at most `VOLUME_DAYS` of them. Today's partial day is excluded.
+    function _dailyVolume() internal view returns (uint256 sum) {
+        uint256 today = block.timestamp / 1 days;
+        uint256 live = _liveDay;
+        if (today <= live) return 0;
+        uint256 n = today - live;
+        if (n > VOLUME_DAYS) n = VOLUME_DAYS;
+        for (uint256 i = 1; i <= n; ++i) {
+            uint256 day = today - i;
+            if (_dailyFeesDay[day % 8] == day) sum += _dailyFees[day % 8];
+        }
+        sum /= n;
+    }
+
+    /// @dev Adds `fees` to today's slot, resetting the slot first when it holds an older day. Each
+    ///      amount is an ETH sum below 2^128.
+    function _recordFees(uint256 fees) internal {
+        uint256 day = block.timestamp / 1 days;
+        uint256 slot = day % 8;
+        if (_dailyFeesDay[slot] != day) {
+            _dailyFeesDay[slot] = uint32(day);
+            _dailyFees[slot] = 0;
+        }
+        _dailyFees[slot] += SafeCastLib.toUint128(fees);
+    }
 
     /// @dev Reverts `PoolExiting` from `Exiting` on.
     function _notExiting() internal view {
@@ -368,10 +410,14 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         feeSplit = s;
     }
 
-    function _setCurve(EntryCurve memory c) internal {
-        if (c.capBps > MAX_CURVE_CAP_BPS) revert CurveCapTooHigh();
-        if (c.referenceWei == 0) revert CurveReferenceZero();
-        curve = c;
+    function _setEntryFee(EntryFee memory f) internal {
+        if (f.floorBps > f.capBps || f.capBps > BPS || f.paybackDays == 0) revert EntryFeeOutOfRange();
+        entryFee = f;
+    }
+
+    function _setTurnover(uint16 bps) internal {
+        if (bps == 0 || bps > BPS) revert TurnoverOutOfRange();
+        _turnoverBps = bps;
     }
 
     function _setProbCap(uint256 bps) internal {

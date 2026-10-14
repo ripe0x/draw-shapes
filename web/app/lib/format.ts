@@ -22,6 +22,7 @@ export function utc(seconds: bigint | number): string {
 export function duration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds >= 2 * 86_400) return `${(seconds / 86_400).toLocaleString("en-US", { maximumFractionDigits: 1 })}d`;
   return `${(seconds / 3600).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`;
 }
 

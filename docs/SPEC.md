@@ -71,7 +71,7 @@ Invariants, enforced by the invariant suite:
 ## 5. Parameters
 
 Constructor: Shapes, Draw Packs, FWA factory, admin, `oldPool` (zero unless the pool succeeds another), mix table, fee
-split, GRAIL track parameters, `navCap`, entry curve, `rotateInterval`, `openingDeadline` (seconds, started by
+split, GRAIL track parameters, `navCapFloor`, `turnoverBps`, entry fee, `founderWindowSeconds`, `rotateInterval`, `openingDeadline` (seconds, started by
 `createFwaPool`), `minItems`, `grailProbCapBps`, `batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`,
 `reserveBps`, `tipWei` and the `PoolAdmin` and `PoolListing` addresses.
 
@@ -80,8 +80,10 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | Setter | Bound |
 | --- | --- |
 | `setFeeSplit(premiumBps, maintenanceBps, feedBps, minorShareBps)` | Sum of the first three at most 1,000. `minorShareBps` at most 10,000. |
-| `setEntryCurve(baseBps, slopeBps, capBps, referenceWei)` | `capBps` at most 2,500. `referenceWei` above zero. |
-| `setNavCap(wei)`, `setPaused(pulls, deposits)`, `setMinItems(n)` | Any wei amount. Flags. Any. |
+| `setEntryFee(floorBps, capBps, paybackDays)` | `floorBps` at most `capBps`. `capBps` at most 10,000. `paybackDays` at least 1. |
+| `setNavCapFloor(wei)`, `setPaused(pulls, deposits)`, `setMinItems(n)` | Any wei amount. Flags. Any. |
+| `setTurnover(bps)` | 1 to 10,000. |
+| `setFounderWindow(seconds)` | Any. Applies to the next `open()` only. |
 | `setMix(rows)` | Each row: array of rungs, weight share. Rows of two or more rungs are packs. A row that holds items keeps its rungs. The table may grow. A row with items or queued replacements cannot be dropped (`RowInUse`). |
 | `setGrail(track, targetWei, stepWei, listBps, decayWeiPerPull, floorWei)` | `listBps` 1 to 10,000. `floorWei` above zero and at most `targetWei * listBps / 10_000`. `stepWei` a multiple of the Shapes unit and at least two units. |
 | `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
@@ -89,9 +91,11 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setTip(tipWei)` | At most 0.01 ether. |
 | `setMaxBatch(n)`, `setConcurrency(n)`, `setRotateInterval(seconds)`, `setAdmin(address)` | At most FWA's live values (`n` above zero for `setMaxBatch`). At least FWA's `inventoryChangeCooldown`. Nonzero. |
 
-Launch values: premium 200, maintenance 100, feed 400, minor share per `launch-profile.json`; entry curve base 1,100,
-slope 2,000, cap 2,500, reference 55 ETH; opening deadline 24 h. The owner set these:
-- `minItems` 100: the board stays above FWA's 10 outstanding requests. `navCap` 100 ETH: bounds the opening.
+Launch values: premium 200, maintenance 100, feed 400, minor share per `launch-profile.json`; entry fee floor 1,000,
+cap 2,500, payback 20 days; `turnoverBps` 1,250; `navCapFloor` 69 ETH; `founderWindowSeconds` 2,592,000 (30 days);
+opening deadline 24 h. The owner set these:
+- `minItems` 100: the board stays above FWA's 10 outstanding requests. `navCapFloor` 69 ETH: bounds the opening and
+  every day until booked volume lifts `navCap()` above it.
 - Mix 0.01 Shape 38 percent, 0.02 pack 28, 0.03 pack 19, 0.05 Shape 10, 0.1 Shape 4, 0.5 Shape 1: the 0.1 and 0.5
   rows restore the large pieces of the launch profile at a small share.
 - `rotateInterval` 900 s, `batchMin` 20, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`).
@@ -122,11 +126,27 @@ Share pricing follows the books. `deposit`, `withdraw` and `redeemAndDeposit` fi
 up to 20 FWA acquisitions, require the booking walk to reach FWA's processing queue (`BooksBehind` otherwise), then
 harvest. FWA processes acquisitions permissionlessly, and their outcomes are public before they are booked.
 
-`deposit()` payable. Reverts when deposits are paused, when ordinary NAV is at or above `navCap`, when the pool is
-Exiting, when NAV is zero while shares exist (`NavZero`), and on a successor while its import is open. Contribution =
-`msg.value * curve(nav)`, where `curve(nav) = min(capBps, baseBps + slopeBps * nav / referenceWei)`. Contribution splits
-into the GRAIL buckets by `minorShareBps`. Shares minted = `(msg.value - contribution) * totalShares / nav`, or 1:1 when
-`totalShares == 0`, whatever NAV is: residual NAV while the share supply is zero goes to the next depositor.
+`deposit()` payable. Reverts when deposits are paused, when the pool is Live before `depositsOpenAt`
+(`DepositsClosed`), when ordinary NAV is at or above `navCap()` (`NavCapReached`), when the pool is Exiting, when NAV is
+zero while shares exist (`NavZero`), and on a successor while its import is open. Three rules decide admission and
+price, and all three read one volume measure.
+
+- Volume. Every acquisition that `_walk` books as a capture adds its FWA `paid` value to the fee total of the current
+  UTC day, in one of eight day slots (`day % 8`). Refunded, expired, written-off and unbooked requests add nothing.
+  `dailyVolume()` is the mean of those totals over the complete days before today since the pool went Live, at most
+  seven. Today's partial day is excluded, and zero complete days give zero.
+- Cap. `navCap() = max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`. Deposits are admitted while `nav() <
+  navCap()`. `turnoverBps` is the target daily volume over NAV. Design and sizing: `docs/VOLUME_CAP.md`.
+- Entry fee. The contribution is `msg.value * contributionBps / 10_000`, where `contributionBps = clamp(paybackDays *
+  dailyYieldBps, floorBps, capBps)` and `dailyYieldBps = premiumBps * dailyVolume() / nav()`, zero when NAV is zero.
+  The product `paybackDays * premiumBps * dailyVolume()` is divided by `nav()` once. The contribution splits into the
+  GRAIL buckets by `minorShareBps`. Shares minted = `(msg.value - contribution) * totalShares / nav`, or 1:1 when
+  `totalShares == 0`, whatever NAV is: residual NAV while the share supply is zero goes to the next depositor.
+- Founder window. `open()` sets `depositsOpenAt = block.timestamp + founderWindowSeconds` at the transition to Live.
+  Deposits made while Opening are admitted at once. Successor import is outside the cap and the window.
+
+`Lens.admission()` returns `navCap`, `navCapFloor`, `dailyVolume`, `headroom`, `depositsOpenAt`, `contributionBps` and
+whether a deposit would be admitted now.
 
 `withdraw(shares)`. Burns shares. Claim = `shares * nav / totalShares`. Pays `min(claim, cash)` now and enqueues the
 remainder. It reverts once an exit to a successor has started (holders use `migrateHolder`) and on a successor while its
@@ -315,7 +335,7 @@ first import until `finalizeImport`:
   next `rotate`. When the track already holds a pack, the arriving pack is redeemed and its proceeds join the bucket.
 - `importCash()` credits `cash`. `finalizeImport(fromShares)` mints `importedShares = importedNav * totalShares /
   preImportNav`, or `importedNav` when the share supply or `preImportNav` is zero, and stores `importedFromShares =
-  fromShares`. Imported NAV bypasses `navCap`.
+  fromShares`. Imported NAV bypasses `navCap()` and the founder window.
 
 `migrateHolder(addr)` by anyone mints `oldPool.sharesOf(addr) * importedShares / importedFromShares` once per address.
 Rounding leaves a few wei of `importedShares` unassigned, so NAV per share stays conservative. The next `rotate` lists

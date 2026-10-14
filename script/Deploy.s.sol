@@ -88,14 +88,15 @@ contract Deploy is Script {
             decayWeiPerPull: vm.envUint("GRAIL_MAJOR_DECAY_WEI_PER_PULL"),
             floorWei: vm.envUint("GRAIL_MAJOR_FLOOR_WEI")
         });
-        uint256 navCap = vm.envUint("NAV_CAP_WEI");
-        p.navCap = navCap == 0 ? type(uint256).max : navCap;
-        p.curve = IPoolTypes.EntryCurve({
-            baseBps: SafeCastLib.toUint32(vm.envUint("ENTRY_BASE_BPS")),
-            slopeBps: SafeCastLib.toUint32(vm.envUint("ENTRY_SLOPE_BPS")),
+        uint256 navCapFloor = vm.envUint("NAV_CAP_FLOOR_WEI");
+        p.navCapFloor = navCapFloor == 0 ? type(uint256).max : navCapFloor;
+        p.turnoverBps = SafeCastLib.toUint16(vm.envUint("TURNOVER_BPS"));
+        p.entryFee = IPoolTypes.EntryFee({
+            floorBps: SafeCastLib.toUint32(vm.envUint("ENTRY_FLOOR_BPS")),
             capBps: SafeCastLib.toUint32(vm.envUint("ENTRY_CAP_BPS")),
-            referenceWei: SafeCastLib.toUint128(vm.envUint("ENTRY_REFERENCE_WEI"))
+            paybackDays: SafeCastLib.toUint32(vm.envUint("ENTRY_PAYBACK_DAYS"))
         });
+        p.founderWindowSeconds = SafeCastLib.toUint32(vm.envUint("FOUNDER_WINDOW_SECONDS"));
         p.rotateInterval = vm.envUint("ROTATE_INTERVAL_SECONDS");
         p.openingDeadline = vm.envUint("OPENING_DEADLINE_SECONDS");
         p.minItems = vm.envUint("MIN_ITEMS");
@@ -142,10 +143,11 @@ contract Deploy is Script {
             if (p.feeSplit.premiumBps != 200 || p.feeSplit.maintenanceBps != 100 || p.feeSplit.feedBps != 400) {
                 revert GuardFailed("fee split is not 200/100/400");
             }
-            if (
-                p.curve.baseBps != 1_100 || p.curve.slopeBps != 2_000 || p.curve.capBps != 2_500
-                    || p.curve.referenceWei != 55 ether
-            ) revert GuardFailed("entry curve is not 1100/2000/2500 at 55 ether");
+            if (p.entryFee.floorBps != 1_000 || p.entryFee.capBps != 2_500 || p.entryFee.paybackDays != 20) {
+                revert GuardFailed("entry fee is not 1000/2500 bps with 20 payback days");
+            }
+            if (p.turnoverBps != 1_250) revert GuardFailed("turnover is not 1250");
+            if (p.founderWindowSeconds != 2_592_000) revert GuardFailed("founder window is not 2592000");
         } else if (block.chainid == SEPOLIA) {
             if (p.shapes != SEPOLIA_SHAPES) revert GuardFailed("SHAPES is not the Sepolia Shapes");
             if (p.fwaFactory != SEPOLIA_FWA_FACTORY) revert GuardFailed("FWA_FACTORY is not the Sepolia factory");
@@ -188,7 +190,11 @@ contract Deploy is Script {
         require(pool.oldPool() == p.oldPool, "oldPool");
         require(pool.lifecycle() == IPoolTypes.Lifecycle.Opening, "lifecycle");
         require(pool.nav() == 0, "nav");
-        require(pool.navCap() == p.navCap, "navCap");
+        require(pool.navCapFloor() == p.navCapFloor, "navCapFloor");
+        require(pool.navCap() == p.navCapFloor, "navCap");
+        require(pool.turnoverBps() == p.turnoverBps, "turnoverBps");
+        require(pool.founderWindowSeconds() == p.founderWindowSeconds, "founderWindowSeconds");
+        require(pool.depositsOpenAt() == 0, "depositsOpenAt");
         require(pool.rotateInterval() == p.rotateInterval, "rotateInterval");
         require(IPool(address(pool)).openingDeadline() == p.openingDeadline, "openingDeadline");
         require(pool.minItems() == p.minItems, "minItems");
@@ -207,11 +213,10 @@ contract Deploy is Script {
                 && minorShare == p.feeSplit.minorShareBps,
             "feeSplit"
         );
-        (uint32 base, uint32 slope, uint32 cap, uint128 refWei) = pool.curve();
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
         require(
-            base == p.curve.baseBps && slope == p.curve.slopeBps && cap == p.curve.capBps
-                && refWei == p.curve.referenceWei,
-            "curve"
+            floorBps == p.entryFee.floorBps && capBps == p.entryFee.capBps && paybackDays == p.entryFee.paybackDays,
+            "entryFee"
         );
 
         for (uint256 i; i < p.mix.length; ++i) {

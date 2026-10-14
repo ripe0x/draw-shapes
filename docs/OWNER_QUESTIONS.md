@@ -366,3 +366,12 @@ No entry is open.
    `liquidate()` was the only function that paid queued claims to an Exiting or Exported pool, because `rotate` requires
    Live. `payClaims()` pays from `cash` in FIFO order, at most 20 entries per call, and leaves items alone. Place:
    `Pool.payClaims`. SPEC 7 and 13.
+
+39. **Admission rules.** (decided, in SPEC) Owner decisions of 2026-10-14 for `deposit()`. Cap: `navCap()` is
+   `max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`, with `navCapFloor` 69 ETH and `turnoverBps` 1,250
+   (`docs/VOLUME_CAP.md`). Entry fee: floor 10 percent, cap 25 percent, payback 20 days of depositor yield; entries 5 and
+   14 record the values of 2026-10-12 and 2026-10-13. Founder window: 30 days (2,592,000 s) from the transition to
+   Live, during which `deposit()` reverts `DepositsClosed`. Place: `Pool._deposit`, `Pool.navCap`, `Pool.dailyVolume`, `PoolBooks._walk`,
+   `PoolAdmin.setEntryFee`, `setNavCapFloor`, `setTurnover`, `setFounderWindow`, `Lens.admission`,
+   `script/env/*.env` (`NAV_CAP_FLOOR_WEI`, `TURNOVER_BPS`, `ENTRY_FLOOR_BPS`, `ENTRY_CAP_BPS`, `ENTRY_PAYBACK_DAYS`,
+   `FOUNDER_WINDOW_SECONDS`). SPEC 5 and 7.

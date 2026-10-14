@@ -5,7 +5,7 @@ import {FixedPointMathLib as FP} from "solady/utils/FixedPointMathLib.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
 
 /// @title PricingLib
-/// @notice Pure math for the mix table, replacement row choice, entry curve, listing price, GRAIL
+/// @notice Pure math for the mix table, replacement row choice, entry fee, listing price, GRAIL
 ///         notional and share accounting.
 /// @dev Divisions round down unless the function name or its notice says otherwise. Products use
 ///      `FixedPointMathLib` full precision multiply-divide.
@@ -154,22 +154,28 @@ library PricingLib {
         }
     }
 
-    // ------------------------------------------------------------------ entry curve
+    // ------------------------------------------------------------------ entry fee
 
-    /// @notice Entry curve in bps: `min(capBps, baseBps + slopeBps * navWei / referenceWei)`.
-    function entryCurveBps(uint256 navWei, uint256 baseBps, uint256 slopeBps, uint256 capBps, uint256 referenceWei)
-        internal
-        pure
-        returns (uint256)
-    {
-        if (referenceWei == 0) revert ZeroDivisor();
-        uint256 curve = baseBps + FP.fullMulDiv(slopeBps, navWei, referenceWei);
-        return curve < capBps ? curve : capBps;
+    /// @notice Entry fee in bps: `paybackDays` days of depositor yield, clamped to
+    ///         `[floorBps, capBps]`. Daily yield in bps of NAV is `premiumBps * dailyVolumeWei /
+    ///         navWei`, and zero when `navWei` is zero. The product is divided once, after the
+    ///         multiplication by `paybackDays`.
+    function entryFeeBps(
+        uint256 premiumBps,
+        uint256 dailyVolumeWei,
+        uint256 navWei,
+        uint256 floorBps,
+        uint256 capBps,
+        uint256 paybackDays
+    ) internal pure returns (uint256) {
+        uint256 fee = navWei == 0 ? 0 : FP.fullMulDiv(premiumBps * paybackDays, dailyVolumeWei, navWei);
+        if (fee < floorBps) return floorBps;
+        return fee < capBps ? fee : capBps;
     }
 
-    /// @notice Part of a deposit routed to the GRAIL buckets at `curveBps`.
-    function entryContribution(uint256 valueWei, uint256 curveBps) internal pure returns (uint256) {
-        return FP.fullMulDiv(valueWei, curveBps, BPS);
+    /// @notice Part of a deposit routed to the GRAIL buckets at `feeBps`.
+    function entryContribution(uint256 valueWei, uint256 feeBps) internal pure returns (uint256) {
+        return FP.fullMulDiv(valueWei, feeBps, BPS);
     }
 
     // ------------------------------------------------------------------ listing price
