@@ -305,28 +305,29 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         assertEq(keeper.balance, s.refund);
     }
 
-    function test_rotateBlockedByAnUnsettledAcquisitionPaysNoRefund() public {
+    function test_rotateIsNotDueForAListedTrackWhileAnAcquisitionIsUnsettled() public {
         _openReady();
         vm.prank(admin);
         IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0.001 ether, 0.01 ether);
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
-        _acquire(player, 1);
         _warpToRotation();
-        uint256 lastBefore = pool.lastRotateAt();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
-
-        vm.recordLogs();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "unlisted track grows");
         vm.prank(keeper);
         pool.rotate();
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 lastBefore = pool.lastRotateAt();
+        uint256 maintenanceBefore = pool.maintenance();
+        uint256 keeperBefore = keeper.balance;
 
-        (bool changed, bool inventoryChanged, uint256 refund) = abi.decode(logs[logs.length - 1].data, (bool, bool, uint256));
-        assertFalse(changed);
-        assertFalse(inventoryChanged);
-        assertEq(refund, 0);
-        assertEq(pool.maintenance(), 1 ether);
-        assertEq(keeper.balance, 0);
+        warpPastCooldown(clone);
+        _acquire(player, 1);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "listed track waits while busy");
+        vm.prank(keeper);
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
+        assertEq(pool.maintenance(), maintenanceBefore, "no refund");
+        assertEq(keeper.balance, keeperBefore, "keeper unpaid");
         assertEq(pool.lastRotateAt(), lastBefore, "interval keeps running");
     }
 

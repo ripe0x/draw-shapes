@@ -783,13 +783,14 @@ contract Pool is PoolBooks {
         return lifted > g.notional ? lifted : 0;
     }
 
-    /// @dev True when track `t` is below `targetWei` and its bucket covers a step and its mint
-    ///      fees, the precondition of `_growGrail` other than `busy`.
+    /// @dev True when track `t` is below `targetWei`, its bucket covers a step and its mint fees,
+    ///      and the step can run now: a track with a listing needs FWA free of unsettled
+    ///      acquisitions to withdraw it; a track without a listing grows at any time.
     function _growReady(uint256 t) internal view returns (bool) {
         Grail storage g = _grail[t];
         if (g.backing >= g.targetWei) return false;
         (, uint256 cost) = _growCost(g.stepWei);
-        return g.bucket >= cost;
+        return g.bucket >= cost && (g.listingId == 0 || !_busy());
     }
 
     /// @dev Row backing plus the mint fee of every Shape the row mints.
@@ -880,7 +881,8 @@ contract Pool is PoolBooks {
     ///      of the Shapes in `defaultMakeup(stepWei)`, then lists the pack. The track's FWA listing
     ///      is withdrawn first. Returns 0 on success, 1 when the track is not ready and 2 when
     ///      `busy`. A listing made while acquisitions are unsettled is staged and cannot be
-    ///      repriced or withdrawn, so the busy check applies whether or not the pack is listed.
+    ///      repriced or withdrawn, so a listed track waits while FWA is busy; an unlisted track
+    ///      grows and lists at any time (a listing made while FWA is busy is staged).
     ///      When the new `backing` equals a native denomination, the pack is opened, its Shapes
     ///      (ids from `contentsOf` before `open`) are composed into the first one, and that Shape
     ///      is packed again.
@@ -890,7 +892,7 @@ contract Pool is PoolBooks {
         uint256 step = g.stepWei;
         (uint32[] memory counts, uint256 cost) = _growCost(step);
         if (g.bucket < cost) return 1;
-        if (busy) return 2;
+        if (busy && g.listingId != 0) return 2;
         _unlistGrail(g);
 
         g.bucket -= cost;

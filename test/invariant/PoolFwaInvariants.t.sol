@@ -64,6 +64,9 @@ contract PoolFwaHandler is ForkBase {
     uint256 public keptShapes;
     /// @dev Set when `rotate` succeeds while `rotateDue` is `None`.
     bool public rotateGateBroken;
+    /// @dev Set when `rotate` leaves inventory unchanged while `rotateDue` is GrailStep.
+    bool public rotateStalled;
+    bool internal _rotatedInventoryChanged;
 
     uint256 public captures;
     uint256 public grailCaptures;
@@ -159,7 +162,8 @@ contract PoolFwaHandler is ForkBase {
                 ++_grailListedInCall;
             } else if (topic == IPoolTypes.Rotated.selector) {
                 _grailListedInCall = 0;
-                (,, uint256 refund) = abi.decode(logs[i].data, (bool, bool, uint256));
+                uint256 refund;
+                (, _rotatedInventoryChanged, refund) = abi.decode(logs[i].data, (bool, bool, uint256));
                 ghostRefunds += refund;
                 _batchRefund += refund;
             } else if (topic == IPoolTypes.Settled.selector) {
@@ -346,13 +350,16 @@ contract PoolFwaHandler is ForkBase {
             } catch {}
             return;
         }
+        bool grailStepDue = pool.rotateDue() == IPoolTypes.RotateTrigger.GrailStep;
         vm.recordLogs();
         uint256 balanceBefore = address(this).balance;
         pool.rotate();
         uint256 received = address(this).balance - balanceBefore;
         uint256 itemsBefore = liquidatedItems;
         uint256 listedBefore = liquidatedListed;
+        _rotatedInventoryChanged = false;
         _ingest(vm.getRecordedLogs());
+        if (grailStepDue && !_rotatedInventoryChanged) rotateStalled = true;
         if (received != _batchRefund) i6Broken = true;
         _checkPriced();
         _checkLiquidationStop(liquidatedItems - itemsBefore, liquidatedListed - listedBefore);
@@ -1115,11 +1122,13 @@ contract PoolFwaInvariantsTest is ForkBase, PoolFixture {
         assertFalse(handler.booksBehindAfterPricing());
     }
 
-    /// @dev `rotate` reverts whenever `rotateDue` is `None`.
+    /// @dev `rotate` reverts whenever `rotateDue` is `None` and changes inventory whenever it is
+    ///      GrailStep.
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 40
     function invariant_rotateRevertsWhileNotDue() public view {
         assertFalse(handler.rotateGateBroken());
+        assertFalse(handler.rotateStalled());
     }
 
     /// forge-config: default.invariant.runs = 16

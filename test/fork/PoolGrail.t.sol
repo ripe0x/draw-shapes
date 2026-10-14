@@ -182,25 +182,56 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(pool.lastRotateAt(), block.timestamp, "growth is an inventory change");
     }
 
-    function test_rotateWaitsToGrowWhileAcquisitionsAreUnsettled() public {
+    function test_rotateGrowsAnUnlistedTrackWhileAcquisitionsAreUnsettled() public {
+        _openReady();
+        _acquire(player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+        assertEq(_listing(0), 0);
+        assertEq(_listing(1), 0);
+
+        _warpPastRotateGate(pool);
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
+        vm.prank(keeper);
+        pool.rotate();
+
+        assertEq(_backing(0), 0.05 ether, "a track without a listing grows while busy");
+        assertEq(_backing(1), 0.15 ether);
+        for (uint256 t; t < 2; ++t) {
+            assertTrue(_listing(t) != 0, "the new pack is listed");
+            (, IFWAClone.ListingStatus status) = _price(_listing(t));
+            assertTrue(
+                status == IFWAClone.ListingStatus.Staged || status == IFWAClone.ListingStatus.Active,
+                "listed while busy, so staged or active"
+            );
+        }
+        assertEq(pool.lastRotateAt(), block.timestamp);
+        _assertI1();
+    }
+
+    function test_rotateWaitsToGrowAListedTrackWhileAcquisitionsAreUnsettled() public {
         _openReady();
         _grow(0);
+        _grow(1);
         warpPastCooldown(clone);
         uint256[] memory ids = _acquire(player, 1);
         assertEq(clone.unsettledAcquisitionCount(), 1);
 
         _warpPastRotateGate(pool);
-        uint256 lastBefore = pool.lastRotateAt();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "listed tracks wait while busy");
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
         pool.rotate();
+        vm.expectRevert(IPoolTypes.FwaBusy.selector);
+        pool.growTrack(0);
         assertEq(_backing(0), 0.05 ether, "locked while an acquisition is unsettled");
-        assertEq(_backing(1), 0, "locked while an acquisition is unsettled");
-        assertEq(pool.lastRotateAt(), lastBefore, "a rotate that grew nothing leaves the spacing alone");
+        assertEq(_backing(1), 0.15 ether, "locked while an acquisition is unsettled");
 
         fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
+        _settleAsKeeper();
+        assertEq(clone.unsettledAcquisitionCount(), 0);
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "due once settled");
         _rotateAsKeeper();
         assertEq(_backing(0), 0.1 ether, "grows once the acquisition settled");
-        assertEq(_backing(1), 0.15 ether);
+        assertEq(_backing(1), 0.3 ether);
     }
 
     // ---------------------------------------------------------------- growth

@@ -218,6 +218,79 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         _assertDue(IPoolTypes.RotateTrigger.GrailStep);
     }
 
+    function _enableMajor() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setGrail(1, 1 ether, 0.15 ether, 9_000, 0.002 ether, 0.01 ether);
+    }
+
+    /// @dev `rotate` as the keeper. Returns `Rotated.inventoryChanged`.
+    function _rotateInventoryChanged() internal returns (bool inventoryChanged) {
+        vm.recordLogs();
+        vm.prank(keeper);
+        pool.rotate();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.Rotated.selector) {
+                (, inventoryChanged,) = abi.decode(logs[i].data, (bool, bool, uint256));
+                seen = true;
+            }
+        }
+        assertTrue(seen, "Rotated emitted");
+    }
+
+    /// @dev Keeper regression: whenever `rotateDue` returns GrailStep, `rotate` changes inventory.
+    function test_grailStepDueMeansRotateChangesInventoryWhileBusyAndUnlisted() public {
+        _openReady();
+        _enableMinor();
+        _acquire(player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.GrailStep);
+        assertTrue(_rotateInventoryChanged(), "GrailStep due, inventory changed");
+        assertGt(_listingOf(0), 0, "the unlisted track grew and listed while busy");
+    }
+
+    function test_grailStepIsNotDueWhileBusyForAListedTrack() public {
+        _openReady();
+        _enableMinor();
+        pool.growTrack(0);
+        warpPastCooldown(clone);
+        _acquire(player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+        assertGt(_bucketOf(0), 0.1 ether, "the bucket still covers a step");
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.None);
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
+    }
+
+    function test_grailStepDueForTheUnlistedTrackWhileTheListedTrackWaits() public {
+        _openReady();
+        _enableMinor();
+        pool.growTrack(0);
+        _enableMajor();
+        warpPastCooldown(clone);
+        _acquire(player, 1);
+        uint256 minorListing = _listingOf(0);
+        uint256 minorBacking = _backingOf(0);
+        _warpToSpacing();
+        _assertDue(IPoolTypes.RotateTrigger.GrailStep);
+        assertTrue(_rotateInventoryChanged(), "GrailStep due, inventory changed");
+        assertEq(_backingOf(0), minorBacking, "the listed track waits");
+        assertEq(_listingOf(0), minorListing, "the listing is untouched");
+        assertEq(_backingOf(1), 0.15 ether, "the unlisted track grew");
+        assertGt(_listingOf(1), 0);
+    }
+
+    function _listingOf(uint256 t) internal view returns (uint256 v) {
+        (,,,,,,,,,,, v) = IPool(address(pool)).grail(t);
+    }
+
+    function _backingOf(uint256 t) internal view returns (uint256 v) {
+        (,, v,,,,,,,,,) = IPool(address(pool)).grail(t);
+    }
+
     /// @dev Grows the minor track to a 0.04 ETH listing, empties both buckets so no GrailStep is due
     ///      and queues one replacement so that `settleDue` is `Thin`.
     function _decayedTrackWithDueSettle() internal {

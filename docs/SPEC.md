@@ -259,10 +259,10 @@ and list gas per item, at 6 gwei about equal, so the bucket is refilled from tha
 Two tracks, `minor` and `major`, one struct each: `bucket`, `packId`, `backing`, `notional`, `targetWei`, `stepWei`,
 `listBps`, `decayWeiPerPull`, `floorWei`, `pullsSinceList`, `receivable`, `listingId`.
 
-Growth (trigger GrailStep), per track: requires `bucket >= stepWei + mint fees`, `backing < targetWei` and a zero FWA
-`unsettledAcquisitionCount`. Withdraws the listing if listed; mints the largest native rungs that fit; `createPack` if
-`packId == 0`, else `addToPack`; `backing += step`; if the pack's contents sum to a native rung, opens, composes at
-Shapes, and repacks it as one Shape; `notional = backing * listBps / 10_000`; lists. It resets `pullsSinceList`.
+Growth (trigger GrailStep), per track: requires `bucket >= stepWei + mint fees` and `backing < targetWei`. A track with a
+listing grows only while FWA holds no unsettled acquisition; a track without a listing grows at any time. Withdraws
+the listing if listed; mints the largest native rungs that fit; `createPack` if `packId == 0`, else `addToPack`; `backing += step`;
+if the pack's contents sum to a native rung, opens, composes at Shapes, and repacks it as one Shape; `notional = backing * listBps / 10_000`; lists. It resets `pullsSinceList`.
 
 Decay, inside `settle` after the listing step and under the same listing condition (cooldown 0 or `listWhilePaused`), per track: `next = max(floorWei, notional - decayWeiPerPull *
 pullsSinceList)`. The reprice runs when the listing is Active, `next` is at least 1 percent (`notional / 100`) below
