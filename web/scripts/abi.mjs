@@ -26,15 +26,25 @@ emit("lens.ts", "lensAbi", abiOf("Lens"), "out/Lens.sol/Lens.json");
 emit(
   "external.ts",
   "fwaCloneAbi",
-  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion", "quoteAcquisitionPrice"]),
+  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion", "quoteAcquisitionPrice", "acquisitions", "listings", "processAcquisitions"]),
   "out/IFWAClone.sol/IFWAClone.json",
 );
 // The Shapes fragment is appended to the same file.
-const shapes = keep(abiOf("IShapes"), ["balanceOf", "ownerOf", "backingOf", "isApprovedForAll", "setApprovalForAll"]);
+// `tokenURI` is the ERC-721 metadata read; the Shapes and Shape Packs interfaces do not declare it.
+const tokenURI = {
+  type: "function",
+  name: "tokenURI",
+  inputs: [{ name: "tokenId", type: "uint256", internalType: "uint256" }],
+  outputs: [{ name: "", type: "string", internalType: "string" }],
+  stateMutability: "view",
+};
+const shapes = [...keep(abiOf("IShapes"), ["balanceOf", "ownerOf", "backingOf", "isApprovedForAll", "setApprovalForAll"]), tokenURI];
+const packs = [...keep(abiOf("IShapePacks"), ["valueOf"]), tokenURI];
 const file = join(outDir, "external.ts");
 writeFileSync(
   file,
   readFileSync(file, "utf8") +
-    `\n// From out/IShapes.sol/IShapes.json.\nexport const shapesAbi = [\n${shapes.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n`,
+    `\n// From out/IShapes.sol/IShapes.json.\nexport const shapesAbi = [\n${shapes.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n` +
+    `\n// From out/IShapePacks.sol/IShapePacks.json.\nexport const packsAbi = [\n${packs.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n`,
 );
 console.log(`external.ts: shapes ${shapes.length} entries`);

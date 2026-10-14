@@ -234,3 +234,72 @@ input {
     padding-bottom: 0;
   }
 }
+
+/* Your pulls */
+.pull-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.pull-card {
+  padding: 12px;
+  border: 1px solid var(--rule);
+  background: var(--row);
+}
+.pull-card .row {
+  margin: 0 0 10px;
+}
+.pull-card .kv {
+  margin: 10px 0 0;
+  grid-template-columns: minmax(80px, 110px) 1fr;
+}
+.pull-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--rule-inner);
+  background: var(--page);
+}
+.pull-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.chip.ok {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.chip.grail {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--page);
+}
+.up {
+  color: #1f7a3d;
+  font-weight: 700;
+}
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pull-card.reveal {
+    animation: reveal 600ms ease-out both;
+  }
+}

@@ -11,6 +11,7 @@ import { formatTxError } from "./lib/errors";
 import { eth, QUOTE_REASON } from "./lib/format";
 import type { Deployment } from "./lib/deployment";
 import { useDeployment } from "./Providers";
+import { Pulls } from "./components/Pulls";
 import { TxButton, TxStatus, useTx } from "./components/Tx";
 
 const COUNTS = [1, 2, 3, 4, 5];
@@ -216,6 +217,8 @@ export default function Landing() {
         )}
         <TxStatus tx={tx} />
       </section>
+
+      <Pulls />
 
       {balance > 0n && (
         <section>

@@ -13,13 +13,15 @@ export interface Deployment {
   /** Absent until the admin creates the FWA pool. */
   fwaPool?: Address;
   openingDeadlineAt?: number;
+  /** Block the pool was deployed in; event scans start here. */
+  blockNumber: number;
 }
 
 const CHAIN_IDS = [31337, 11155111, 1];
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 
 function missing(chainId: number): Deployment {
-  return { present: false, chainId, pool: ZERO, lens: ZERO, shapes: ZERO, drawPacks: ZERO };
+  return { present: false, chainId, pool: ZERO, lens: ZERO, shapes: ZERO, drawPacks: ZERO, blockNumber: 0 };
 }
 
 /**
@@ -50,6 +52,7 @@ export function getDeployment(): Deployment {
       shapes: r.shapes,
       drawPacks: r.drawPacks,
       fwaPool,
+      blockNumber: Number(r.blockNumber ?? 0),
       openingDeadlineAt: r.openingDeadlineAt ? Number(r.openingDeadlineAt) : undefined,
     };
   } catch {
