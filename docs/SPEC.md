@@ -192,8 +192,8 @@ price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps +
 ## 9. Board, replacement, rotation
 
 The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The board
-depth is `boardItems() = max(minItems, (nav - claims - nav * reserveBps / 10_000) / meanRowBacking)`, where
-`meanRowBacking` is the share-weighted backing of the mix rows. Capital above the reserve goes on the board. The target
+depth is `boardItems() = max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`, where `meanRowCost` is the
+share-weighted backing plus replacement mint fee of the mix rows. Capital above the reserve goes on the board. The target
 depth of a row is `ceil(boardItems() * shareBps / 10_000)`. A row's count is its listed, held and queued items. A row
 above its target is not replaced after a capture until it is below it again; nothing is delisted when NAV falls.
 
@@ -245,7 +245,7 @@ mintCounts)` with one held Shape per rung that has one and a mint count for the 
 and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
 held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
 replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
-the board count is below `boardItems()` by at least `batchMin`. On Deep, `settle` queues each row's missing items against
+the board count (listed, held and queued ordinary items) is below `boardItems()` by at least `batchMin`. On Deep, `settle` queues each row's missing items against
 its target depth before listing. A reprice rides on a due settle and never makes one due.
 
 `rotate()`. Anyone. Reverts `RotateTooSoon` until `rotateInterval` has passed since `lastRotateAt`, and `RotateNotDue`
