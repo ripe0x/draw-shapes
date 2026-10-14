@@ -7,7 +7,7 @@ import { evmNowTxUrl, formatTxError } from "../lib/errors";
 import { useDeployment } from "../Providers";
 
 /** One write flow: switches the wallet to the deployment chain, sends, waits for the receipt and
- *  refreshes every page query once it lands. */
+ *  refreshes the page queries once it lands. */
 export function useTx() {
   const dep = useDeployment();
   const { address, chainId } = useAccount();
@@ -20,7 +20,8 @@ export function useTx() {
   const receipt = useWaitForTransactionReceipt({ hash, chainId: dep.chainId });
 
   useEffect(() => {
-    if (receipt.isSuccess) void queryClient.invalidateQueries();
+    // Token images are fixed per token, so they stay cached.
+    if (receipt.isSuccess) void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "token-image" });
   }, [receipt.isSuccess, queryClient]);
 
   async function run(send: () => Promise<`0x${string}`>) {
@@ -37,30 +38,30 @@ export function useTx() {
     }
   }
 
+  function reset() {
+    setHash(undefined);
+    setError(undefined);
+  }
+
   const pending = busy || (!!hash && receipt.isLoading);
-  return { account: address, write: writeContractAsync, run, hash, error: error ?? receipt.error, pending, receipt };
+  return { account: address, write: writeContractAsync, run, reset, hash, error: error ?? receipt.error, pending, receipt };
 }
 
 export type Tx = ReturnType<typeof useTx>;
 
 /** Transaction link, confirmation state and decoded revert reason of one `useTx` flow. */
-export function TxStatus({ tx }: { tx: Tx }) {
+export function TxLine({ tx }: { tx: Tx }) {
   const dep = useDeployment();
   return (
     <>
       {tx.hash && (
-        <p className="note">
+        <p className="tx-line">
           <a href={evmNowTxUrl(tx.hash, dep.chainId)} target="_blank" rel="noreferrer">
             {tx.receipt.isSuccess ? "Confirmed" : tx.receipt.isError ? "Failed" : "Pending"}: view transaction
           </a>
         </p>
       )}
-      {tx.error ? (
-        <>
-          <p className="error">{formatTxError(tx.error)}</p>
-          {tx.error instanceof Error && <p className="note">Wallet message: {tx.error.message}</p>}
-        </>
-      ) : null}
+      {tx.error ? <p className="error-line">{formatTxError(tx.error)}</p> : null}
     </>
   );
 }
@@ -72,17 +73,19 @@ export function TxButton({
   onClick,
   disabled,
   outline,
+  className,
 }: {
   tx: Tx;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   outline?: boolean;
+  className?: string;
 }) {
   return (
     <button
       type="button"
-      className={outline ? "btn outline" : "btn"}
+      className={className ?? (outline ? "btn-outline" : "btn-filled")}
       disabled={!tx.account || tx.pending || disabled}
       onClick={onClick}
     >

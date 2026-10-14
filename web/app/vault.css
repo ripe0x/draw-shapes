@@ -1,0 +1,302 @@
+.vault-page {
+  max-width: 1080px;
+  margin-inline: auto;
+  padding: 0 24px 96px;
+  color: var(--body);
+}
+
+.vault-section {
+  border-top: 1px solid var(--rule);
+  padding-block: 28px;
+}
+.vault-section:first-of-type {
+  border-top: 0;
+}
+
+.vault-h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.vault-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--body-dim);
+  max-width: 62ch;
+}
+
+.vault-hero {
+  padding-block: 44px 28px;
+}
+.vault-headline {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  font-weight: 500;
+  color: var(--ink);
+}
+.vault-lede {
+  margin: 14px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--body-dim);
+  max-width: 58ch;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1px;
+  margin-top: 28px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+.stat {
+  background: var(--page);
+  padding: 14px 16px;
+}
+.stat-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stat-value {
+  margin-top: 6px;
+  font-size: 22px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.stat-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule-inner);
+  font-size: 13px;
+}
+.kv:last-child {
+  border-bottom: 0;
+}
+.kv-key {
+  color: var(--muted);
+}
+.kv-value {
+  color: var(--ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.kv-value.is-strong {
+  font-size: 15px;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 28px;
+}
+
+.card {
+  border: 1px solid var(--rule);
+  padding: 18px;
+}
+.card + .card {
+  margin-top: 16px;
+}
+
+.pull-card-panel {
+  margin-top: 8px;
+}
+
+.pull-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 8px;
+}
+.pull-status-headline {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.pull-status-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.pull-status-footer {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--faint);
+}
+.pull-price {
+  margin-top: 10px;
+}
+.pull-price.is-dim {
+  opacity: 0.55;
+}
+
+.pull-cta {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.flag {
+  margin-top: 12px;
+  border-left: 2px solid var(--warn);
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--body-dim);
+  background: var(--row);
+}
+.flag.is-bad {
+  border-left-color: var(--bad);
+}
+
+.odds-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.odds-table th,
+.odds-table td {
+  text-align: right;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rule-inner);
+  white-space: nowrap;
+}
+.odds-table th:first-child,
+.odds-table td:first-child {
+  text-align: left;
+}
+.odds-table th {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  align-items: center;
+}
+.field input[type="text"] {
+  flex: 1 1 160px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--page);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+}
+.field label {
+  font-size: 13px;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.item {
+  border: 1px solid var(--rule);
+  padding: 12px 14px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.error-line {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+.tx-line {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.disclosures {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--body-dim);
+  max-width: 68ch;
+}
+.disclosures li {
+  padding: 6px 0 6px 14px;
+  border-left: 1px solid var(--rule);
+}
+
+@media (max-width: 560px) {
+  .vault-page {
+    padding: 0 16px 72px;
+  }
+  .vault-headline {
+    font-size: 30px;
+  }
+  .vault-hero {
+    padding-block: 28px 20px;
+  }
+  .stat-value {
+    font-size: 18px;
+  }
+}
+
+.grail-progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+}
+
+.grail-card .grail-stats {
+  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grail-card .grail-progress {
+  margin: 12px 0 8px;
+}
+.grail-art {
+  width: min(160px, 50%);
+  margin-top: 12px;
+}
+.stat-value.is-up {
+  color: var(--good);
+}
+.pull-batch + .pull-batch {
+  margin-top: 28px;
+}
+.pull-batch > .vault-note {
+  margin-bottom: 12px;
+}
+.row-actions {
+  margin-top: 16px;
+}
