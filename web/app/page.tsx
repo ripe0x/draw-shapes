@@ -65,6 +65,12 @@ const GAS_FALLBACK = 5_000_000n;
 
 /** The wallet reports a failed estimate as "Sending the transaction failed". When the RPC estimate
  *  fails, an explicit gas limit lets the transaction land so its revert reason is readable. */
+/** EIP-1559 caps equal to the quoted gas price, so tx.gasprice never exceeds the quote. */
+function feeCaps(gasPrice: bigint) {
+  const priority = gasPrice < 1_000_000_000n ? gasPrice : 1_000_000_000n;
+  return { maxFeePerGas: gasPrice, maxPriorityFeePerGas: priority } as const;
+}
+
 async function gasIfEstimateFails(estimate: () => Promise<unknown>): Promise<{ gas?: bigint }> {
   try {
     await estimate();
@@ -154,7 +160,14 @@ export default function Landing() {
         args: [address!, BigInt(count), f.maxFee, 0n, f.slippage, f.version, f.deadline],
         value: f.value,
       } as const;
-      return tx.write({ ...req, chainId, ...(await gasIfEstimateFails(() => client!.estimateContractGas({ ...req, account: address! }))) });
+      // The VRF fee scales with the transaction's gas price, so the quoted price caps the fee the
+      // wallet may use; the sent value then always covers it and FWA refunds any excess.
+      return tx.write({
+        ...req,
+        chainId,
+        ...feeCaps(f.q.gasPrice),
+        ...(await gasIfEstimateFails(() => client!.estimateContractGas({ ...req, account: address!, ...feeCaps(f.q.gasPrice) }))),
+      });
     });
   }
 
@@ -168,7 +181,12 @@ export default function Landing() {
         args: [usable.map((s) => s.id), BigInt(count), f.maxFee, f.deadline],
         value: f.value > covered ? f.value - covered : 0n,
       } as const;
-      return tx.write({ ...req, chainId, ...(await gasIfEstimateFails(() => client!.estimateContractGas({ ...req, account: address! }))) });
+      return tx.write({
+        ...req,
+        chainId,
+        ...feeCaps(f.q.gasPrice),
+        ...(await gasIfEstimateFails(() => client!.estimateContractGas({ ...req, account: address!, ...feeCaps(f.q.gasPrice) }))),
+      });
     });
   }
 
