@@ -4,7 +4,7 @@
 #   keeper  exec script/keeper.sh against the local record with the anvil keeper wallet (LOCAL_VRF=1 also runs fulfill each pass)
 #   fulfill deliver a random word for every Pending FWA acquisition as the VRF coordinator, then processAcquisitions(20)
 #   stop    kill anvil
-# Env: FORK_RPC (default publicnode), LOCAL_OPENING_ETH (default 50), LOCAL_WALLET_ETH (default 1000),
+# Env: FORK_RPC (default publicnode), LOCAL_OPENING_ETH (default 55), LOCAL_WALLET_ETH (default 1000),
 # LOCAL_EXTRA_WALLETS (addresses to fund, space separated), ATTACH=1 (use the anvil already on the port),
 # ONCE=1 and INTERVAL pass through to the keeper.
 set -euo pipefail
@@ -78,7 +78,7 @@ start() {
   done
 
   # Deposit the opening cohort, then warp past the opening deadline and open.
-  send --from "$ADMIN" "$POOL" 'deposit()' --value "${LOCAL_OPENING_ETH:-50}ether"
+  send --from "$ADMIN" "$POOL" 'deposit()' --value "${LOCAL_OPENING_ETH:-55}ether"
   DEADLINE=$(call "$POOL" 'openingDeadlineAt()(uint256)' | awk '{print $1}')
   NOW=$(cast block --rpc-url "$RPC_URL" latest --field timestamp)
   if (( DEADLINE >= NOW )); then
