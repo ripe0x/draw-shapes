@@ -39,10 +39,10 @@ export function PackProgress({ steps, active, label }: { steps: readonly string[
 
 const REEL_FRAMES = 8;
 
-/** Art of up to eight listed items, rotated by `seed` so the cards of a batch differ. */
+/** Art of up to eight listed Shapes, rotated by `seed` so the cards of a batch differ. */
 function useReelFrames(seed: number): string[] {
   const listed = useListedItems().data ?? [];
-  const images = useTokenImages(listed.slice(0, REEL_FRAMES));
+  const images = useTokenImages(listed.filter((i) => !i.pack).slice(0, REEL_FRAMES));
   if (images.length < 2) return [];
   return Array.from({ length: REEL_FRAMES }, (_, j) => images[(seed + j * 3) % images.length]);
 }

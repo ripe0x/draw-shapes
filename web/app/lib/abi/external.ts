@@ -23,6 +23,7 @@ export const shapesAbi = [
 
 // From out/IShapePacks.sol/IShapePacks.json.
 export const packsAbi = [
+  {"type":"function","name":"contentsOf","inputs":[{"name":"packId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"shapeIds","type":"uint256[]","internalType":"uint256[]"}],"stateMutability":"view"},
   {"type":"function","name":"valueOf","inputs":[{"name":"tokenId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},
   {"type":"function","name":"tokenURI","inputs":[{"name":"tokenId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"string","internalType":"string"}],"stateMutability":"view"},
 ] as const;

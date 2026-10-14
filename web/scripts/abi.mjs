@@ -39,7 +39,7 @@ const tokenURI = {
   stateMutability: "view",
 };
 const shapes = [...keep(abiOf("IShapes"), ["balanceOf", "ownerOf", "backingOf", "isApprovedForAll", "setApprovalForAll"]), tokenURI];
-const packs = [...keep(abiOf("IShapePacks"), ["valueOf"]), tokenURI];
+const packs = [...keep(abiOf("IShapePacks"), ["valueOf", "contentsOf"]), tokenURI];
 const file = join(outDir, "external.ts");
 writeFileSync(
   file,

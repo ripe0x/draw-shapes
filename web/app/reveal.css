@@ -228,6 +228,27 @@
 }
 .pack-flip-face:has(.shape-pack-view.has-image) { background: transparent; }
 .pack-flip-face .shape-pack-view { height: 100%; }
+.pack-flip-face:has(.pack-stack) { background: transparent; }
+/* Draw Pack: the component Shapes stacked in a 500 x 700 frame, each card offset by TokenArt. */
+.token-art.is-pack {
+  aspect-ratio: 250 / 350;
+  flex: 0 0 auto;
+}
+.pack-stack {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 500 / 700;
+}
+.pack-stack-card {
+  position: absolute;
+  overflow: hidden;
+  background: var(--art);
+  border-radius: var(--card-radius);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.pack-stack-card img {
+  display: block;
+}
 .shape-pack-stack {
   position: relative;
   width: 58%;

@@ -60,6 +60,29 @@ export function useTokenImages(tokens: readonly Token[]): string[] {
   return results.flatMap((r) => (r.data ? [r.data] : []));
 }
 
+/** A Draw Pack's component Shapes, ascending by backing. Reads `contentsOf` and each Shape's
+ *  `backingOf`; refreshed each minute because a GRAIL pack grows. */
+export function usePackContents(packId: bigint | undefined) {
+  const dep = useDeployment();
+  const client = usePublicClient({ chainId: dep.chainId });
+  return useQuery({
+    queryKey: ["pack-contents", dep.chainId, dep.drawPacks, packId?.toString()],
+    enabled: !!client && packId !== undefined,
+    staleTime: 60_000,
+    queryFn: async (): Promise<bigint[]> => {
+      const ids = await client!.readContract({ address: dep.drawPacks, abi: packsAbi, functionName: "contentsOf", args: [packId!] });
+      const backing = await client!.multicall({
+        allowFailure: false,
+        contracts: ids.map((id) => ({ address: dep.shapes, abi: shapesAbi, functionName: "backingOf", args: [id] }) as const),
+      });
+      return ids
+        .map((id, i) => ({ id, wei: backing[i] }))
+        .sort((a, b) => (a.wei === b.wei ? (a.id < b.id ? -1 : 1) : a.wei < b.wei ? -1 : 1))
+        .map((c) => c.id);
+    },
+  });
+}
+
 export interface ListedItem extends Token {
   listingId: bigint;
   pack: boolean;
