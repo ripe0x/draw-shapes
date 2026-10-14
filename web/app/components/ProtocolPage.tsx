@@ -191,15 +191,16 @@ export function ProtocolPage() {
       <Section
         n="03"
         title="GRAIL"
-        lead="Two prize packs, Minor and Major, funded from their own buckets."
+        lead="One fund builds 1 ETH pieces on the board and merges them up to the target."
       >
         <div className="protocol-data-grid">
           <GrailBoard detail />
         </div>
         <p className="vault-note">
-          Each track grows by its step while its bucket covers the step and the mint fees, up to its target. The list price
-          drops by the decay amount per pull down to the floor. When the listed GRAIL weight exceeds the probability cap
-          {grailCapBps === undefined ? "" : ` of ${pct(grailCapBps)}`}, settle lifts the price to the smallest value that restores the cap.
+          Rotate mints a 1 ETH piece while the fund covers it and merges listed pieces by fixed recipes, five ones to a 5, two
+          fives to a 10, two tens and a five to the 25, two 25s to a 50, two 50s to a 100. Each listed item&apos;s price drops by the
+          decay amount per pull down to its floor, and the decay pauses while the listed GRAIL weight would pass the probability cap
+          {grailCapBps === undefined ? "" : ` of ${pct(grailCapBps)}`}.
         </p>
       </Section>
 
