@@ -11,6 +11,9 @@ ONCE=1 script/local.sh keeper   # one keeper pass; drop ONCE=1 to loop every INT
 script/local.sh stop
 ```
 
+Set `LOCAL_EXTRA_WALLETS="0xYourWallet"` before `start` so your own wallet is funded on the fork; a real address
+carries only its mainnet balance otherwise, and the wallet refuses a pull it cannot pay for.
+
 `start` forks mainnet on port 8545 (`FORK_RPC` overrides the upstream), deploys through
 `script/deploy.sh anvil`, sets the FWA `inventoryChangeCooldown` to 0, deposits `LOCAL_OPENING_ETH`
 (default 50) from the admin, warps past `openingDeadlineAt` and calls `open()` until the pool is

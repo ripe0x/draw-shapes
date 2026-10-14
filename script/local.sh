@@ -5,6 +5,7 @@
 #   fulfill deliver a random word for every Pending FWA acquisition as the VRF coordinator, then processAcquisitions(20)
 #   stop    kill anvil
 # Env: FORK_RPC (default publicnode), LOCAL_OPENING_ETH (default 50), LOCAL_WALLET_ETH (default 1000),
+# LOCAL_EXTRA_WALLETS (addresses to fund, space separated),
 # ONCE=1 and INTERVAL pass through to the keeper.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -64,7 +65,8 @@ start() {
   cast rpc --rpc-url "$RPC_URL" anvil_stopImpersonatingAccount "$OWNER" >/dev/null
 
   WALLET_WEI=$(cast to-wei "${LOCAL_WALLET_ETH:-1000}")
-  for w in "$KEEPER" "${WALLETS[@]}"; do
+  # LOCAL_EXTRA_WALLETS: space separated addresses to fund too, for the owner's own wallet.
+  for w in "$KEEPER" "${WALLETS[@]}" ${LOCAL_EXTRA_WALLETS:-}; do
     cast rpc --rpc-url "$RPC_URL" anvil_setBalance "$w" "$(cast to-hex "$WALLET_WEI")" >/dev/null
   done
 
