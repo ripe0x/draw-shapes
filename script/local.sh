@@ -5,7 +5,7 @@
 #   fulfill deliver a random word for every Pending FWA acquisition as the VRF coordinator, then processAcquisitions(20)
 #   stop    kill anvil
 # Env: FORK_RPC (default publicnode), LOCAL_OPENING_ETH (default 50), LOCAL_WALLET_ETH (default 1000),
-# LOCAL_EXTRA_WALLETS (addresses to fund, space separated),
+# LOCAL_EXTRA_WALLETS (addresses to fund, space separated), ATTACH=1 (use the anvil already on the port),
 # ONCE=1 and INTERVAL pass through to the keeper.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,11 +47,18 @@ fulfill() {
 }
 
 start() {
-  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "anvil already running (pid $(cat "$PIDFILE")); run stop first"; exit 1; fi
-  nohup anvil --fork-url "${FORK_RPC:-https://ethereum-rpc.publicnode.com}" --port "$PORT" --chain-id 31337 >".anvil-$PORT.log" 2>&1 &
-  echo $! >"$PIDFILE"
-  for _ in $(seq 60); do cast chain-id --rpc-url "$RPC_URL" >/dev/null 2>&1 && break; sleep 1; done
-  cast chain-id --rpc-url "$RPC_URL" >/dev/null || { echo "anvil did not start, see .anvil-$PORT.log"; exit 1; }
+  # ATTACH=1 deploys onto an anvil that is already listening on the port (chain id 31337, a mainnet fork)
+  # instead of starting one; stop then leaves it alone.
+  if [[ "${ATTACH:-0}" == "1" ]]; then
+    [[ "$(cast chain-id --rpc-url "$RPC_URL" 2>/dev/null)" == "31337" ]] || { echo "no anvil with chain id 31337 on $RPC_URL"; exit 1; }
+    rm -f "$PIDFILE"
+  else
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "anvil already running (pid $(cat "$PIDFILE")); run stop first"; exit 1; fi
+    nohup anvil --fork-url "${FORK_RPC:-https://ethereum-rpc.publicnode.com}" --port "$PORT" --chain-id 31337 >".anvil-$PORT.log" 2>&1 &
+    echo $! >"$PIDFILE"
+    for _ in $(seq 60); do cast chain-id --rpc-url "$RPC_URL" >/dev/null 2>&1 && break; sleep 1; done
+    cast chain-id --rpc-url "$RPC_URL" >/dev/null || { echo "anvil did not start, see .anvil-$PORT.log"; exit 1; }
+  fi
 
   script/deploy.sh anvil
   POOL=$(jq -r .pool "$RECORD"); LENS=$(jq -r .lens "$RECORD"); FWA_POOL=$(jq -r .fwaPool "$RECORD")
