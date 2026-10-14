@@ -99,7 +99,8 @@ opening deadline 24 h. The owner set these:
   every day until booked volume lifts `navCap()` above it.
 - Mix 0.01 Shape 38 percent, 0.02 pack 28, 0.03 pack 19, 0.05 Shape 10, 0.1 Shape 4, 0.5 Shape 1: the 0.1 and 0.5
   rows restore the large pieces of the launch profile at a small share.
-- `rotateInterval` 900 s, `batchMin` 20, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`).
+- `rotateInterval` 900 s, `batchMin` 20, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`,
+the rest is listed on the board).
 - `tipWei` 0.0002 ether: the fixed part of every `settle` and `rotate` refund.
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
@@ -190,8 +191,11 @@ price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps +
 
 ## 9. Board, replacement, rotation
 
-The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The target
-depth of a row is `ceil(minItems * shareBps / 10_000)`. A row's count is its listed, held and queued items.
+The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The board
+depth is `boardItems() = max(minItems, (nav - claims - nav * reserveBps / 10_000) / meanRowBacking)`, where
+`meanRowBacking` is the share-weighted backing of the mix rows. Capital above the reserve goes on the board. The target
+depth of a row is `ceil(boardItems() * shareBps / 10_000)`. A row's count is its listed, held and queued items. A row
+above its target is not replaced after a capture until it is below it again; nothing is delisted when NAV falls.
 
 Settlement. FWA pays the pool owner per acquisition `paid - (paid - base) / 2`, where `paid` is the escrowed fee and
 `base = min(fee, weightedBackingTotal / totalWeight)` at request time (the harmonic mean of list prices). Proceeds are
@@ -240,8 +244,9 @@ mintCounts)` with one held Shape per rung that has one and a mint count for the 
 `MAX_LIST_PER_SETTLE` (25) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
 and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
 held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
-replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`. A
-reprice rides on a due settle and never makes one due.
+replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
+the board count is below `boardItems()` by at least `batchMin`. On Deep, `settle` queues each row's missing items against
+its target depth before listing. A reprice rides on a due settle and never makes one due.
 
 `rotate()`. Anyone. Reverts `RotateTooSoon` until `rotateInterval` has passed since `lastRotateAt`, and `RotateNotDue`
 unless a reason holds. `lastRotateAt` moves when the call changed inventory. Reasons, in evaluation order:
