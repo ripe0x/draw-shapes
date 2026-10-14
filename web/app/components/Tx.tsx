@@ -55,7 +55,12 @@ export function TxStatus({ tx }: { tx: Tx }) {
           </a>
         </p>
       )}
-      {tx.error ? <p className="error">{formatTxError(tx.error)}</p> : null}
+      {tx.error ? (
+        <>
+          <p className="error">{formatTxError(tx.error)}</p>
+          {tx.error instanceof Error && <p className="note">Wallet message: {tx.error.message}</p>}
+        </>
+      ) : null}
     </>
   );
 }

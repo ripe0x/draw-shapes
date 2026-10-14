@@ -2,6 +2,8 @@
 export const fwaCloneAbi = [
   {"type":"function","name":"inventoryVersion","inputs":[],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},
   {"type":"function","name":"selectionSlippageBps","inputs":[],"outputs":[{"name":"","type":"uint16","internalType":"uint16"}],"stateMutability":"view"},
+  {"type":"function","name":"quoteAcquisitionPrice","inputs":[{"name":"count","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"fee","type":"uint256","internalType":"uint256"},{"name":"vrf","type":"uint256","internalType":"uint256"},{"name":"total","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},
+  {"type":"function","name":"quoteAcquisitionPrice","inputs":[],"outputs":[{"name":"fee","type":"uint256","internalType":"uint256"},{"name":"vrf","type":"uint256","internalType":"uint256"},{"name":"total","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},
 ] as const;
 
 // From out/IShapes.sol/IShapes.json.

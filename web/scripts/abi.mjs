@@ -26,7 +26,7 @@ emit("lens.ts", "lensAbi", abiOf("Lens"), "out/Lens.sol/Lens.json");
 emit(
   "external.ts",
   "fwaCloneAbi",
-  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion"]),
+  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion", "quoteAcquisitionPrice"]),
   "out/IFWAClone.sol/IFWAClone.json",
 );
 // The Shapes fragment is appended to the same file.

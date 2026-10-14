@@ -24,6 +24,8 @@ NEXT_PUBLIC_DEPLOYMENT=../deployments/31337-8545.json pnpm dev
 `script/local.sh start` does the same and also opens the pool. For another port set `NEXT_PUBLIC_ANVIL_RPC`
 (default `http://127.0.0.1:8545`) and point `NEXT_PUBLIC_DEPLOYMENT` at that port's record.
 
+After any anvil restart, reset the wallet's account nonce because the chain state reset (MetaMask: Settings, Advanced, Clear activity tab data; Rabby: clear pending).
+
 ## Run against Sepolia
 
 ```
