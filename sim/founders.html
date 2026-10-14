@@ -31,6 +31,13 @@ h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; text-wrap: balance; }
 .legend span { display: flex; align-items: center; gap: 5px; }
 .sw { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
 .chart { position: relative; width: 100%; height: 320px; }
+.sec { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 22px 0 10px; font-weight: 500; }
+.board { display: grid; grid-template-columns: repeat(20, 1fr); gap: 3px; margin: 0 0 12px; }
+.board i { display: block; aspect-ratio: 1; border-radius: 2px; background: var(--accent); min-width: 0; }
+.board i.g { background: var(--window); }
+.rows { display: grid; grid-template-columns: auto auto auto auto auto; gap: 4px 14px; font-size: 13px; font-family: var(--font-data); font-variant-numeric: tabular-nums; overflow-x: auto; }
+.rows span { white-space: nowrap; min-width: 0; }
+.rows .h { color: var(--muted); font-family: var(--font-body); }
 .notes { color: var(--muted); font-size: 13px; margin-top: 14px; max-width: 70ch; }
 .notes p { margin: 4px 0; }
 </style>
@@ -68,6 +75,20 @@ h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; text-wrap: balance; }
         <span><i class="sw" style="background:var(--window)"></i>Window ends</span>
       </div>
       <div class="chart"><canvas id="c" role="img" aria-label="Founder return percent over 180 days for the selected, half and double deposit totals, with break-even at zero and the founder window end marked"></canvas></div>
+      <h2 class="sec">Initial board at these settings</h2>
+      <div class="tiles">
+        <div class="tile"><small>Board backing, 100 items</small><strong id="bBack"></strong></div>
+        <div class="tile"><small>Cash after the board</small><strong id="bCash"></strong></div>
+        <div class="tile"><small>Ticket price</small><strong id="bTicket"></strong></div>
+        <div class="tile"><small>Pulls per day at this volume</small><strong id="bPulls"></strong></div>
+        <div class="tile"><small>GRAIL odds per pull</small><strong id="bOdds"></strong></div>
+        <div class="tile"><small>Expected days to a GRAIL pull</small><strong id="bDays"></strong></div>
+      </div>
+      <div class="board" id="board" aria-label="One square per listed item, sized by backing"></div>
+      <div class="rows" id="rows"></div>
+      <div class="notes">
+        <p>Mix is the launch table: 38 single Shapes at 0.01, 28 packs of two, 19 packs of three, 10 at 0.05, 4 at 0.1, 1 at 0.5. Items list at backing plus the 700 bps split. Major GRAIL takes 80 percent of the fee in 0.5 ETH steps and lists at 75 percent of backing, minor takes 20 percent in 0.1 ETH steps up to 1 ETH and lists at face. Ticket is the harmonic mean of list prices times 1.05. Odds per item are 1 over its list price, which is why the GRAIL is rare.</p>
+      </div>
       <div class="notes">
         <p>Fee times deposits is the GRAIL seed. NAV after the fee funds the board. Yield per day is premium times tickets per day over NAV. After the window the pool is assumed to fill to the volume cap on day one, so yield drops to the cap rate.</p>
         <p>The window premium is set by the admin with <code>setFeeSplit</code> at open and reverted when the window closes. The feed takes the difference, so list prices and tickets are unchanged.</p>
@@ -127,6 +148,39 @@ function upd() {
   const d = ch.data.datasets; d[0].data = s.pts; d[1].data = h.pts; d[2].data = x.pts;
   d[3].data = [{ x: W, y: lo }, { x: W, y: hi }]; d[4].data = s.be === null ? [] : [{ x: s.be, y: lo }, { x: s.be, y: 0 }];
   ch.$be = s; ch.options.scales.y.min = Math.floor(lo / 5) * 5; ch.options.scales.y.max = Math.ceil(hi / 5) * 5; ch.update();
+  board(D, f, premIn, V);
+}
+const MIX = [
+  { name: 'Shape 0.01', backing: 0.01, count: 38 }, { name: 'Pack 2 x 0.01', backing: 0.02, count: 28 },
+  { name: 'Pack 3 x 0.01', backing: 0.03, count: 19 }, { name: 'Shape 0.05', backing: 0.05, count: 10 },
+  { name: 'Shape 0.1', backing: 0.1, count: 4 }, { name: 'Shape 0.5', backing: 0.5, count: 1 } ];
+const SPLIT_BPS = 700, MINOR_SHARE = 0.2, MAJOR_STEP = 0.5, MAJOR_LIST = 0.75, MINOR_STEP = 0.1, MINOR_TARGET = 1, FWA_EDGE = 1.05;
+const fmt = (v, d) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+function board(D, f, premIn, V) {
+  const fee = D * f, nav0 = D - fee;
+  const major = Math.floor(fee * (1 - MINOR_SHARE) / MAJOR_STEP) * MAJOR_STEP;
+  const minor = Math.min(MINOR_TARGET, Math.floor(fee * MINOR_SHARE / MINOR_STEP) * MINOR_STEP);
+  const items = MIX.map(r => ({ ...r, list: r.backing * (1 + SPLIT_BPS / 1e4) }));
+  const grails = [];
+  if (major > 0) grails.push({ name: 'Major GRAIL', backing: major, list: major * MAJOR_LIST, count: 1 });
+  if (minor > 0) grails.push({ name: 'Minor GRAIL', backing: minor, list: minor, count: 1 });
+  const all = [...items, ...grails];
+  const n = all.reduce((a, r) => a + r.count, 0), inv = all.reduce((a, r) => a + r.count / r.list, 0);
+  const ticket = n / inv * FWA_EDGE, pulls = V / ticket;
+  const boardBacking = items.reduce((a, r) => a + r.backing * r.count, 0);
+  const gOdds = grails.reduce((a, r) => a + (1 / r.list) / inv, 0);
+  $('bBack').textContent = fmt(boardBacking, 2) + ' ETH';
+  $('bCash').textContent = fmt(nav0 - boardBacking, 1) + ' ETH';
+  $('bTicket').textContent = fmt(ticket, 4) + ' ETH';
+  $('bPulls').textContent = fmt(pulls, 0);
+  $('bOdds').textContent = gOdds > 0 ? '1 in ' + fmt(1 / gOdds, 0) : 'no GRAIL';
+  $('bDays').textContent = gOdds > 0 ? fmt(1 / (gOdds * pulls), 0) + ' days' : 'no GRAIL';
+  const sq = [];
+  items.forEach(r => { for (let i = 0; i < r.count; i++) sq.push('<i style="opacity:' + (0.25 + 0.75 * Math.min(1, Math.log10(r.backing / 0.01 + 1) / 1.8)).toFixed(2) + '" title="' + r.name + '"></i>'); });
+  grails.forEach(r => sq.push('<i class="g" title="' + r.name + ' ' + fmt(r.backing, 1) + ' ETH"></i>'));
+  $('board').innerHTML = sq.join('');
+  const head = ['Row', 'Count', 'Backing', 'List price', 'Odds per pull'].map(h => '<span class="h">' + h + '</span>').join('');
+  $('rows').innerHTML = head + all.map(r => '<span>' + r.name + '</span><span>' + r.count + '</span><span>' + fmt(r.backing, 2) + '</span><span>' + fmt(r.list, 3) + '</span><span>' + fmt(100 * (r.count / r.list) / inv, 2) + '%</span>').join('');
 }
 build();
 ['D', 'F', 'W', 'Pw', 'P', 'V', 'T'].forEach(id => $(id).addEventListener('input', upd));
