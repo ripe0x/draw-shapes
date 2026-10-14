@@ -107,6 +107,17 @@ contract PoolAcquireForkTest is ForkBase, PoolFixture {
         assertFalse(pool.canPurchase(other));
     }
 
+    function test_bareQuoteMatchesTheFwaPool() public view {
+        (uint256 fee, uint256 vrf, uint256 total) = pool.quoteAcquisitionPrice();
+        (uint256 cFee, uint256 cVrf, uint256 cTotal) = clone.quoteAcquisitionPrice();
+        assertEq(fee, cFee);
+        assertEq(vrf, cVrf);
+        assertEq(total, cTotal);
+        (uint256 fee1,, uint256 total1) = pool.quoteAcquisitionPrice(1);
+        assertEq(fee, fee1);
+        assertEq(total, total1);
+    }
+
     function test_fwaAsksThePoolWhetherTheCallerMayPurchase() public {
         (uint256 fee,, uint256 total) = clone.quoteAcquisitionPrice(1);
         (uint256 slip, uint256 version) = poolArgs(clone);

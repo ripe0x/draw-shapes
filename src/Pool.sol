@@ -299,6 +299,11 @@ contract Pool is PoolBooks {
         return fwaPool.quoteAcquisitionPrice(count);
     }
 
+    /// @notice FWA price of one acquisition. Same ABI as the FWA pool's bare quote.
+    function quoteAcquisitionPrice() external view returns (uint256 fee, uint256 vrf, uint256 total) {
+        return fwaPool.quoteAcquisitionPrice();
+    }
+
     /// @notice FWA purchase operator hook. True while this pool is inside its call to the FWA pool
     ///         and `wallet` is the purchaser of that call.
     function canPurchase(address wallet) external view returns (bool) {

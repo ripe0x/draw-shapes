@@ -345,6 +345,7 @@ interface IPool is IPoolTypes {
         uint256 deadline
     ) external payable returns (uint256[] memory requestIds);
     function quoteAcquisitionPrice(uint256 count) external view returns (uint256 fee, uint256 vrf, uint256 total);
+    function quoteAcquisitionPrice() external view returns (uint256 fee, uint256 vrf, uint256 total);
     function canPurchase(address wallet) external view returns (bool);
     function pullWithShapes(uint256[] calldata tokenIds, uint256 count, uint256 maxFee, uint256 deadline)
         external
