@@ -221,7 +221,8 @@ contract PoolAdmin is PoolBooks {
         emit ExitStarted(dest);
     }
 
-    /// @notice Moves up to `maxItems` ordinary listings, held items and the GRAIL estate out of the
+    /// @notice Withdraws every foreign listing to its controller, then moves up to `maxItems` ordinary
+    ///         listings, held items and the GRAIL estate out of the
     ///         pool, then settles the exit. Ordinary items are redeemed into `cash` on retirement.
     ///         On migration they go to the successor while `cash` covers `claims` and the successor
     ///         accepts the token (`canImport`), and are redeemed into `cash` otherwise. The GRAIL estate (the
@@ -235,6 +236,10 @@ contract PoolAdmin is PoolBooks {
         _processAndSettle(MAX_SETTLE_ITEMS);
         if (_busy()) revert FwaBusy();
         _harvest();
+
+        while (_foreign.length != 0) {
+            _releaseForeign(_foreign.length - 1, _foreign[_foreign.length - 1].controller);
+        }
 
         address dest = exitDest;
         bool migrate = dest != address(this);

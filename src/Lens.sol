@@ -81,6 +81,16 @@ contract Lens {
         GrailItemView[] items;
     }
 
+    /// @dev A foreign listing with its share of the FWA selection weight in bps, zero while it is unlisted.
+    struct ForeignView {
+        address collection;
+        uint256 tokenId;
+        address controller;
+        uint256 listingId;
+        uint256 notional;
+        uint256 weightBps;
+    }
+
     struct QueuedClaim {
         address to;
         uint256 amount;
@@ -269,6 +279,21 @@ contract Lens {
             g.items[i] = GrailItemView(
                 it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.listedAtPull, weightBps
             );
+        }
+    }
+
+    // ------------------------------------------------------------------ foreign listings
+
+    /// @notice Every foreign listing with its share of the FWA selection weight. The share is zero
+    ///         while the token is held unlisted.
+    function foreign() external view returns (ForeignView[] memory v) {
+        IPoolTypes.ForeignListing[] memory items = _ip().foreignListings();
+        v = new ForeignView[](items.length);
+        uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
+        for (uint256 i; i < items.length; ++i) {
+            IPoolTypes.ForeignListing memory f = items[i];
+            uint256 weightBps = f.notional != 0 && total != 0 ? PricingLib.weightOf(f.notional) * BPS / total : 0;
+            v[i] = ForeignView(f.collection, f.tokenId, f.controller, f.listingId, f.notional, weightBps);
         }
     }
 

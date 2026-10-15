@@ -89,6 +89,72 @@ contract PoolListing is PoolBooks {
         return _grailItems;
     }
 
+    /// @notice The foreign listings.
+    function foreignListings() external view onlyDelegated returns (ForeignListing[] memory) {
+        return _foreign;
+    }
+
+    /// @notice Takes `tokenId` of `collection` from the admin, lists it on the FWA pool at `priceWei`
+    ///         and records it as a foreign listing of `controller`, keyed by the FWA listing id.
+    ///         The admin approves this contract for the token first. Live only. Reverts `ForeignFull`
+    ///         at `MAX_FOREIGN` entries, `AlreadyRegistered` for a token the pool accounts for and
+    ///         `ZeroAddress` for a zero `collection` or `controller`.
+    function registerForeign(address collection, uint256 tokenId, address controller, uint256 priceWei)
+        external
+        onlyDelegated
+        onlyAdmin
+        nonReentrant
+    {
+        if (lifecycle != Lifecycle.Live) revert NotLive();
+        if (collection == address(0) || controller == address(0)) revert ZeroAddress();
+        if (_registered[collection][tokenId]) revert AlreadyRegistered();
+        if (_foreign.length >= MAX_FOREIGN) revert ForeignFull();
+        _transfer(collection, msg.sender, address(this), tokenId);
+        _call(collection, IERC721.approve.selector, uint160(address(fwaPool)), tokenId);
+        uint256 id =
+            _callFull(address(fwaPool), 0, IFWAClone.listNFT.selector, uint160(collection), tokenId, priceWei);
+        _foreign.push(ForeignListing(collection, tokenId, controller, id, priceWei));
+        _foreignAt[id] = _foreign.length;
+        _registered[collection][tokenId] = true;
+        emit ForeignRegistered(collection, tokenId, controller, id, priceWei);
+    }
+
+    /// @notice Sets the list price of foreign listing `listingId` to `priceWei`. Controller only,
+    ///         while the listing is Active and FWA holds no unsettled acquisition and the booking walk
+    ///         is level (`FwaBusy`). A price that raises the entry's selection weight is refused with
+    ///         `ProbCapExceeded` when the Active GRAIL and foreign weight would pass `grailProbCapBps`
+    ///         of the FWA selection weight.
+    function repriceForeign(uint256 listingId, uint256 priceWei) external onlyDelegated nonReentrant {
+        ForeignListing storage f = _foreignOf(listingId);
+        if (msg.sender != f.controller) revert NotController();
+        if (_busy()) revert FwaBusy();
+        uint256 old = f.notional;
+        if (old == 0 || _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) {
+            revert ListingNotActive(listingId);
+        }
+        uint256 oldWeight = PricingLib.weightOf(old);
+        uint256 newWeight = PricingLib.weightOf(priceWei);
+        if (newWeight > oldWeight) {
+            uint256 weight = _activeGrailWeight() + _activeForeignWeight() - oldWeight + newWeight;
+            uint256 total = _totalWeight() - oldWeight + newWeight;
+            if (weight * BPS > total * _grailProbCapBps) revert ProbCapExceeded();
+        }
+        _call(address(fwaPool), IFWAClone.updatePrice.selector, listingId, priceWei);
+        f.notional = priceWei;
+        emit ForeignRepriced(listingId, priceWei);
+    }
+
+    /// @notice Withdraws foreign listing `listingId` and sends its token to `to`. Controller only.
+    ///         A listed entry needs FWA to hold no unsettled acquisition and the booking walk to be
+    ///         level (`FwaBusy`). An entry left unlisted by a refunded delivery needs neither.
+    function withdrawForeign(uint256 listingId, address to) external onlyDelegated nonReentrant {
+        ForeignListing storage f = _foreignOf(listingId);
+        if (msg.sender != f.controller) revert NotController();
+        if (to == address(0)) revert ZeroAddress();
+        if (f.notional != 0 && _busy()) revert FwaBusy();
+        _releaseForeign(_foreignAt[listingId] - 1, to);
+    }
+
     /// @notice Board depth in items: `max(minItems, (nav - nav * reserveBps / 10_000) /
     ///         meanRowCost)`, with `meanRowCost` the share-weighted backing plus mint fee of the mix rows.
     function boardItems() external view onlyDelegated returns (uint256) {
@@ -282,7 +348,7 @@ contract PoolListing is PoolBooks {
 
     /// @notice Applies the price decay to every Active GRAIL listing: the price falls to `max(floor,
     ///         notional - decayWeiPerPull * (grail.pulls - listedAtPull))` when that is at least 1 percent below
-    ///         the notional and the Active GRAIL weight at the new price stays within
+    ///         the notional and the Active GRAIL and foreign weight at the new price stays within
     ///         `grailProbCapBps` of the FWA selection weight. The caller ensures FWA holds no
     ///         unsettled acquisition. Returns whether a price changed.
     function grailReprice() external onlyDelegated onlySelf returns (bool changed) {
@@ -296,6 +362,7 @@ contract PoolListing is PoolBooks {
             weight += PricingLib.weightOf(_grailItems[i].notional);
         }
         if (weight == 0) return false;
+        weight += _activeForeignWeight();
         uint256 total = _totalWeight();
         Grail memory g = _grail;
         for (uint256 i; i < n; ++i) {
@@ -320,6 +387,33 @@ contract PoolListing is PoolBooks {
             it.listedAtPull = g.pulls;
             emit GrailListed(it.listingId, it.collection, it.tokenId, it.backing, next);
             changed = true;
+        }
+    }
+
+    /// @dev Foreign listing `listingId`, or reverts `UnknownListing`.
+    function _foreignOf(uint256 listingId) internal view returns (ForeignListing storage) {
+        uint256 at = _foreignAt[listingId];
+        if (at == 0) revert UnknownListing(listingId);
+        return _foreign[at - 1];
+    }
+
+    /// @dev Selection weight of the Active GRAIL listings.
+    function _activeGrailWeight() internal view returns (uint256 weight) {
+        for (uint256 i; i < _grailItems.length; ++i) {
+            uint256 id = _grailItems[i].listingId;
+            if (id != 0 && _listingStatus(id) == uint256(IFWAClone.ListingStatus.Active)) {
+                weight += PricingLib.weightOf(_grailItems[i].notional);
+            }
+        }
+    }
+
+    /// @dev Selection weight of the Active foreign listings.
+    function _activeForeignWeight() internal view returns (uint256 weight) {
+        for (uint256 i; i < _foreign.length; ++i) {
+            ForeignListing storage f = _foreign[i];
+            if (f.notional != 0 && _listingStatus(f.listingId) == uint256(IFWAClone.ListingStatus.Active)) {
+                weight += PricingLib.weightOf(f.notional);
+            }
         }
     }
 

@@ -8,6 +8,7 @@ import {IERC721Value} from "shapes/interfaces/IERC721Value.sol";
 import {PricingLib} from "./lib/PricingLib.sol";
 import {PoolStorage} from "./PoolStorage.sol";
 import {IFWAClone} from "./interfaces/IFWAClone.sol";
+import {IForeignController} from "./interfaces/IForeignController.sol";
 
 /// @title PoolBooks
 /// @notice Settlement of FWA acquisitions and harvest of FWA owner proceeds into the buckets,
@@ -58,7 +59,8 @@ abstract contract PoolBooks is PoolStorage {
     ///      `_bookSurplus` books them. If the purchaser later refunds, the admin recovers the token
     ///      with `adminCall(recoverRefundedNFT)` and `sweep`. Expired, Refunded and TimedOut
     ///      acquisitions book nothing. FWA only advances its processing queue past acquisitions in
-    ///      those statuses, so any other status books nothing and the walk passes it. The `paid`
+    ///      those statuses, so any other status books nothing and the walk passes it. A foreign
+    ///      listing follows `_closeForeign` on capture and in `_recoverRefunded` and `_writeOff`. The `paid`
     ///      values of the captures add to the fee volume of the current UTC day.
     function _walk(IFWAClone fwa, uint64 end, uint256 maxItems) internal returns (uint64 seq) {
         seq = nextSequenceToBook;
@@ -88,8 +90,8 @@ abstract contract PoolBooks is PoolStorage {
         }
     }
 
-    /// @dev Books one Fulfilled acquisition. A GRAIL listing credits its proceeds to the GRAIL
-    ///      receivable and removes the item. An ordinary item leaves backing, its proceeds join
+    /// @dev Books one Fulfilled acquisition. A foreign listing is closed by `_closeForeign`. A GRAIL
+    ///      listing credits its proceeds to the GRAIL receivable and removes the item. An ordinary item leaves backing, its proceeds join
     ///      `receivable` and `margin`, and the row chosen by `_chooseRow` is queued for a
     ///      replacement. No replacement is queued when no row is below its target.
     function _capture(uint256 requestId, uint256 listingId, uint256 paid, uint256 mintFee) internal {
@@ -97,6 +99,11 @@ abstract contract PoolBooks is PoolStorage {
         uint256 proceeds = stored == 0 ? 0 : paid - (paid - (stored - 1)) / 2;
         if (_grailAt[listingId] != 0) {
             _closeGrail(listingId, requestId, proceeds);
+            return;
+        }
+        uint256 foreignAt = _foreignAt[listingId];
+        if (foreignAt != 0) {
+            _closeForeign(foreignAt - 1, proceeds);
             return;
         }
         Item memory it = _removeListed(listingId);
@@ -160,11 +167,71 @@ abstract contract PoolBooks is PoolStorage {
         emit GrailCaptured(requestId, listingId, it.backing, proceeds);
     }
 
+    /// @dev Removes the foreign listing at `index` after its capture. `proceeds` is booked as
+    ///      `_foreignReceivable` and paid to the controller by the next harvest, which is when the
+    ///      ETH reaches the pool. Zero proceeds are reported to the controller at once. Nothing else
+    ///      is booked.
+    function _closeForeign(uint256 index, uint256 proceeds) internal {
+        ForeignListing memory f = _removeForeign(index);
+        if (proceeds == 0) {
+            emit ForeignCaptured(f.listingId, f.tokenId, 0, _callController(f.controller, f.listingId, f.tokenId, 0));
+            return;
+        }
+        _foreignReceivable += proceeds;
+        _foreignDue.push(ForeignDue(f.controller, f.listingId, f.tokenId, proceeds));
+    }
+
+    /// @dev Pays the captured foreign listings their proceeds, which the harvest has just withdrawn
+    ///      from FWA. A controller call that fails books its proceeds as `receivable` and `margin`.
+    function _payForeign() internal {
+        ForeignDue[] memory due = _foreignDue;
+        if (due.length == 0) return;
+        uint256 available = _foreignReceivable;
+        delete _foreignDue;
+        _foreignReceivable = 0;
+        for (uint256 i; i < due.length; ++i) {
+            ForeignDue memory d = due[i];
+            uint256 amount = d.proceeds < available ? d.proceeds : available;
+            available -= amount;
+            bool delivered = _callController(d.controller, d.listingId, d.tokenId, amount);
+            if (!delivered) {
+                receivable += amount;
+                _margin += SafeCastLib.toInt256(amount);
+                _splitMargin();
+            }
+            emit ForeignCaptured(d.listingId, d.tokenId, amount, delivered);
+        }
+    }
+
+    /// @dev Calls `onForeignCapture` on `controller` with `amount` wei, forwarding `FOREIGN_CALL_GAS`
+    ///      and ignoring the return data. Returns whether the call succeeded.
+    function _callController(address controller, uint256 listingId, uint256 tokenId, uint256 amount)
+        internal
+        returns (bool ok)
+    {
+        bytes4 selector = IForeignController.onForeignCapture.selector;
+        uint256 gasLimit = FOREIGN_CALL_GAS;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), listingId)
+            mstore(add(m, 0x24), tokenId)
+            mstore(add(m, 0x44), amount)
+            ok := call(gasLimit, controller, amount, m, 0x64, 0, 0)
+        }
+    }
+
     /// @dev Removes the listed item from backing and charges its value to `margin`. A GRAIL
-    ///      item is removed with no proceeds.
+    ///      item is removed with no proceeds. A foreign listing is removed with no proceeds.
     function _writeOff(uint256 requestId, uint256 listingId) internal {
         if (_grailAt[listingId] != 0) {
             _closeGrail(listingId, requestId, 0);
+            return;
+        }
+        uint256 foreignAt = _foreignAt[listingId];
+        if (foreignAt != 0) {
+            ForeignListing memory f = _removeForeign(foreignAt - 1);
+            emit ForeignCaptured(f.listingId, f.tokenId, 0, false);
             return;
         }
         Item memory it = _removeListed(listingId);
@@ -174,12 +241,16 @@ abstract contract PoolBooks is PoolStorage {
 
     /// @dev Takes back a token that FWA quarantined after a refunded delivery and holds it
     ///      unlisted. Backing is unchanged. A GRAIL item stays in `_grailItems` and is listed again
-    ///      by the next `rotate`.
+    ///      by the next `rotate`. A foreign listing keeps its entry and listing id with `notional`
+    ///      zero until its controller withdraws it.
     function _recoverRefunded(IFWAClone fwa, uint256 listingId) internal {
         uint256 at = _grailAt[listingId];
+        uint256 foreignAt = _foreignAt[listingId];
         if (at != 0) {
             _grailItems[at - 1].listingId = 0;
             delete _grailAt[listingId];
+        } else if (foreignAt != 0) {
+            _foreign[foreignAt - 1].notional = 0;
         } else {
             Item memory it = _removeListed(listingId);
             it.listingId = 0;
@@ -216,9 +287,9 @@ abstract contract PoolBooks is PoolStorage {
         emit MarginSplit(cover, rest - maintenanceShare - feedShare, maintenanceShare, feedShare);
     }
 
-    /// @dev Sum of the three receivables.
+    /// @dev Sum of the receivables, including the proceeds owed to foreign controllers.
     function _bookedReceivables() internal view returns (uint256) {
-        return receivable + _maintenanceReceivable + _grail.receivable;
+        return receivable + _maintenanceReceivable + _grail.receivable + _foreignReceivable;
     }
 
     /// @dev Books `actual` FWA owner proceeds above the booked receivables as `receivable` and
@@ -250,6 +321,7 @@ abstract contract PoolBooks is PoolStorage {
         }
 
         uint256 surplus = _bookSurplus(received);
+        _payForeign();
         cash += receivable;
         maintenance += _maintenanceReceivable;
         _grail.fund += _grail.receivable;
@@ -261,7 +333,7 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Lowers the booked receivables by `gap`: `receivable` first, then `maintenanceReceivable`,
-    ///      then the GRAIL receivable. `gap` is at most their sum.
+    ///      then the GRAIL receivable, then the foreign receivable. `gap` is at most their sum.
     function _writeDownReceivables(uint256 gap) internal {
         uint256 cut = gap < receivable ? gap : receivable;
         receivable -= cut;
@@ -269,7 +341,10 @@ abstract contract PoolBooks is PoolStorage {
         cut = gap < _maintenanceReceivable ? gap : _maintenanceReceivable;
         _maintenanceReceivable -= cut;
         gap -= cut;
-        _grail.receivable -= gap < _grail.receivable ? gap : _grail.receivable;
+        cut = gap < _grail.receivable ? gap : _grail.receivable;
+        _grail.receivable -= cut;
+        gap -= cut;
+        _foreignReceivable -= gap;
     }
 
     /// @dev Cash that a mint or a kept Shape may use: `cash` less `claims` and the reserve of
