@@ -206,9 +206,10 @@ interface IPoolTypes {
     event SurplusBooked(uint256 surplus);
     /// @dev Emitted when the booking walk advances. `nextSequenceToBook` is the new walk position.
     event Booked(uint64 nextSequenceToBook);
-    /// @dev Emitted by `settle`. `listed` is the number of items listed and `refund` the wei paid to
-    ///      the caller from `maintenance`.
-    event Settled(uint256 listed, uint256 refund);
+    /// @dev Emitted by `settle`. `reason` is the `SettleTrigger` value of `settleDue()` read after the
+    ///      captures are booked, `listed` the number of items listed and `refund` the wei paid to the
+    ///      caller from `maintenance`.
+    event Settled(uint8 indexed reason, uint256 listed, uint256 refund);
     event MaintenanceFunded(address indexed from, uint256 amount);
     event GrailFunded(address indexed from, uint256 amount);
     /// @dev `rotate` skipped the GRAIL step because it reverted. `selector` is the first four bytes of the revert data.

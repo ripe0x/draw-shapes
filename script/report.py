@@ -451,7 +451,7 @@ def visual_data(main, other, ref, static):
     split_eth = {k: sp[k] * len(counted) / ETH for k in sp}
     nav0, nav1 = rows[0], rows[-1]
     fund0 = int(rows[0]["grailFund"]) / ETH
-    opening = 50.0  # runner default PLAY_OPENING_ETH
+    opening = float(main["cfg"].get("openingEth", 50))
     cohort_shares = opening - fund0
     break_even = opening / cohort_shares
     claims = [{"hour": int(c["hour"]), "wait": int(c["waitSeconds"]), "paid": int(c["paidNow"]) / ETH} for c in read_csv(os.path.join(main["dir"], "claims.csv"))]

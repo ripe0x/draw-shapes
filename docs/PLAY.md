@@ -60,8 +60,9 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
   from `withdraw` until the claim queue head passes its entry. Payouts from cash count as 0 h.
 - Board: listed items at hour 0, at the last hour and at the peak (the board is sized from NAV and grows).
   Purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
-  Rotate and settle calls are counted by the reason `rotateDue()` and `settleDue()` returned (settle: Batch, Age,
-  Thin, Deep). A keeper tick runs every
+  Rotate calls are counted by the reason `rotateDue()` returned before the call. Settle calls are counted by the
+  `reason` of their `Settled` event, which is `settleDue()` after the call books captures (Batch, Age, Thin,
+  Deep). The break-even line reads `openingEth` from `run.txt`. A keeper tick runs every
   5 minutes: it calls `settle` when `settleDue()` is nonzero and `rotate` when `rotateDue()` is nonzero.
 - Return buckets list the share of pulls by value over ticket. With `--fwa`, one reference column follows the
   run columns: "FWA V2 main, expected" (see FWA reference data). Every row with a value on both sides (ticket,

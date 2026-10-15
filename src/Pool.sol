@@ -369,7 +369,7 @@ contract Pool is PoolBooks {
             bool repriced = !busy && _call(address(this), IPool.grailReprice.selector, 0, 0) != 0;
             if (listed != 0 || repriced) refund = _chargeRefund(gasStart);
         }
-        emit Settled(listed, refund);
+        emit Settled(uint8(due), listed, refund);
         if (refund != 0) SafeTransferLib.safeTransferETH(msg.sender, refund);
     }
 

@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 21,722 B, `PoolAdmin` 21,073 B, `PoolListing` 21,235 B, `Lens` 16,447 B (limit 24,576 B).
+Runtime sizes: `Pool` 21,697 B, `PoolAdmin` 21,073 B, `PoolListing` 21,235 B, `Lens` 16,447 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 
@@ -275,7 +275,7 @@ unsettled, so under continuous pull flow liquidation, GRAIL mints, merges and re
 
 Refunds come from `maintenance`: `refund = min(maintenance, (gasUsed + 30,000) * block.basefee + tipWei)`, with `tipWei`
 a parameter (section 5, `setTip`). `settle` pays when `settleDue()` was nonzero and the call listed an item or repriced a
-GRAIL item, and emits `Settled(listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew, minted or merged a
+GRAIL item, and emits `Settled(reason, listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew, minted or merged a
 GRAIL item) and `rotateInterval` has passed since `lastRefundAt`: one refund per interval.
 
 `fundMaintenance()` payable adds the sent ETH to `maintenance`. Anyone may call it. The launch plan is `maintenanceBps`
