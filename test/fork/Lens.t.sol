@@ -293,7 +293,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         IPool(address(pool)).setFounderWindow(3 days);
         Lens.Admission memory a = lens.admission();
-        assertFalse(a.open, "not Live");
+        assertTrue(a.open, "Opening admits deposits below the cap");
         assertEq(a.depositsOpenAt, 0);
         assertEq(a.navCap, 1_000 ether);
         assertEq(a.navCapFloor, 1_000 ether);

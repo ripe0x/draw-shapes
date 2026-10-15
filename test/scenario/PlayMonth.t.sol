@@ -189,6 +189,7 @@ contract PlayMonthTest is ForkBase, Deploy {
     /// @dev Opening cohort, FWA pool creation, opening deadline, `open()` until Live.
     function _openBoard() internal {
         uint256 openingEth = _ether(vm.envOr("PLAY_OPENING_ETH", string("50")));
+        runInfo = string.concat(runInfo, "\nopeningEth=", _fixed4(openingEth / 1e14));
         for (uint256 i; i < 5; ++i) {
             address d = _depositor();
             vm.deal(d, openingEth / 5);
@@ -427,14 +428,11 @@ contract PlayMonthTest is ForkBase, Deploy {
         _notePause();
     }
 
-    /// @dev `settle(20)` as the keeper. The trigger read before the call is tallied; a call that becomes
-    ///      due only after it books the captures is counted in `settles` without a trigger.
+    /// @dev `settle(20)` as the keeper. The trigger is the `reason` of the `Settled` event, read in `_drain`.
     function _keeperSettle() internal {
-        IPoolTypes.SettleTrigger due = pool.settleDue();
         vm.prank(keeper);
-        try pool.settle(20) {
-            if (due != IPoolTypes.SettleTrigger.None) ++setTrig[uint8(due) - 1];
-        } catch {
+        try pool.settle(20) {}
+        catch {
             ++settleFailures;
         }
     }
@@ -480,6 +478,8 @@ contract PlayMonthTest is ForkBase, Deploy {
                 logged[p.id] = true;
             } else if (t == IPoolTypes.Settled.selector) {
                 (uint256 listed, uint256 refund) = abi.decode(l.data, (uint256, uint256));
+                uint8 reason = uint8(uint256(l.topics[1]));
+                if (reason != 0) ++setTrig[reason - 1];
                 if (listed != 0) ++settles;
                 settleListedHour += listed;
                 settleRefundHour += refund;

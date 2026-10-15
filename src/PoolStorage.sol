@@ -201,13 +201,13 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     // ------------------------------------------------------------------ internal
 
-    /// @dev Mean booked fee volume per day over the complete UTC days before today since
-    ///      `_liveDay`, at most `VOLUME_DAYS` of them. Today's partial day is excluded.
+    /// @dev Mean booked fee volume per day over the complete UTC days after the Live day and
+    ///      before today, at most `VOLUME_DAYS` of them. The Live day and today are partial days.
     function _dailyVolume() internal view returns (uint256 sum) {
         uint256 today = block.timestamp / 1 days;
         uint256 live = _liveDay;
-        if (today <= live) return 0;
-        uint256 n = today - live;
+        if (today <= live + 1) return 0;
+        uint256 n = today - live - 1;
         if (n > VOLUME_DAYS) n = VOLUME_DAYS;
         for (uint256 i = 1; i <= n; ++i) {
             uint256 day = today - i;

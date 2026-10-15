@@ -111,8 +111,8 @@ contract Lens {
     }
 
     /// @dev Deposit admission state. `contributionBps` is the entry fee a deposit pays now.
-    ///      `open` holds when the pool is Live, deposits are not paused, `depositsOpenAt` has
-    ///      passed and ordinary NAV is below `navCap`.
+    ///      `open` holds when the pool is Opening, or Live with `depositsOpenAt` passed, deposits
+    ///      are not paused and ordinary NAV is below `navCap`.
     struct Admission {
         uint256 navCap;
         uint256 navCapFloor;
@@ -354,8 +354,10 @@ contract Lens {
         (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
         (uint16 premiumBps,,) = pool.feeSplit();
         a.contributionBps = PricingLib.entryFeeBps(premiumBps, a.dailyVolume, currentNav, floorBps, capBps, paybackDays);
-        a.open = pool.lifecycle() == IPoolTypes.Lifecycle.Live && !pool.depositsPaused()
-            && block.timestamp >= a.depositsOpenAt && a.headroom != 0;
+        IPoolTypes.Lifecycle state = pool.lifecycle();
+        a.open = (state == IPoolTypes.Lifecycle.Opening
+                || (state == IPoolTypes.Lifecycle.Live && block.timestamp >= a.depositsOpenAt))
+            && !pool.depositsPaused() && a.headroom != 0;
     }
 
     // ------------------------------------------------------------------ rotation

@@ -34,7 +34,7 @@ const FAQS = [
   {
     question: "How does the GRAIL build?",
     answer:
-      "One fund, fed by the entry contribution, the feed share of every settled ticket and fundGrail. Rotate mints 1 ETH pieces from the fund and lists each at face, then merges listed pieces by fixed recipes: five ones make a 5, two fives a 10, two tens and a five the 25, two 25s a 50, two 50s a 100. The target is one of those sizes and the admin sets the next cycle's target. Every listed GRAIL item drops in price by a fixed amount per pull down to its floor, 0.25 ETH for a piece and 1 ETH otherwise, and the decay stops while the listed GRAIL weight would pass the probability cap. A captured item pays its proceeds to the fund and the cycle carries on.",
+      "One fund, fed by the entry contribution, the feed share of every settled ticket and fundGrail. Rotate mints 1 ETH pieces from the fund and lists each at face, then merges listed pieces by fixed recipes: five ones make a 5, two fives a 10, two tens and a five the 25, two 25s a 50, two 50s a 100. The target is one of those sizes. The next cycle's target steps up one size after a cycle that finishes in under 14 days and down one size after a cycle that takes more than 60 days, and the admin may set it. A piece lists at face and holds that price at launch because its floor is 1 ETH. A merged item drops in price by a fixed amount per pull down to 1 ETH, and the decay stops while the listed GRAIL weight would pass the probability cap. A captured item pays its proceeds to the fund and the cycle carries on.",
   },
   {
     question: "Who pays for upkeep?",

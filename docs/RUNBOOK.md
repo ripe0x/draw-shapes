@@ -75,15 +75,16 @@ SIGN="--account $KEYSTORE_ACCOUNT --password-file $KEYSTORE_PASSWORD_FILE"
 2. Deposit the opening cohort. Opening NAV is cash, so shares mint 1:1.
    `cast send --rpc-url $RPC $SIGN $POOL 'deposit()' --value $AMOUNT`
 3. After `openingDeadlineAt`, call `open()` until `lifecycle()` returns 1 (Live). Each call lists at
-   most 20 items and anyone may call it. The pool is Live once `minItems` are listed. `settleDue()`
-   then returns Deep and `settle` lists the rest of the board up to `boardItems()`.
+   most 20 items and anyone may call it. The pool is Live once a call lists fewer than 20 items or
+   `listedCount` is at least `minItems`. `settleDue()` then returns Deep and `settle` finishes the board up to
+   `boardItems()`.
    `cast send --rpc-url $RPC $SIGN $POOL 'open()'`
 4. Founder window premium. Right after the pool is Live, move 100 bps from the feed to the premium.
    The sum stays 700, so list prices and tickets are unchanged. `admission()` on Lens shows
    `depositsOpenAt`; revert the split in the same block or later.
-   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16,uint16)' 300 100 300 2000`
+   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16)' 300 100 300`
    At `depositsOpenAt`:
-   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16,uint16)' 200 100 400 2000`
+   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16)' 200 100 400`
 5. Start the keeper once the pool is Live.
    `WALLET_MODE=keystore KEYSTORE_ACCOUNT=$KEYSTORE_ACCOUNT KEYSTORE_PASSWORD_FILE=$KEYSTORE_PASSWORD_FILE RPC_URL=$RPC POOL=$POOL INTERVAL=15 script/keeper.sh`
 6. Refill the keeper bucket from Shapes mint fee revenue when the basefee is high.

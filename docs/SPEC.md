@@ -25,9 +25,9 @@ Shares are nontransferable. There is one admin role.
 
 | Contract | Role |
 | --- | --- |
-| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other selector to `adminModule`. |
-| `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import (including `importGrail`), getters, `chooseRow`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
-| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the getters `grail()` and `grailItems()`, the view `boardItems()` and the setters `setGrail` and `setGrailTarget`. Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
+| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `chooseRow` and the read-only getters of parameters, rows, queues, held Shapes and migration state to `listingModule` and every other selector to `adminModule`. |
+| `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import (including `importGrail`) and `canImport`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
+| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the setters `setGrail`, `setGrailStep` and `setGrailTarget`, and the views `grail()`, `grailItems()`, `boardItems()`, `chooseRow`, `rowCount`, `mixLength`, `listedRowCount`, `mixRow`, `heldCount`, `heldShapes`, `claimQueue`, `replacementQueue`, `oldestQueuedAt`, the parameter getters (`batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`, `reserveBps`, `listWhilePaused`, `openingDeadline`, `openingDeadlineAt`, `maxBatch`, `concurrency`, `grailProbCapBps`), `lastRefundAt`, `maintenanceReceivable`, `margin`, `mintLineOwed` and the export and import records (`exportedShares`, `exportedNav`, `importedShares`, `importedFromShares`, `migrated`, `registered`). Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
 | `PoolBooks.sol`, `PoolStorage.sol` | Shared bases: settlement, harvest, margin split, row choice; storage layout, item registry, parameter validation. `interfaces/IPool.sol` holds the combined ABI, types, errors and events. |
 | `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
 | Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 20,899 B, `PoolAdmin` 24,546 B, `PoolListing` 16,113 B, `Lens` 16,419 B (limit 24,576 B).
+Runtime sizes: `Pool` 21,697 B, `PoolAdmin` 21,073 B, `PoolListing` 21,235 B, `Lens` 16,447 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 
@@ -65,13 +65,13 @@ Invariants, enforced by the invariant suite:
 - I4 Claims are paid in request order.
 - I5 The GRAIL fund pays only for piece mints and their mint fees.
 - I6 `maintenance` pays only `settle` and `rotate` refunds and is never negative.
-- I7 Buckets outside ordinary NAV (`maintenance`, `grail.fund`) are credited only from netted positive margin
-  (section 9). Ordinary NAV changes at a settled capture by `proceeds - value` less the replacement mint fee.
+- I7 `maintenance` is credited from netted positive margin (section 9). `grail.fund` is credited from netted
+  positive margin, the entry contribution, `fundGrail`, GRAIL capture proceeds and `importGrail`. Ordinary NAV changes at a settled capture by `proceeds - value` less the replacement mint fee.
 
 ## 5. Parameters
 
 Constructor: Shapes, Draw Packs, FWA factory, admin, `oldPool` (zero unless the pool succeeds another), mix table, fee
-split, GRAIL parameters (`targetWei`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`), `navCapFloor`, `turnoverBps`, entry fee, `founderWindowSeconds`, `rotateInterval`, `openingDeadline` (seconds, started by
+split, GRAIL parameters (`targetWei`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `stepUpSeconds`, `stepDownSeconds`), `navCapFloor`, `turnoverBps`, entry fee, `founderWindowSeconds`, `rotateInterval`, `openingDeadline` (seconds, started by
 `createFwaPool`), `minItems`, `grailProbCapBps`, `batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`,
 `reserveBps`, `tipWei` and the `PoolAdmin` and `PoolListing` addresses.
 
@@ -87,6 +87,7 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setMix(rows)` | Each row: array of rungs, weight share. Rows of two or more rungs are packs. A row that holds items keeps its rungs. The table may grow. A row with items or queued replacements cannot be dropped (`RowInUse`). |
 | `setGrail(decayWeiPerPull, pieceFloorWei, floorWei, listBps)` | `listBps` 1 to 10,000. `pieceFloorWei` above zero and at most one piece (1 ETH). `floorWei` above zero and at most `5 ETH * listBps / 10_000`. Amounts in ETH follow the mainnet ladder; a testnet ladder scales them with its unit. |
 | `setGrailTarget(wei)` | One of 5, 10, 25, 50, 100 ETH. Writes `nextTargetWei`. |
+| `setGrailStep(up, down)` | `up` below `down`. A completed cycle steps `nextTargetWei` one rung up when it took less than `up` seconds and one rung down when it took more than `down` seconds. |
 | `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
 | `setBatch(batchMin, batchMaxAge)`, `setReplacement(surpriseBps, restoreK, bandBps)` | Both above zero. At most 10,000, 100 and 100,000. |
 | `setTip(tipWei)` | At most 0.01 ether. |
@@ -105,7 +106,8 @@ the rest is listed on the board).
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
 `grailProbCapBps` and the GRAIL parameters are set in `script/env/<env>.env`: target 25 ETH, `listBps` 7,500,
-`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 1 ETH, `floorWei` 1 ETH.
+`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 1 ETH, `floorWei` 1 ETH, `stepUpSeconds` 14 days (1,209,600),
+`stepDownSeconds` 60 days (5,184,000).
 
 ## 6. Lifecycle
 
@@ -136,8 +138,8 @@ price, and all three read one volume measure.
 
 - Volume. Every acquisition that `_walk` books as a capture adds its FWA `paid` value to the fee total of the current
   UTC day, in one of eight day slots (`day % 8`). Refunded, expired, written-off and unbooked requests add nothing.
-  `dailyVolume()` is the mean of those totals over the complete days before today since the pool went Live, at most
-  seven. Today's partial day is excluded, and zero complete days give zero.
+  `dailyVolume()` is the mean of those totals over the complete days after the Live day and before today, at most
+  seven. The Live day and today are partial days, and zero complete days give zero.
 - Cap. `navCap() = max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`. Deposits are admitted while `nav() <
   navCap()`. `turnoverBps` is the target daily volume over NAV. Design and sizing: `docs/VOLUME_CAP.md`.
 - Entry fee. The contribution is `msg.value * contributionBps / 10_000`, where `contributionBps = clamp(paybackDays *
@@ -202,7 +204,7 @@ Settlement. FWA pays the pool owner per acquisition `paid - (paid - base) / 2`, 
 `base = min(fee, weightedBackingTotal / totalWeight)` at request time (the harmonic mean of list prices). Proceeds are
 the same for every capture in a batch.
 
-1. `acquire` and `acquireBatch` record `base` per request id. A direct FWA buy books zero proceeds at capture.
+1. `acquire` and `acquireBatch` record `base` per request id. A purchase the pool did not record (the operator cleared through `adminCall`) books zero proceeds at capture.
 2. `settle(maxCount)` (at most 20 per call) calls `processAcquisitions(maxCount)`, then walks FWA's sequence numbers
    from `nextSequenceToBook` to FWA's processing queue. Each sequence adds one to `grail.pulls`, the pull counter the GRAIL
    decay reads. Per status:
@@ -219,7 +221,7 @@ the same for every capture in a batch.
    `maintenance` and `grail.fund`. Negative `margin` carries forward until later captures
    repay it. After Exported the split is skipped, so later proceeds stay in ordinary NAV.
 4. Surplus. When a settle reaches FWA's processing queue, `ownerProceeds()` above the booked receivables (the proceeds
-   of direct purchases) is booked as `receivable` and `margin` and split.
+   of purchases the pool did not record, which the operator cleared through `adminCall`) is booked as `receivable` and `margin` and split.
 5. Harvest (`withdrawOwnerProceeds`) runs when the walk is level with FWA's queue. An amount received below the booked
    receivables emits `HarvestShortfall(received, expected)` and writes `receivable` down by the gap.
 
@@ -247,7 +249,7 @@ and the walk is level. `settleDue()` returns the first of these, and `None` outs
 held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
 replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
 the board count (listed, held and queued ordinary items) is below `boardItems()` by at least `batchMin`. On Deep, `settle` queues each row's missing items against
-its target depth before listing. A reprice rides on a due settle and never makes one due.
+its target depth before listing, up to 25 entries in total per call, existing queue entries included. A reprice rides on a due settle and never makes one due.
 
 `rotate()`. Anyone. Reverts `RotateTooSoon` until `rotateInterval` has passed since `lastRotateAt`, and `RotateNotDue`
 unless a reason holds. `lastRotateAt` moves when the call changed inventory. Reasons, in evaluation order:
@@ -273,7 +275,7 @@ unsettled, so under continuous pull flow liquidation, GRAIL mints, merges and re
 
 Refunds come from `maintenance`: `refund = min(maintenance, (gasUsed + 30,000) * block.basefee + tipWei)`, with `tipWei`
 a parameter (section 5, `setTip`). `settle` pays when `settleDue()` was nonzero and the call listed an item or repriced a
-GRAIL item, and emits `Settled(listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew, minted or merged a
+GRAIL item, and emits `Settled(reason, listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew, minted or merged a
 GRAIL item) and `rotateInterval` has passed since `lastRefundAt`: one refund per interval.
 
 `fundMaintenance()` payable adds the sent ETH to `maintenance`. Anyone may call it. The launch plan is `maintenanceBps`
@@ -287,7 +289,7 @@ One fund, one ladder, many listed pieces. The GRAIL is built on the board from 1
 can draw while it forms.
 
 Storage. `grail`: `fund` (ETH), `receivable`, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`,
-`decayWeiPerPull`, `pieceFloorWei`, `floorWei`. `grailItems`: entries of `collection` (Shapes or Draw Packs),
+`decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `pulls`, `cycleStartedAt`, `stepUpSeconds`, `stepDownSeconds`. `grailItems`: entries of `collection` (Shapes or Draw Packs),
 `tokenId`, `backing`, `notional`, `listingId`, `listedAtPull`, `done` (true for a completed GRAIL; a done item is
 never a recipe input). At most `MAX_BUILDING_ITEMS` (16) items that are not done and at most `MAX_DONE_ITEMS` (32)
 done items exist at once. A piece is an item with backing of 1 ETH. At most `MAX_PIECES` (6) pieces exist at once.
@@ -344,10 +346,11 @@ lists at face and never decays; a merged item decays to 1 ETH and stays.
 
 `PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`; `setGrail` and `setGrailTarget`
 live in `PoolListing` with `grail()` and `grailItems()`), `startExit`, `exportStep`,
-`transferGrailEstate(to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and the getters of the
-replacement, batch and reserve parameters, row counts, mix rows, held Shapes by denomination, queue and claim entries
-and the GRAIL fund and items. `chooseRow(requestId, capturedRow)` returns the replacement row for a fulfilled request.
-`PoolListing` implements `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, which only `Pool` calls on itself.
+`transferGrailEstate(to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and `canImport`.
+`PoolListing` implements `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, which only `Pool` calls on itself,
+and the read-only getters of the replacement, batch and reserve parameters, row counts, mix rows, held Shapes by
+denomination, queue and claim entries and the GRAIL fund and items. `chooseRow(requestId, capturedRow)` returns the
+replacement row for a fulfilled request.
 
 `sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item or a GRAIL
 item). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
@@ -378,8 +381,8 @@ first import until `finalizeImport`:
   same kind (Shape or pack), and reverts `NoMatchingRow` otherwise (`canImport` is the view).
 - `importGrail(collection, tokenId, done)` payable credits `msg.value` to `grail.fund` and, when `collection` is nonzero,
   registers the token as a GRAIL item with the `done` flag kept. The item is unlisted on arrival, priced at its backing
-  for a piece and at `listBps` of its backing otherwise, and listed by the next `rotate`. When `grailItems` holds 16
-  items, the arriving token is redeemed and its proceeds join the fund. `exportStep` makes one call per item, the first
+  for a piece and at `listBps` of its backing otherwise, and listed by the next `rotate`. When the cap of the item's kind is full (16 building, 32 done), the arriving token is
+  redeemed into the fund. `exportStep` makes one call per item, the first
   one carrying the fund; with no items it makes one call with a zero `collection`. The successor keeps its own cycle.
 - `importCash()` credits `cash`. `finalizeImport(fromShares)` mints `importedShares = importedNav * totalShares /
   preImportNav`, or `importedNav` when the share supply or `preImportNav` is zero, and stores `importedFromShares =
@@ -392,7 +395,7 @@ imported tokens.
 ## 14. Lens
 
 Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail()`, `claims()`,
-`reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `listedAtPull`, selection weight in bps). `parameters()` lists the constructor values and
+`reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `pulls`, `cycleStartedAt`, `stepUpSeconds`, `stepDownSeconds` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `listedAtPull`, selection weight in bps). `parameters()` lists the constructor values and
 the setter values, including the batch, replacement, reserve, `tipWei` and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
 solvency and board depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
 
@@ -401,7 +404,7 @@ solvency and board depth. `quote(count)` returns the FWA quote and `purchasable`
 Controller replacement, FWA pool migration machinery, GRAIL successor handoff, zero-share beneficiary, late GRAIL
 recovery claims, in-kind exits, withdrawal cohorts and windows, pending deposit escrow and cancellation, launch seed,
 named purchaser, controller reserve subsidy, builder revenue, operator fee line, pullWithShapes bonus, typed board scan,
-step-up and step-down GRAIL timers, RTP ceiling, maintenance sweep into the GRAIL, demand gates, pack code in this repo, indexer, activity and profile pages, runtime
+RTP ceiling, maintenance sweep into the GRAIL, demand gates, pack code in this repo, indexer, activity and profile pages, runtime
 keeper package.
 
 ## 16. Acceptance

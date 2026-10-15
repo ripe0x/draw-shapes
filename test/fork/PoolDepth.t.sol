@@ -141,6 +141,20 @@ contract PoolDepthForkTest is ForkBase, PoolFixture {
         assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.None));
     }
 
+    function test_deepNeedsSpendableCashForOneMeanRow() public {
+        _deposit(4 ether);
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.Deep));
+
+        // Cash moves into backing: NAV and board depth are unchanged, spendable cash is zero.
+        uint256 spendable = pool.cash() - pool.claims() - pool.nav() * 1_000 / 10_000;
+        pool.spendOnBacking(spendable);
+        assertGe(_boardItems(), _count() + 5, "the board is still short");
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.None), "no cash for one mean row");
+
+        _deposit(4 ether);
+        assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.Deep), "a deposit restores Deep");
+    }
+
     // ---------------------------------------------------------------- open
 
     function test_openGoesLiveAtMinItemsAndDeepFillsTheRest() public {

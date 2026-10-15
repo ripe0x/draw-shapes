@@ -12,8 +12,8 @@ import {IFWACloneFactory} from "./interfaces/IFWACloneFactory.sol";
 import {IPool} from "./interfaces/IPool.sol";
 
 /// @title PoolAdmin
-/// @notice Admin setters, `createFwaPool`, `sweep`, `adminCall`, exit, successor import and the getters
-///         of `Pool` that `Pool` does not serve itself.
+/// @notice Admin setters, `createFwaPool`, `sweep`, `adminCall`, exit, successor import and
+///         `canImport`.
 /// @dev Runs by delegatecall from the `fallback` of `Pool` and acts on the storage of the calling
 ///      pool. A direct call to this contract reverts `NotDelegated`.
 contract PoolAdmin is PoolBooks {
@@ -308,172 +308,7 @@ contract PoolAdmin is PoolBooks {
         _sendGrailEstate(to, false);
     }
 
-    // ------------------------------------------------------------------ views
-
-    /// @notice Listed plus held ordinary items of `row`.
-    function rowCount(uint256 row) external view onlyDelegated returns (uint256) {
-        return _rowCount[row];
-    }
-
-    /// @notice Number of mix rows.
-    function mixLength() external view onlyDelegated returns (uint256) {
-        return _mix.length;
-    }
-
-    /// @notice Listed items of `row`.
-    function listedRowCount(uint256 row) external view onlyDelegated returns (uint256) {
-        return _listedByRow[row].length;
-    }
-
-    /// @notice Rungs and weight share of mix row `i`.
-    function mixRow(uint256 i) external view onlyDelegated returns (uint8[] memory rungs, uint16 shareBps) {
-        uint8[] storage stored = _mix[i].rungs;
-        rungs = new uint8[](stored.length);
-        for (uint256 j; j < rungs.length; ++j) {
-            rungs[j] = stored[j];
-        }
-        shareBps = _mix[i].shareBps;
-    }
-
-
-    /// @notice Queued replacements at which `settleDue` returns `Batch`.
-    function batchMin() external view onlyDelegated returns (uint256) {
-        return _batchMin;
-    }
-
-    /// @notice Seconds since the queue became nonempty after which `settleDue` returns `Age`.
-    function batchMaxAge() external view onlyDelegated returns (uint256) {
-        return _batchMaxAge;
-    }
-
-    /// @notice Probability, in bps, that a replacement draw takes the surprise step.
-    function surpriseBps() external view onlyDelegated returns (uint256) {
-        return _surpriseBps;
-    }
-
-    /// @notice Multiplier of a row's relative deficit in its replacement draw weight.
-    function restoreK() external view onlyDelegated returns (uint256) {
-        return _restoreK;
-    }
-
-    /// @notice Headroom above its target, in bps, up to which a row may be chosen as a replacement.
-    function bandBps() external view onlyDelegated returns (uint256) {
-        return _bandBps;
-    }
-
-    /// @notice Share of ordinary NAV, in bps, that cash keeps after a mint or a kept Shape.
-    function reserveBps() external view onlyDelegated returns (uint256) {
-        return _reserveBps;
-    }
-
-    /// @notice True when `settle` lists while FWA's inventory change cooldown is nonzero.
-    function listWhilePaused() external view onlyDelegated returns (bool) {
-        return _listWhilePaused;
-    }
-
-    /// @notice Time the replacement queue last went from empty to nonempty, zero while it is empty.
-    function oldestQueuedAt() external view onlyDelegated returns (uint256) {
-        return _oldestQueuedAt;
-    }
-
-    /// @notice Queued withdrawal claim at `index`.
-    function claimQueue(uint256 index) external view onlyDelegated returns (Claim memory) {
-        return _claimQueue[index];
-    }
-
-    /// @notice Row index of the replacement queue entry at `index`.
-    function replacementQueue(uint256 index) external view onlyDelegated returns (uint16) {
-        return _replacementQueue[index];
-    }
-
-    /// @notice Seconds from FWA pool creation to the earliest `open()`.
-    function openingDeadline() external view onlyDelegated returns (uint256) {
-        return _openingDeadline;
-    }
-
-    /// @notice Earliest `open()` time, set by `createFwaPool`.
-    function openingDeadlineAt() external view onlyDelegated returns (uint256) {
-        return _openingDeadlineAt;
-    }
-
-    /// @notice Largest acquisition count of one `acquireBatch`.
-    function maxBatch() external view onlyDelegated returns (uint256) {
-        return _maxBatch;
-    }
-
-    /// @notice Listed ordinary items required above the unsettled acquisitions for a purchase.
-    function concurrency() external view onlyDelegated returns (uint256) {
-        return _concurrency;
-    }
-
-    /// @notice Time of the last `rotate` refund.
-    function lastRefundAt() external view onlyDelegated returns (uint256) {
-        return _lastRefundAt;
-    }
-
-    /// @notice Largest share of the FWA selection weight, in bps, that the listed GRAIL tracks hold.
-    function grailProbCapBps() external view onlyDelegated returns (uint256) {
-        return _grailProbCapBps;
-    }
-
-    /// @notice Booked share of `ownerProceeds` awaiting harvest for `maintenance`.
-    function maintenanceReceivable() external view onlyDelegated returns (uint256) {
-        return _maintenanceReceivable;
-    }
-
-    /// @notice Net proceeds of settled captures not yet split. Negative while captures sold below value.
-    function margin() external view onlyDelegated returns (int256) {
-        return _margin;
-    }
-
-    /// @notice Replacement mint fees of booked captures not yet covered by margin.
-    function mintLineOwed() external view onlyDelegated returns (uint256) {
-        return _mintLineOwed;
-    }
-
-    /// @notice Share supply recorded when the export completed.
-    function exportedShares() external view onlyDelegated returns (uint256) {
-        return _exportedShares;
-    }
-
-    /// @notice Ordinary NAV recorded when the export completed.
-    function exportedNav() external view onlyDelegated returns (uint256) {
-        return _exportedNav;
-    }
-
-    /// @notice Shares minted to the importing holders at `finalizeImport`.
-    function importedShares() external view onlyDelegated returns (uint256) {
-        return _importedShares;
-    }
-
-    /// @notice Old pool share supply that `importedShares` represents.
-    function importedFromShares() external view onlyDelegated returns (uint256) {
-        return _importedFromShares;
-    }
-
-    /// @notice True once `holder` called `migrateHolder`.
-    function migrated(address holder) external view onlyDelegated returns (bool) {
-        return _migrated[holder];
-    }
-
-    /// @notice True while the token is a held or listed ordinary item of this pool.
-    function registered(address collection, uint256 tokenId) external view onlyDelegated returns (bool) {
-        return _registered[collection][tokenId];
-    }
-
-    /// @notice Row that replaces the capture of FWA request `requestId`, and whether the surprise
-    ///         step chose it. Drawn by `PricingLib.chooseRow` from `keccak256(randomWord,
-    ///         requestId)`. A row's count is its listed, held and queued items. Returns
-    ///         `type(uint256).max` when no row is below its target.
-    function chooseRow(uint256 requestId, uint256 capturedRow)
-        external
-        view
-        onlyDelegated
-        returns (uint256, bool)
-    {
-        return _chooseRow(requestId, capturedRow);
-    }
-
+    /// @dev Completes the `PoolBooks` hook for the bookings that run inside exit.
     function _chooseRow(uint256 requestId, uint256 capturedRow)
         internal
         view
@@ -481,18 +316,6 @@ contract PoolAdmin is PoolBooks {
         returns (uint256 row, bool surprise)
     {
         return _pickRow(_randomWord(requestId), requestId, capturedRow);
-    }
-
-    // ------------------------------------------------------------------ held items
-
-    /// @notice Number of held ordinary items.
-    function heldCount() external view onlyDelegated returns (uint256) {
-        return _held.length;
-    }
-
-    /// @notice Token ids of the held Shapes of ladder index `denom`.
-    function heldShapes(uint8 denom) external view onlyDelegated returns (uint256[] memory) {
-        return _heldByDenom[denom];
     }
 
     // ------------------------------------------------------------------ successor import
@@ -537,7 +360,9 @@ contract PoolAdmin is PoolBooks {
         if (!pack && collection != shapes) revert NoMatchingRow();
         uint256 value = _read(collection, pack ? IERC721Value.valueOf.selector : IShapes.backingOf.selector, tokenId);
         _addGrailItem(
-            GrailItem(collection, done, tokenId, value, value == GRAIL_PIECE ? value : value * _grail.listBps / BPS, 0, 0)
+            GrailItem(
+                collection, done, tokenId, value, value == GRAIL_PIECE ? value : value * _grail.listBps / BPS, 0, 0
+            )
         );
     }
 
@@ -617,7 +442,14 @@ contract PoolAdmin is PoolBooks {
             if (it.listingId != 0) _withdrawListing(it.listingId, address(this));
             _transfer(it.collection, address(this), to, it.tokenId);
             if (migrate) {
-                _callFull(to, i == n ? fund : 0, this.importGrail.selector, uint160(it.collection), it.tokenId, it.done ? 1 : 0);
+                _callFull(
+                    to,
+                    i == n ? fund : 0,
+                    this.importGrail.selector,
+                    uint160(it.collection),
+                    it.tokenId,
+                    it.done ? 1 : 0
+                );
             }
         }
         if (!migrate) SafeTransferLib.safeTransferETH(to, fund);

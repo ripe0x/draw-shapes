@@ -21,7 +21,7 @@ case "${WALLET_MODE:-keystore}" in
   *) echo "unknown WALLET_MODE ${WALLET_MODE:-}"; exit 1 ;;
 esac
 
-SETTLED_TOPIC=$(cast keccak 'Settled(uint256,uint256)')
+SETTLED_TOPIC=$(cast keccak 'Settled(uint8,uint256,uint256)')
 ROTATED_TOPIC=$(cast keccak 'Rotated(bool,bool,uint256)')
 
 ROTATE_AFTER=0
