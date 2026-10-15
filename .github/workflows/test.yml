@@ -26,7 +26,8 @@ jobs:
         with:
           path: ~/.foundry/cache/rpc
           key: foundry-rpc-${{ env.FORK_BLOCK }}
-      - run: forge build --sizes
+      # Test-only contracts (PoolHarness) exceed EIP-170 by design; size-check the deployed set only.
+      - run: forge build --sizes --skip test
       - run: forge test --match-path "test/unit/*.t.sol"
       - run: forge test --match-path "test/fork/*.t.sol"
       - run: forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
