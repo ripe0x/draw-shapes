@@ -294,7 +294,11 @@ done items exist at once. A piece is an item with backing of 1 ETH. At most `MAX
 `grail.pulls` counts booked sequences; an item's pulls since listing are `grail.pulls - listedAtPull`.
 
 Ladder. `targetWei` is one of 5, 10, 25, 50, 100 ETH. `setGrailTarget(wei)` writes `nextTargetWei`;
-a cycle reads it at start. Launch target 25 ETH.
+a cycle reads it at start. Launch target 25 ETH. Step rule: when a cycle completes, `elapsed` is the time since
+that cycle started. `elapsed < stepUpSeconds` sets `nextTargetWei` one rung up (at most 100 ETH);
+`elapsed > stepDownSeconds` sets it one rung down (at least 5 ETH); otherwise it is unchanged. A later
+`setGrailTarget` overrides it. `setGrailStep(stepUpSeconds, stepDownSeconds)` with `stepUpSeconds <
+stepDownSeconds`; launch 14 days and 60 days. `grail.cycleStartedAt` records the cycle start.
 
 Funding. The whole entry contribution (section 7), the feed share of every settled ticket (section 9),
 `fundGrail()` from any sender, and the proceeds of a captured GRAIL item (through `receivable`). The fund
@@ -317,7 +321,8 @@ A recipe runs when its inputs are listed and FWA holds no unsettled acquisition,
 listings, composes at Shapes when the output backing is a native rung (5, 10, 50, 100), else creates a
 Draw Pack of the inputs (25), and lists the output at `backing * listBps / 10_000`. The output joins
 `grailItems`. When the output backing equals `targetWei` the cycle is complete:
-`cycleId += 1`, `targetWei = nextTargetWei`, and minting continues from the fund. The completed GRAIL stays
+`cycleId += 1`, the step rule runs, `targetWei = nextTargetWei`, `cycleStartedAt = block.timestamp`, and minting
+continues from the fund. The completed GRAIL stays
 listed until captured.
 
 Opening. Inside `open()` before the board lists: if `fund >= 5 * (1 ETH + mintFee)`, mint five pieces,
