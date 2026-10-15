@@ -897,24 +897,22 @@ contract SponsorForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- deploy script
 
-    function _setDeployEnv(address owner_) internal {
-        vm.setEnv("SPONSOR_POOL", vm.toString(address(pool)));
-        vm.setEnv("SPONSOR_OWNER", vm.toString(owner_));
-        vm.setEnv("SPONSOR_SPONSOR", vm.toString(sponsor));
-        vm.setEnv("SPONSOR_COLLECTION", vm.toString(WPUNKS));
-        vm.setEnv("SPONSOR_TOKEN_ID", vm.toString(tokenId));
-        vm.setEnv("SPONSOR_PARKED_PRICE_WEI", vm.toString(PARKED_PRICE));
-        vm.setEnv("SPONSOR_FLOOR_WEI", "250000000000000000");
-        vm.setEnv("SPONSOR_DECAY_WEI_PER_PULL", "1000000000000000");
-        vm.setEnv("SPONSOR_RECLAIM_DELAY", "2592000");
-        vm.setEnv("SPONSOR_CAP_WEI", "45000000000000000000");
-        vm.setEnv("SPONSOR_FEE_SPLIT", "");
+    function _deployTerms(address owner_) internal view returns (DeploySponsor.Terms memory t) {
+        t.pool = address(pool);
+        t.owner = owner_;
+        t.sponsor = sponsor;
+        t.collection = WPUNKS;
+        t.tokenId = tokenId;
+        t.parkedPriceWei = PARKED_PRICE;
+        t.floorWei = 0.25 ether;
+        t.decayWeiPerPull = 0.001 ether;
+        t.reclaimDelay = 30 days;
+        t.capWei = 45 ether;
     }
 
     function test_deployScriptDeploysAndReadsBackEveryValue() public {
         DeploySponsor script = new DeploySponsor();
-        _setDeployEnv(DEFAULT_SENDER);
-        (FeeSplit f, SponsoredPrize p) = script.run();
+        (FeeSplit f, SponsoredPrize p) = script.runWith(_deployTerms(DEFAULT_SENDER));
         assertEq(f.owner(), DEFAULT_SENDER);
         assertEq(f.capWei(), 45 ether);
         assertEq(f.prize(), address(p));
@@ -929,15 +927,13 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         vm.prank(admin);
         _ip().setAdmin(DEFAULT_SENDER);
         DeploySponsor script = new DeploySponsor();
-        _setDeployEnv(DEFAULT_SENDER);
-        (, SponsoredPrize p) = script.run();
+        (, SponsoredPrize p) = script.runWith(_deployTerms(DEFAULT_SENDER));
         assertEq(_ip().registrar(), address(p));
     }
 
     function test_deployScriptRefusesAForeignBroadcaster() public {
         DeploySponsor script = new DeploySponsor();
-        _setDeployEnv(stranger);
         vm.expectRevert(abi.encodeWithSelector(DeploySponsor.GuardFailed.selector, "broadcaster is not SPONSOR_OWNER"));
-        script.run();
+        script.runWith(_deployTerms(stranger));
     }
 }

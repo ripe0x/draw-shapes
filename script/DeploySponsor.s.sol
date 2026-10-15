@@ -34,8 +34,12 @@ contract DeploySponsor is Script {
         address existingFeeSplit;
     }
 
-    function run() external returns (FeeSplit feeSplit, SponsoredPrize prize) {
-        Terms memory t = _terms();
+    function run() external returns (FeeSplit, SponsoredPrize) {
+        return runWith(_terms());
+    }
+
+    /// @dev `run` with the terms supplied directly instead of read from the environment.
+    function runWith(Terms memory t) public returns (FeeSplit feeSplit, SponsoredPrize prize) {
         if (t.pool.code.length == 0) revert GuardFailed("SPONSOR_POOL has no code");
         if (t.collection.code.length == 0) revert GuardFailed("SPONSOR_COLLECTION has no code");
         if (t.capWei == 0) revert GuardFailed("SPONSOR_CAP_WEI is zero");
@@ -44,18 +48,7 @@ contract DeploySponsor is Script {
         (, address broadcaster,) = vm.readCallers();
         if (broadcaster != t.owner) revert GuardFailed("broadcaster is not SPONSOR_OWNER");
         feeSplit = t.existingFeeSplit == address(0) ? new FeeSplit(t.owner) : FeeSplit(payable(t.existingFeeSplit));
-        prize = new SponsoredPrize(
-            t.pool,
-            address(feeSplit),
-            t.sponsor,
-            t.capWei,
-            t.collection,
-            t.tokenId,
-            t.parkedPriceWei,
-            t.floorWei,
-            t.decayWeiPerPull,
-            t.reclaimDelay
-        );
+        prize = _newPrize(t, address(feeSplit));
         feeSplit.setSponsor(t.sponsor, t.capWei);
         feeSplit.setPrize(address(prize));
         bool registrarSet = IPool(t.pool).admin() == broadcaster;
@@ -65,6 +58,22 @@ contract DeploySponsor is Script {
         _postflight(feeSplit, prize, t, registrarSet);
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)) _writeRecord(feeSplit, prize, t);
         _log(feeSplit, prize, t, registrarSet);
+    }
+
+    /// @dev The constructor arguments are encoded in two halves to stay inside the stack limit.
+    function _newPrize(Terms memory t, address feeSplit) internal returns (SponsoredPrize prize) {
+        bytes memory code = bytes.concat(
+            type(SponsoredPrize).creationCode,
+            abi.encode(t.pool, feeSplit, t.sponsor, t.capWei, t.collection),
+            abi.encode(t.tokenId, t.parkedPriceWei, t.floorWei, t.decayWeiPerPull, t.reclaimDelay)
+        );
+        address deployed;
+        // solhint-disable-next-line no-inline-assembly
+        assembly ("memory-safe") {
+            deployed := create(0, add(code, 0x20), mload(code))
+        }
+        if (deployed == address(0)) revert GuardFailed("SponsoredPrize deployment failed");
+        prize = SponsoredPrize(payable(deployed));
     }
 
     function _terms() internal view returns (Terms memory t) {
