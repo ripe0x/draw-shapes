@@ -91,10 +91,11 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
         pool.bookOnly(count + 5);
     }
 
-    /// @dev Mean of `paidOnDay` over the complete days before day `k`, at most seven.
+    /// @dev Mean of `paidOnDay` over the complete days after the Live day (day 0) and before day
+    ///      `k`, at most seven.
     function _expectedVolume(uint256 k) internal view returns (uint256 sum) {
-        if (k == 0) return 0;
-        uint256 n = k > 7 ? 7 : k;
+        if (k < 2) return 0;
+        uint256 n = k - 1 > 7 ? 7 : k - 1;
         for (uint256 i = 1; i <= n; ++i) {
             sum += paidOnDay[k - i];
         }
@@ -187,13 +188,18 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
     function test_volumeIsTheMeanOverCompleteDays() public {
         _open();
         _tickets(0, 2);
-        assertEq(pool.dailyVolume(), 0, "the Live day is still open");
+        assertEq(pool.dailyVolume(), 0, "the Live day is partial");
         _toDay(1);
-        assertEq(pool.dailyVolume(), paidOnDay[0], "one complete day");
+        assertEq(pool.dailyVolume(), 0, "the Live day is not a complete day");
+        _tickets(1, 2);
         _toDay(2);
-        assertEq(pool.dailyVolume(), paidOnDay[0] / 2, "mean over two complete days");
-        _toDay(8);
-        assertEq(pool.dailyVolume(), 0, "day 0 is eight days old");
+        assertEq(pool.dailyVolume(), paidOnDay[1], "one complete day");
+        _tickets(2, 1);
+        _toDay(3);
+        assertGt(paidOnDay[0], 0);
+        assertEq(pool.dailyVolume(), (paidOnDay[1] + paidOnDay[2]) / 2, "mean of the two full days only");
+        _toDay(10);
+        assertEq(pool.dailyVolume(), 0, "days 1 and 2 left the window");
     }
 
     function test_depositAdmittedBelowTheCapAndRevertedAtIt() public {
@@ -216,8 +222,8 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
 
     function test_volumeCapClosesDepositsWhenItFallsBelowNav() public {
         _open();
-        _tickets(0, 2);
-        _toDay(1);
+        _tickets(1, 2);
+        _toDay(2);
         _setFloor(1);
 
         _setTurnover(1);
@@ -245,8 +251,8 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
 
     function test_feeIsPaybackDaysOfYieldInsideTheBand() public {
         _open();
-        _tickets(0, 3);
-        _toDay(1);
+        _tickets(1, 3);
+        _toDay(2);
 
         uint256 volume = pool.dailyVolume();
         assertGt(volume, 0);
@@ -268,8 +274,8 @@ contract PoolAdmissionForkTest is ForkBase, PoolFixture {
 
     function test_feeClampsToTheCapAndTheFloor() public {
         _open();
-        _tickets(0, 3);
-        _toDay(1);
+        _tickets(1, 3);
+        _toDay(2);
 
         uint256 volume = pool.dailyVolume();
         (uint16 premiumBps,,) = pool.feeSplit();

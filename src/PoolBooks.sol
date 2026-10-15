@@ -311,14 +311,19 @@ abstract contract PoolBooks is PoolStorage {
     ///      backing plus the mint fee of each rung. `nav()` is net of `claims`. The target depth of a
     ///      mix row is `rowDepth(_boardItems(), shareBps)`.
     function _boardItems() internal view returns (uint256 items) {
-        uint256 shares = _mixShares;
-        if (shares != 0) {
-            uint256 mean = (_mixBacking + _mintFee() * _mixRungs) / shares;
+        uint256 mean = _meanRowCost();
+        if (mean != 0) {
             uint256 value = nav();
-            if (mean != 0) items = (value - value * _reserveBps / BPS) / mean;
+            items = (value - value * _reserveBps / BPS) / mean;
         }
         uint256 floor = minItems;
         return items > floor ? items : floor;
+    }
+
+    /// @dev Share-weighted cost of a mix row at the current mint fee, or zero when the mix is empty.
+    function _meanRowCost() internal view returns (uint256) {
+        uint256 shares = _mixShares;
+        return shares == 0 ? 0 : (_mixBacking + _mintFee() * _mixRungs) / shares;
     }
 
     /// @dev FWA and Shapes reads used at several call sites. Each is one function so the external

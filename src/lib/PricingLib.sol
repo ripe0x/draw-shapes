@@ -45,9 +45,10 @@ library PricingLib {
         return row.rungs.length >= 2;
     }
 
-    /// @notice Target board items for one row: `minItems * shareBps / 10_000`, rounded up.
-    function rowDepth(uint256 minItems, uint256 shareBps) internal pure returns (uint256) {
-        return FP.fullMulDivUp(minItems, shareBps, BPS);
+    /// @notice Target board items for one row: `items * shareBps / 10_000`, rounded up. Callers
+    ///         pass `boardItems()` as `items`.
+    function rowDepth(uint256 items, uint256 shareBps) internal pure returns (uint256) {
+        return FP.fullMulDivUp(items, shareBps, BPS);
     }
 
     /// @notice Inputs of `chooseRow` for one mix row. `count` is the listed, held and queued items

@@ -90,7 +90,7 @@ contract PoolListing is PoolBooks {
     }
 
     /// @notice Board depth in items: `max(minItems, (nav - nav * reserveBps / 10_000) /
-    ///         meanRowBacking)`, with `meanRowBacking` the share-weighted backing of the mix rows.
+    ///         meanRowCost)`, with `meanRowCost` the share-weighted backing plus mint fee of the mix rows.
     function boardItems() external view onlyDelegated returns (uint256) {
         return _boardItems();
     }
@@ -195,7 +195,7 @@ contract PoolListing is PoolBooks {
         return _lastRefundAt;
     }
 
-    /// @notice Largest share of the FWA selection weight, in bps, that the listed GRAIL tracks hold.
+    /// @notice Largest share of the FWA selection weight, in bps, that the listed GRAIL ladder holds.
     function grailProbCapBps() external view onlyDelegated returns (uint256) {
         return _grailProbCapBps;
     }

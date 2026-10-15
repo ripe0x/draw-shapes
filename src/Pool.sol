@@ -209,7 +209,8 @@ contract Pool is PoolBooks {
     ///         queued, `Age` when the queue has been nonempty for `batchMaxAge`, `Thin` when the
     ///         listed items beyond the unsettled acquisitions are fewer than `concurrency +
     ///         THIN_MARGIN`, `Deep` when the listed, held and queued items are fewer than
-    ///         `boardItems()` by at least `batchMin`. `None` when no reason holds, when a nonempty
+    ///         `boardItems()` by at least `batchMin` and spendable cash covers one mean row cost.
+    ///         `None` when no reason holds, when a nonempty
     ///         queue cannot be filled (no held item and the head of the queue is unaffordable) and
     ///         when the pool is not Live.
     function settleDue() public view returns (SettleTrigger) {
@@ -222,7 +223,9 @@ contract Pool is PoolBooks {
         } else if (queued != 0) {
             return SettleTrigger.None;
         }
-        if (listedCount + _held.length + queued + _batchMin <= _boardItems()) return SettleTrigger.Deep;
+        if (listedCount + _held.length + queued + _batchMin <= _boardItems() && _spendable() >= _meanRowCost()) {
+            return SettleTrigger.Deep;
+        }
         return SettleTrigger.None;
     }
 
@@ -499,8 +502,8 @@ contract Pool is PoolBooks {
         return PricingLib.entryFeeBps(feeSplit.premiumBps, volume, currentNav, f.floorBps, f.capBps, f.paybackDays);
     }
 
-    /// @dev Mints shares to `to` for `value`. The entry contribution goes to the GRAIL buckets,
-    ///      split by `minorShareBps`. Reverts `DepositsClosed` while Live before `depositsOpenAt`
+    /// @dev Mints shares to `to` for `value`. The entry contribution goes to `grail.fund`.
+    ///      Reverts `DepositsClosed` while Live before `depositsOpenAt`
     ///      and `NavCapReached` at or above `navCap()`. Shares are priced on NAV before the
     ///      deposit. `keptValue` is the part of `value` that arrived as held Shapes: `cash` is
     ///      reduced by it, so `cash` changes by `net - keptValue`.
