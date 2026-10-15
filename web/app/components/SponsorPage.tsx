@@ -5,13 +5,15 @@ import type { ReactNode } from "react";
 import { useAccount } from "wagmi";
 import { feeSplitAbi, sponsoredPrizeAbi } from "../lib/abi/sponsor";
 import { evmNowAddressUrl } from "../lib/errors";
+import { useListedItems } from "../lib/art";
 import { oneInOf } from "../lib/foreign";
 import { eth, short, utc } from "../lib/format";
 import { drawOdds, usePool } from "../lib/pool";
 import { type DealState, type SponsorDeal, useSponsorDeal } from "../lib/sponsor";
 import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
-import { CollectionName, ForeignArt } from "./SponsoredPrizes";
+import { CyclingPunk, SponsorCtaBand, SponsorTakenBand } from "./SponsorBands";
+import { TokenArt } from "./TokenArt";
 import { type Tx, TxButton, TxLine, useTx } from "./Tx";
 
 /** Contact for a prize offer. The owner replaces this text. */
@@ -36,6 +38,18 @@ function badgeText(deal: SponsorDeal | undefined, loading: boolean, listPrice?: 
   return text[deal.state];
 }
 
+const STATE_WORD: Record<DealState, string> = {
+  unstarted: "Agreed, not started",
+  parked: "Parked",
+  hot: "Hot",
+  captured: "Captured",
+  held: "Token held, release pending",
+  unlisted: "Unlisted, rescue pending",
+  reclaimed: "Reclaimed",
+  released: "Released",
+  ended: "Ended",
+};
+
 export function SponsorPage({ record }: { record?: SponsorRecord }) {
   const dep = useDeployment();
   const { address } = useAccount();
@@ -48,119 +62,189 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
   const odds = pool ? drawOdds(pool.board, pool.grail, pool.foreign) : undefined;
   const weight = odds?.rows.find((r) => item && r.key === `foreign-${item.listingId}`)?.weight ?? 0n;
   const badge = record ? badgeText(deal, query.isLoading, listPrice) : "No deal";
+  const oneIn = listPrice !== undefined ? oneInOf(weight, odds?.total ?? 0n) : undefined;
 
   return (
-    <main className="sponsor-page">
-      <section className="sponsor-hero">
-        <span className="sponsor-kicker">One prize, one sponsor</span>
-        <h1>Sponsor Draw Shapes</h1>
-        <p>
-          Lend a prize to the board. The pool lists your token, and you earn from the operator&apos;s Shapes mint fees up to the cap. Once the
-          cap is paid, the prize goes hot on the board and its price falls with every settled pull.
-        </p>
-        <span className="sponsor-badge">{badge}</span>
-      </section>
+    <>
+      <main className="sponsor-page">
+        <section className="sponsor-hero">
+          {record && (
+            <div className="sponsor-hero-art">
+              <CyclingPunk collection={record.collection} />
+            </div>
+          )}
+          <span className="sponsor-kicker">One prize, one sponsor</span>
+          <h1>Sponsor Draw Shapes</h1>
+          <p>
+            Lend a prize to the board. The pool lists your token, and you earn from the operator&apos;s Shapes mint fees up to the cap. Once the
+            cap is paid, the prize goes hot on the board and its price falls with every settled pull.
+          </p>
+          <span className="sponsor-badge">{badge}</span>
+        </section>
 
-      {query.error && <p className="error-line">Could not read the deal: {query.error.message}</p>}
+        {query.error && <p className="error-line">Could not read the deal: {query.error.message}</p>}
 
-      {!record && (
-        <div className="sponsor-band">
-          <div>
-            <h2>No deal yet</h2>
-            <p>This deployment has no sponsored prize. A deal appears here once its record is published.</p>
-          </div>
-        </div>
-      )}
+        {!record && <SponsorCtaBand />}
 
-      {record && deal && (
-        <>
-          <div className="sponsor-band">
-            <div>
-              <h2>
-                <CollectionName collection={record.collection} /> #{record.tokenId}
-              </h2>
+        {record && deal && (
+          <>
+            <SponsorTakenBand collection={record.collection} tokenId={BigInt(record.tokenId)} sponsor={deal.sponsor} state={STATE_WORD[deal.state]}>
               <dl className="sponsor-facts">
                 <div><dt>List price</dt><dd>{listPrice !== undefined ? `${eth(listPrice, 4)} ETH` : deal.state === "unstarted" ? `${eth(deal.parkedPriceWei, 4)} ETH at start` : "-"}</dd></div>
-                <div><dt>Odds per pull</dt><dd>{listPrice !== undefined ? oneInOf(weight, odds?.total ?? 0n) : "-"}</dd></div>
+                <div><dt>Odds per pull</dt><dd>{oneIn ?? "-"}</dd></div>
                 <div><dt>Phase</dt><dd>{phaseText(deal)}</dd></div>
               </dl>
+            </SponsorTakenBand>
+
+            <section className="sponsor-section">
+              <div className="sponsor-label">Terms</div>
+              <div className="sponsor-rows">
+                <Row label="Parked price" value={`${eth(deal.parkedPriceWei, 4)} ETH`} />
+                <Row label="Floor" value={`${eth(deal.floorWei, 4)} ETH`} />
+                <Row label="Decay per pull" value={`${eth(deal.decayWeiPerPull, 6)} ETH per settled pull once hot`} />
+                <Row label="Cap" value={`${eth(deal.capWei, 4)} ETH of mint fees`} />
+                <Row label="Paid so far" value={`${eth(deal.paidWei, 4)} ETH`} strong />
+                <Row label="Reclaim from" value={utc(deal.reclaimAfter)} />
+                <Row label="Sponsor" value={<Addr address={deal.sponsor} chainId={dep.chainId} />} />
+                <Row label="Operator" value={<Addr address={deal.owner} chainId={dep.chainId} />} />
+                <Row label="Controller" value={<Addr address={record.prize} chainId={dep.chainId} />} />
+                <Row label="Fee split" value={<Addr address={record.feeSplit} chainId={dep.chainId} />} />
+              </div>
+              <p className="sponsor-note">
+                While parked the prize is listed at {eth(deal.parkedPriceWei, 4)} ETH{oneIn ? `, ${oneIn} per pull,` : ""} so a draw is close to
+                impossible until the sponsor is paid. The ticket is unchanged: a pull costs what it cost before the prize was listed. Hot means the
+                cap is paid. The price then falls with every settled pull toward the floor and the odds rise with it.
+              </p>
+            </section>
+          </>
+        )}
+
+        <section className="sponsor-section" id="lend">
+          <div className="sponsor-label">Lend your prize</div>
+          <div className="sponsor-steps">
+            <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim date.</Step>
+            <Step n="02">Hand the token to the pool admin.</Step>
+            <Step n="03">The admin registers the token in the pool as a foreign listing.</Step>
+            <Step n="04">The operator starts the deal. The fee split locks and payments begin.</Step>
+          </div>
+          <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the admin, is planned.</p>
+          <p className="sponsor-note">Contact: {CONTACT}</p>
+        </section>
+
+        {record && deal && (
+          <>
+            <section className="sponsor-section">
+              <div className="sponsor-section-head">
+                <div className="sponsor-label">Onchain status</div>
+                <span className="sponsor-badge">{badge}</span>
+              </div>
+              <div className="sponsor-rows">
+                <Row label="Pool" value={<Addr address={dep.pool} chainId={dep.chainId} />} />
+                <Row label="Listing" value={listingText(deal, pool ? (item ? item.notional : null) : undefined)} />
+                <Row
+                  label="Shapes fee recipient"
+                  value={same(deal.feeRecipient, record.feeSplit) ? "The fee split" : `Not the fee split (${short(deal.feeRecipient)})`}
+                  strong={!same(deal.feeRecipient, record.feeSplit)}
+                />
+                <Row label="Accrued in Shapes" value={`${eth(deal.feesOwedWei, 6)} ETH`} />
+                <Row label="Fee split" value={deal.locked ? "Locked" : "Unlocked"} />
+                <Row label="Token holder" value={holderText(deal, record.prize, dep.fwaPool)} />
+                {deal.hot && <Row label="Price floor" value={deal.atFloor ? "Reached" : "Falling"} />}
+                <Row label="Operator balance" value={`${eth(deal.ownerBalance, 6)} ETH`} />
+                <Row label="Sponsor balance" value={`${eth(deal.sponsorBalance, 6)} ETH`} strong />
+              </div>
+            </section>
+
+            <Actions record={record} deal={deal} account={address} />
+          </>
+        )}
+
+        <section className="sponsor-section">
+          <div className="sponsor-label">How it works</div>
+          <div className="sponsor-steps">
+            <Step n="01">The pool lists the token at the parked price. Each pull draws it with a chance set by that price.</Step>
+            <Step n="02">The operator&apos;s Shapes mint fees go to the sponsor until the cap is paid. Withdrawals come from the fee split.</Step>
+            <Step n="03">At the cap the token turns hot. Its price falls with every settled pull toward the floor and the sponsor has no further claim.</Step>
+            <Step n="04">A pull that draws the token captures it. The ticket FWA pays for it goes to the GRAIL fund.</Step>
+          </div>
+        </section>
+
+        <section className="sponsor-section">
+          <div className="sponsor-label">Why the terms hold</div>
+          <div className="sponsor-reasons">
+            <div>
+              <b>The parked price keeps the odds near zero until the sponsor is paid. </b>
+              <span>The pool lists the token at the parked price, so a pull rarely draws it. Odds rise only after the cap is paid and the price falls.</span>
             </div>
-            <div className="sponsor-band-art">
-              <ForeignArt collection={record.collection} tokenId={BigInt(record.tokenId)} />
+            <div>
+              <b>Payments come only from mint fees. </b>
+              <span>The fee split pays the sponsor from the operator&apos;s Shapes mint fees. Depositor shares, Shape backing and pool cash keep separate balances.</span>
+            </div>
+            <div>
+              <b>A capture while parked ends payments at what was paid. </b>
+              <span>The token goes to the winner. The sponsor keeps the amount already paid and the rest of the cap goes unpaid.</span>
+            </div>
+            <div>
+              <b>The sponsor can reclaim after the date, while parked. </b>
+              <span>From the reclaim date, while the token is unwon and the cap unpaid, the sponsor takes the token back and keeps what was paid.</span>
+            </div>
+            <div>
+              <b>The hot phase belongs to the game. </b>
+              <span>Once the cap is paid the sponsor has no further claim. The price falls with each settled pull, and a capture sends the ticket FWA pays to the GRAIL fund.</span>
             </div>
           </div>
+        </section>
 
-          <section className="sponsor-section">
-            <div className="sponsor-label">Terms</div>
-            <div className="sponsor-rows">
-              <Row label="Parked price" value={`${eth(deal.parkedPriceWei, 4)} ETH`} />
-              <Row label="Floor" value={`${eth(deal.floorWei, 4)} ETH`} />
-              <Row label="Decay per pull" value={`${eth(deal.decayWeiPerPull, 6)} ETH per settled pull once hot`} />
-              <Row label="Cap" value={`${eth(deal.capWei, 4)} ETH of mint fees`} />
-              <Row label="Paid so far" value={`${eth(deal.paidWei, 4)} ETH`} strong />
-              <Row label="Reclaim from" value={utc(deal.reclaimAfter)} />
-              <Row label="Sponsor" value={<Addr address={deal.sponsor} chainId={dep.chainId} />} />
-              <Row label="Operator" value={<Addr address={deal.owner} chainId={dep.chainId} />} />
-              <Row label="Controller" value={<Addr address={record.prize} chainId={dep.chainId} />} />
-              <Row label="Fee split" value={<Addr address={record.feeSplit} chainId={dep.chainId} />} />
-            </div>
-          </section>
+        <GameSection />
 
-          <section className="sponsor-section">
-            <div className="sponsor-section-head">
-              <div className="sponsor-label">Onchain status</div>
-              <span className="sponsor-badge">{badge}</span>
-            </div>
-            <div className="sponsor-rows">
-              <Row label="Pool" value={<Addr address={dep.pool} chainId={dep.chainId} />} />
-              <Row label="Listing" value={listingText(deal, pool ? (item ? item.notional : null) : undefined)} />
-              <Row
-                label="Shapes fee recipient"
-                value={same(deal.feeRecipient, record.feeSplit) ? "The fee split" : `Not the fee split (${short(deal.feeRecipient)})`}
-                strong={!same(deal.feeRecipient, record.feeSplit)}
-              />
-              <Row label="Accrued in Shapes" value={`${eth(deal.feesOwedWei, 6)} ETH`} />
-              <Row label="Fee split" value={deal.locked ? "Locked" : "Unlocked"} />
-              <Row label="Token holder" value={holderText(deal, record.prize, dep.fwaPool)} />
-              {deal.hot && <Row label="Price floor" value={deal.atFloor ? "Reached" : "Falling"} />}
-              <Row label="Operator balance" value={`${eth(deal.ownerBalance, 6)} ETH`} />
-              <Row label="Sponsor balance" value={`${eth(deal.sponsorBalance, 6)} ETH`} strong />
-            </div>
-          </section>
+        <p className="sponsor-fine">
+          A capture while the deal is parked ends the sponsor&apos;s payments at the amount paid. The token goes to the winner and the rest of the
+          cap is left unpaid. After the reclaim date, while the token is unwon and the cap unpaid, the sponsor may reclaim it. The sponsor keeps
+          what was paid, the rest of the cap is forfeited and mint fees return to the operator. Each withdrawal pays its caller. Anyone can advance
+          the hot price. <Link href="/pull">See the live pool.</Link>
+        </p>
+      </main>
 
-          <Actions record={record} deal={deal} account={address} />
-        </>
-      )}
-
-      <section className="sponsor-section">
-        <div className="sponsor-label">Lend your prize</div>
-        <div className="sponsor-steps">
-          <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim date.</Step>
-          <Step n="02">Hand the token to the pool admin.</Step>
-          <Step n="03">The admin registers the token in the pool as a foreign listing.</Step>
-          <Step n="04">The operator starts the deal. The fee split locks and payments begin.</Step>
+      <footer className="sponsor-footer">
+        <div className="sponsor-footer-links">
+          <a href={evmNowAddressUrl(dep.pool, dep.chainId)} target="_blank" rel="noreferrer">
+            Pool
+          </a>
+          {record && (
+            <>
+              <a href={evmNowAddressUrl(record.prize, dep.chainId)} target="_blank" rel="noreferrer">
+                Sponsored prize
+              </a>
+              <a href={evmNowAddressUrl(record.feeSplit, dep.chainId)} target="_blank" rel="noreferrer">
+                Fee split
+              </a>
+            </>
+          )}
         </div>
-        <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the admin, is planned.</p>
-        <p className="sponsor-note">Contact: {CONTACT}</p>
-      </section>
+        <Link href="/">Draw Shapes</Link>
+      </footer>
+    </>
+  );
+}
 
-      <section className="sponsor-section">
-        <div className="sponsor-label">How it works</div>
-        <div className="sponsor-steps">
-          <Step n="01">The pool lists the token at the parked price. Each pull draws it with a chance set by that price.</Step>
-          <Step n="02">The operator&apos;s Shapes mint fees go to the sponsor until the cap is paid. Withdrawals come from the fee split.</Step>
-          <Step n="03">At the cap the token turns hot. Its price falls with every settled pull toward the floor and the sponsor has no further claim.</Step>
-          <Step n="04">A pull that draws the token captures it. The ticket FWA pays for it goes to the GRAIL fund.</Step>
-        </div>
-      </section>
-
-      <p className="sponsor-fine">
-        A capture while the deal is parked ends the sponsor&apos;s payments at the amount paid. The token goes to the winner and the rest of the
-        cap is left unpaid. After the reclaim date, while the token is unwon and the cap unpaid, the sponsor may reclaim it. The sponsor keeps
-        what was paid, the rest of the cap is forfeited and mint fees return to the operator. Each withdrawal pays its caller. Anyone can advance
-        the hot price. <Link href="/pull">See the live pool.</Link>
-      </p>
-    </main>
+/** The game in two sentences, with one listed Shape as art and a link to the landing page. */
+function GameSection() {
+  const dep = useDeployment();
+  const shape = useListedItems().data?.find((i) => !i.pack && i.collection.toLowerCase() === dep.shapes.toLowerCase());
+  return (
+    <section className="sponsor-section sponsor-game">
+      <div>
+        <div className="sponsor-label">What Draw is</div>
+        <p>
+          A prize pool of Shapes, artworks that hold redeemable ETH. A player pays a ticket, onchain randomness picks one prize by price-weighted
+          odds, and it transfers straight to their wallet. A sponsored prize is one more entry on the same board.
+        </p>
+        <Link className="sponsor-game-link" href="/">
+          See the game →
+        </Link>
+      </div>
+      {shape && <TokenArt token={shape} width={132} />}
+    </section>
   );
 }
 

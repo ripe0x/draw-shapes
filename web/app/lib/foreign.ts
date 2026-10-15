@@ -46,18 +46,23 @@ export function useCollectionName(collection: Address) {
   });
 }
 
+type Client = NonNullable<ReturnType<typeof usePublicClient>>;
+
+/** Query options for one foreign token's image, read once and kept. An error means no usable image. */
+export const foreignImageQuery = (client: Client | undefined, chainId: number, collection: Address, tokenId: bigint) => ({
+  queryKey: ["foreign-image", chainId, collection.toLowerCase(), tokenId.toString()],
+  enabled: !!client,
+  staleTime: Infinity,
+  gcTime: Infinity,
+  retry: 1,
+  queryFn: async () => imageFrom(await client!.readContract({ address: collection, abi: erc721Abi, functionName: "tokenURI", args: [tokenId] })),
+});
+
 /** The foreign token's image, read once and kept. An error means no usable image. */
 export function useForeignImage(collection: Address, tokenId: bigint) {
   const dep = useDeployment();
   const client = usePublicClient({ chainId: dep.chainId });
-  return useQuery({
-    queryKey: ["foreign-image", dep.chainId, collection.toLowerCase(), tokenId.toString()],
-    enabled: !!client,
-    staleTime: Infinity,
-    gcTime: Infinity,
-    retry: 1,
-    queryFn: async () => imageFrom(await client!.readContract({ address: collection, abi: erc721Abi, functionName: "tokenURI", args: [tokenId] })),
-  });
+  return useQuery(foreignImageQuery(client, dep.chainId, collection, tokenId));
 }
 
 export interface SponsorTerms {
