@@ -7,7 +7,8 @@ of contracts and no pool change.
 
 ## Deal terms, first sponsor
 
-- Sponsor lends the punk. The pool lists it at 30 ETH, where it is one draw in about 2.3 million per
+- Sponsor lends a punk of the sponsor's choice: any token of the collection that the sponsor owns, picked at
+  stake time. The pool lists it at 30 ETH, where it is one draw in about 2.3 million per
   pull and stays until the sponsor is paid.
 - Sponsor is paid from the Shapes mint fees the operator earns: 100 percent of every mint fee until
   `cap` (45 ETH, the 30 ETH value plus 50 percent). Payment comes from mint fees.
@@ -45,20 +46,20 @@ Set as the Shapes mint fee recipient (`Shapes.setFeeRecipient`). Receives every 
 
 One per deal. Implements `IForeignController`.
 
-- Constructor: `pool`, `feeSplit`, `sponsor`, `capWei` (45 ETH), `collection`, `tokenId`, `parkedPriceWei` (30 ETH),
+- Constructor: `pool`, `feeSplit`, `sponsor`, `capWei` (45 ETH), `collection`, `parkedPriceWei` (30 ETH),
   `floorWei` (0.25 ETH), `decayWeiPerPull` (0.001 ETH), `reclaimDelay` (seconds, 30 days; the deploy
-  script reads it from `SPONSOR_RECLAIM_DELAY`). `reclaimAfter` is zero until `stake` and then
+  script reads it from `SPONSOR_RECLAIM_DELAY`). `tokenId` and `reclaimAfter` are zero until `stake` and then
   `block.timestamp + reclaimDelay`.
-- `stake()`: sponsor only, once (`AlreadyStaked`). Requires `pool.registrar() == address(this)`
-  (`NotRegistrar`), the sponsor's approval of this contract for the token, and `feeSplit.sponsor() == sponsor`
+- `stake(tokenId_)`: sponsor only, once (`AlreadyStaked`). Requires `pool.registrar() == address(this)`
+  (`NotRegistrar`), the sponsor's approval of this contract for `tokenId_`, and `feeSplit.sponsor() == sponsor`
   and `feeSplit.capWei() == capWei` (`TermsMismatch`). Pulls the token with `transferFrom(sponsor, this,
-  tokenId)`, approves the pool, calls `pool.registerForeign(collection, tokenId, this, parkedPriceWei)`,
+  tokenId_)`, approves the pool, records `tokenId = tokenId_`, calls `pool.registerForeign(collection, tokenId, this, parkedPriceWei)`,
   reads the listing id from `pool.foreignListings()`, calls `feeSplit.lock()` and records `listingId`,
   `listedAtPull = pool.grail().pulls`, `startedAt = block.timestamp` and `reclaimAfter = block.timestamp +
-  reclaimDelay`. Emits `Staked(listingId)`. Transfer, registration and recording happen in one
+  reclaimDelay`. Emits `Staked(listingId, tokenId)`. Transfer, registration and recording happen in one
   transaction.
 - `staked()`: true once `stake` has recorded the listing.
-- `canStake()`: true when unstaked, the prize is the pool's registrar, and the sponsor owns the token and has
+- `canStake(tokenId_)`: true when unstaked, the prize is the pool's registrar, and the sponsor owns `tokenId_` and has
   approved the prize for it (single approval or approval for all). The page gates its stake button on it.
 - `owner`: `feeSplit.owner()`. The prize contract stores no owner of its own.
 - `active()`: true while the prize is staked, not captured, and the pool entry exists with a nonzero
@@ -80,7 +81,8 @@ One per deal. Implements `IForeignController`.
   to the owner in Hot, then unlocks `feeSplit`. The pool's `exportStep` sends the token of a listing to
   its controller, so after an exit the token sits in this contract until `releaseHeld`. `stake` is atomic, so the
   contract holds the token only after an export.
-- `onERC721Received`: accepts the deal's token from its collection.
+- `onERC721Received`: accepts the staked token from its collection after `stake`; reverts `WrongToken` for every
+  token before `stake`.
 
 ## Operations
 
@@ -101,15 +103,15 @@ One per deal. Implements `IForeignController`.
 
    The pool has one registrar at a time, so a new deal sets it again once the previous prize is staked.
    A broadcast run also writes `deployments/<chainId>-sponsor.json` (`SPONSOR_RECORD` overrides the path)
-   with `feeSplit`, `prize`, `collection` and `tokenId`; the web app's `/sponsor` page reads it.
+   with `feeSplit`, `prize` and `collection`; the web app's `/sponsor` page reads it.
 2. The Shapes admin sets the fee recipient:
 
        cast send <shapes> "setFeeRecipient(address)" <feeSplit> --account <shapes admin keystore>
 
    Mint fees accrue in Shapes per recipient. `Shapes.withdrawFees(feeSplit)` is callable by anyone and
    forwards the accrued fees to `FeeSplit.receive()`, which applies the routing at that moment.
-3. The sponsor opens `/sponsor`, approves the prize contract for the token on the collection, and calls
-   `prize.stake()` from the page. The button is enabled while `prize.canStake()` is true. The stake
+3. The sponsor opens `/sponsor`, chooses a token of the collection it owns, approves the prize contract for that token, and calls
+   `prize.stake(tokenId)` from the page. The button is enabled while `prize.canStake(tokenId)` is true. The stake
    registers the listing and locks `FeeSplit`.
 4. The prize is active once the pool activates the listing (next settlement).
 5. Keeper (`script/keeper.sh`) with `SPONSOR_PRIZE`, `SHAPES` and `FEE_SPLIT` set runs two more steps on each

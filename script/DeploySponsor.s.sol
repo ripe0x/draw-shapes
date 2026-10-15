@@ -15,7 +15,7 @@ import {SponsoredPrize} from "../src/sponsor/SponsoredPrize.sol";
 ///      calls `Pool.setRegistrar(prize)`, otherwise it logs the `cast send` line for the admin.
 ///      `SPONSOR_RECLAIM_DELAY` is the delay from `SponsoredPrize.stake` to `reclaimAfter`.
 ///      `Shapes.setFeeRecipient` and `SponsoredPrize.stake` are separate steps by other callers. A broadcast run writes the deal record the web app reads
-///      (`{feeSplit, prize, collection, tokenId}`) to `SPONSOR_RECORD`, default
+///      (`{feeSplit, prize, collection}`) to `SPONSOR_RECORD`, default
 ///      `deployments/<chainId>-sponsor.json`.
 contract DeploySponsor is Script {
     error GuardFailed(string reason);
@@ -25,7 +25,6 @@ contract DeploySponsor is Script {
         address owner;
         address sponsor;
         address collection;
-        uint256 tokenId;
         uint256 parkedPriceWei;
         uint256 floorWei;
         uint256 decayWeiPerPull;
@@ -65,7 +64,7 @@ contract DeploySponsor is Script {
         bytes memory code = bytes.concat(
             type(SponsoredPrize).creationCode,
             abi.encode(t.pool, feeSplit, t.sponsor, t.capWei, t.collection),
-            abi.encode(t.tokenId, t.parkedPriceWei, t.floorWei, t.decayWeiPerPull, t.reclaimDelay)
+            abi.encode(t.parkedPriceWei, t.floorWei, t.decayWeiPerPull, t.reclaimDelay)
         );
         address deployed;
         // solhint-disable-next-line no-inline-assembly
@@ -81,7 +80,6 @@ contract DeploySponsor is Script {
         t.owner = vm.envAddress("SPONSOR_OWNER");
         t.sponsor = vm.envAddress("SPONSOR_SPONSOR");
         t.collection = vm.envAddress("SPONSOR_COLLECTION");
-        t.tokenId = vm.envUint("SPONSOR_TOKEN_ID");
         t.parkedPriceWei = vm.envUint("SPONSOR_PARKED_PRICE_WEI");
         t.floorWei = vm.envUint("SPONSOR_FLOOR_WEI");
         t.decayWeiPerPull = vm.envUint("SPONSOR_DECAY_WEI_PER_PULL");
@@ -101,7 +99,7 @@ contract DeploySponsor is Script {
         _eq(p.sponsor() == t.sponsor, "prize.sponsor");
         _eq(p.capWei() == t.capWei, "prize.capWei");
         _eq(p.collection() == t.collection, "prize.collection");
-        _eq(p.tokenId() == t.tokenId, "prize.tokenId");
+        _eq(p.tokenId() == 0, "prize.tokenId");
         _eq(p.parkedPriceWei() == t.parkedPriceWei, "prize.parkedPriceWei");
         _eq(p.floorWei() == t.floorWei, "prize.floorWei");
         _eq(p.decayWeiPerPull() == t.decayWeiPerPull, "prize.decayWeiPerPull");
@@ -115,8 +113,7 @@ contract DeploySponsor is Script {
         string memory key = "sponsorRecord";
         vm.serializeAddress(key, "feeSplit", address(f));
         vm.serializeAddress(key, "prize", address(p));
-        vm.serializeAddress(key, "collection", t.collection);
-        string memory json = vm.serializeString(key, "tokenId", vm.toString(t.tokenId));
+        string memory json = vm.serializeAddress(key, "collection", t.collection);
         string memory path = vm.envOr("SPONSOR_RECORD", string(""));
         if (bytes(path).length == 0) path = string.concat("deployments/", vm.toString(block.chainid), "-sponsor.json");
         vm.writeJson(json, path);
@@ -137,6 +134,8 @@ contract DeploySponsor is Script {
                 string.concat("cast send ", vm.toString(t.pool), " \"setRegistrar(address)\" ", vm.toString(address(p)))
             );
         }
-        console2.log("next: the sponsor approves the prize on the collection, then calls stake()");
+        console2.log(
+            "next: the sponsor approves the prize on the collection, then calls stake(tokenId) with any token of the collection it owns"
+        );
     }
 }

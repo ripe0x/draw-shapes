@@ -107,7 +107,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
             IERC721(collection).transferFrom(minter, sponsor, id);
         }
         p = new SponsoredPrize(
-            address(pool), address(feeSplit), sponsor, CAP, collection, id, parked, FLOOR, decay, 30 days
+            address(pool), address(feeSplit), sponsor, CAP, collection, parked, FLOOR, decay, 30 days
         );
         vm.prank(admin);
         _ip().setRegistrar(address(p));
@@ -131,7 +131,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
     function _deal(address collection, uint256 index) internal returns (SponsoredPrize p, uint256 id, uint256 lid) {
         (p, id) = _prepare(collection, index);
         vm.prank(sponsor);
-        p.stake();
+        p.stake(id);
         lid = p.listingId();
         vm.prank(address(pool));
         clone.activateListings(20);
@@ -205,7 +205,8 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         assertEq(feeSplit.capWei(), CAP);
         assertEq(prize.startedAt(), block.timestamp);
         assertTrue(prize.staked());
-        assertFalse(prize.canStake());
+        assertFalse(prize.canStake(tokenId));
+        assertEq(prize.tokenId(), tokenId);
         assertEq(prize.reclaimAfter(), block.timestamp + 30 days);
     }
 
@@ -525,17 +526,19 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         (SponsoredPrize p, uint256 id) = _prepareFresh(1);
         FeeSplit second = p.feeSplit();
         assertFalse(p.staked());
+        assertEq(p.tokenId(), 0);
         assertEq(p.reclaimAfter(), 0);
         assertFalse(second.locked());
         uint64 pulls = _pulls();
         uint256 t0 = block.timestamp;
 
-        vm.expectEmit(false, false, false, false, address(p));
-        emit SponsoredPrize.Staked(0);
+        vm.expectEmit(false, true, false, false, address(p));
+        emit SponsoredPrize.Staked(0, id);
         vm.prank(sponsor);
-        p.stake();
+        p.stake(id);
 
         assertTrue(p.staked());
+        assertEq(p.tokenId(), id);
         assertEq(p.reclaimAfter(), t0 + 30 days);
         assertEq(p.startedAt(), t0);
         assertEq(p.listedAtPull(), pulls);
@@ -547,34 +550,34 @@ contract SponsorForkTest is ForkBase, PoolFixture {
     }
 
     function test_revert_stakeByAnyoneButTheSponsor() public {
-        (SponsoredPrize p,) = _prepareFresh(1);
+        (SponsoredPrize p, uint256 id) = _prepareFresh(1);
         vm.prank(dealOwner);
         vm.expectRevert(SponsoredPrize.NotSponsor.selector);
-        p.stake();
+        p.stake(id);
         vm.prank(admin);
         vm.expectRevert(SponsoredPrize.NotSponsor.selector);
-        p.stake();
+        p.stake(id);
         vm.prank(stranger);
         vm.expectRevert(SponsoredPrize.NotSponsor.selector);
-        p.stake();
+        p.stake(id);
     }
 
     function test_revert_stakeWithoutTheRegistrarRole() public {
-        (SponsoredPrize p,) = _prepareFresh(1);
+        (SponsoredPrize p, uint256 id) = _prepareFresh(1);
         vm.prank(admin);
         _ip().setRegistrar(address(0));
         vm.prank(sponsor);
         vm.expectRevert(SponsoredPrize.NotRegistrar.selector);
-        p.stake();
+        p.stake(id);
     }
 
     function test_revert_stakeWhenAnotherAddressIsTheRegistrar() public {
-        (SponsoredPrize p,) = _prepareFresh(1);
+        (SponsoredPrize p, uint256 id) = _prepareFresh(1);
         vm.prank(admin);
         _ip().setRegistrar(stranger);
         vm.prank(sponsor);
         vm.expectRevert(SponsoredPrize.NotRegistrar.selector);
-        p.stake();
+        p.stake(id);
     }
 
     function test_revert_stakeWithoutApproval() public {
@@ -583,61 +586,86 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         IERC721(WPUNKS).approve(address(0), id);
         vm.prank(sponsor);
         vm.expectRevert();
-        p.stake();
+        p.stake(id);
+    }
+
+    /// @dev A token of another collection cannot be staked: the prize pulls from its own immutable
+    ///      `collection`, so no input selects another collection.
+    function test_revert_stakeATokenTheSponsorDoesNotOwn() public {
+        (SponsoredPrize p, uint256 id) = _prepareFresh(1);
+        uint256 other = IERC721Enumerable(WPUNKS).tokenByIndex(2);
+        assertTrue(IERC721(WPUNKS).ownerOf(other) != sponsor);
+        vm.prank(sponsor);
+        vm.expectRevert();
+        p.stake(other);
+        assertFalse(p.staked());
+        assertEq(p.tokenId(), 0);
+        assertEq(IERC721(WPUNKS).ownerOf(id), sponsor);
     }
 
     function test_revert_stakeTwice() public {
         vm.prank(sponsor);
         vm.expectRevert(SponsoredPrize.AlreadyStaked.selector);
-        prize.stake();
+        prize.stake(tokenId);
+    }
+
+    function test_theSponsorStakesADifferentPunkInEachOfTwoDeals() public {
+        (SponsoredPrize p1, uint256 id1) = _prepareFresh(1);
+        vm.prank(sponsor);
+        p1.stake(id1);
+        (SponsoredPrize p2, uint256 id2) = _prepareFresh(2);
+        vm.prank(sponsor);
+        p2.stake(id2);
+
+        assertTrue(id1 != id2 && id1 != tokenId && id2 != tokenId);
+        assertEq(p1.tokenId(), id1);
+        assertEq(p2.tokenId(), id2);
+        assertEq(IERC721(WPUNKS).ownerOf(id1), address(clone));
+        assertEq(IERC721(WPUNKS).ownerOf(id2), address(clone));
+        assertEq(_priceOf(p1.listingId()), PARKED_PRICE);
+        assertEq(_priceOf(p2.listingId()), PARKED_PRICE);
+        assertEq(_ip().foreignListings().length, 3);
+        _assertI1();
     }
 
     function test_canStakeReflectsEachCondition() public {
         (SponsoredPrize p, uint256 id) = _prepareFresh(1);
-        assertTrue(p.canStake());
+        assertTrue(p.canStake(id));
+
+        uint256 unapproved = IERC721Enumerable(WPUNKS).tokenByIndex(2);
+        address holder = IERC721(WPUNKS).ownerOf(unapproved);
+        vm.prank(holder);
+        IERC721(WPUNKS).transferFrom(holder, sponsor, unapproved);
+        assertFalse(p.canStake(unapproved), "owned but not approved");
 
         vm.prank(sponsor);
         IERC721(WPUNKS).approve(address(0), id);
-        assertFalse(p.canStake(), "no approval");
+        assertFalse(p.canStake(id), "no approval");
         vm.prank(sponsor);
         IERC721(WPUNKS).setApprovalForAll(address(p), true);
-        assertTrue(p.canStake(), "approval for all");
+        assertTrue(p.canStake(id), "approval for all");
+        assertTrue(p.canStake(unapproved), "approval for all covers every owned token");
 
         vm.prank(admin);
         _ip().setRegistrar(stranger);
-        assertFalse(p.canStake(), "not the registrar");
+        assertFalse(p.canStake(id), "not the registrar");
         vm.prank(admin);
         _ip().setRegistrar(address(p));
-        assertTrue(p.canStake());
+        assertTrue(p.canStake(id));
 
         vm.prank(sponsor);
         IERC721(WPUNKS).transferFrom(sponsor, stranger, id);
-        assertFalse(p.canStake(), "sponsor does not own the token");
+        assertFalse(p.canStake(id), "sponsor does not own the token");
+        assertFalse(p.canStake(type(uint256).max), "token does not exist");
 
-        SponsoredPrize missing = new SponsoredPrize(
-            address(pool),
-            address(feeSplit),
-            sponsor,
-            CAP,
-            WPUNKS,
-            type(uint256).max,
-            PARKED_PRICE,
-            FLOOR,
-            decay,
-            30 days
-        );
-        vm.prank(admin);
-        _ip().setRegistrar(address(missing));
-        assertFalse(missing.canStake(), "token does not exist");
-
-        assertFalse(prize.canStake(), "staked");
+        assertFalse(prize.canStake(tokenId), "staked");
     }
 
     function test_revert_stakeRequiresTheFeeSplitToHoldTheTermsOfThePrize() public {
         FeeSplit other = new FeeSplit(dealOwner);
         (SponsoredPrize p, uint256 id) = _prepareFresh(1);
         SponsoredPrize q = new SponsoredPrize(
-            address(pool), address(other), sponsor, CAP, WPUNKS, id, PARKED_PRICE, FLOOR, decay, 30 days
+            address(pool), address(other), sponsor, CAP, WPUNKS, PARKED_PRICE, FLOOR, decay, 30 days
         );
         vm.prank(admin);
         _ip().setRegistrar(address(q));
@@ -649,12 +677,12 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
         vm.prank(sponsor);
         vm.expectRevert(SponsoredPrize.TermsMismatch.selector);
-        q.stake();
+        q.stake(id);
         vm.prank(dealOwner);
         other.setSponsor(stranger, CAP);
         vm.prank(sponsor);
         vm.expectRevert(SponsoredPrize.TermsMismatch.selector);
-        q.stake();
+        q.stake(id);
         assertFalse(p.staked());
     }
 
@@ -808,6 +836,13 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         assertTrue(feeSplit.locked());
     }
 
+    function test_onERC721ReceivedRejectsEveryTokenBeforeStake() public {
+        (SponsoredPrize p, uint256 id) = _prepareFresh(1);
+        vm.prank(WPUNKS);
+        vm.expectRevert(SponsoredPrize.WrongToken.selector);
+        p.onERC721Received(address(0), address(0), id, "");
+    }
+
     function test_onERC721ReceivedAcceptsOnlyTheTokenOfTheDeal() public {
         vm.prank(WPUNKS);
         assertEq(prize.onERC721Received(address(0), address(0), tokenId, ""), bytes4(0x150b7a02));
@@ -902,7 +937,6 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         t.owner = owner_;
         t.sponsor = sponsor;
         t.collection = WPUNKS;
-        t.tokenId = tokenId;
         t.parkedPriceWei = PARKED_PRICE;
         t.floorWei = 0.25 ether;
         t.decayWeiPerPull = 0.001 ether;
@@ -918,6 +952,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         assertEq(f.prize(), address(p));
         assertEq(p.reclaimDelay(), 30 days);
         assertEq(p.reclaimAfter(), 0);
+        assertEq(p.tokenId(), 0);
         assertTrue(_ip().registrar() != address(p), "the broadcaster is not the pool admin");
         assertEq(p.floorWei(), 0.25 ether);
         assertEq(p.decayWeiPerPull(), 0.001 ether);
