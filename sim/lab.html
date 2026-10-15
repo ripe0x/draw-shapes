@@ -275,7 +275,7 @@ function defaultParams() {
     entryFloorBps: 1000, entryCapBps: 2500, paybackDays: 20,
     navCapFloor: 69, turnoverBps: 1250, founderWindowDays: 30,
     edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
-    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1, floorPulls: 20000 },
+    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1, floorPulls: 20000, doneOutsideCap: false },
     openingEth: 55, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
     ticketsPerDay: 500,
     rotateInterval: 900,
@@ -339,7 +339,7 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // GRAIL: one fund and a list of listed items { b: backing, notional: list price, since: pulls since the last list or reprice, done }
   const G = [];
-  const GR = { hitSizes: {}, pieceOut: 0, pieceProceeds: 0, fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0 };
+  const GR = { hitSizes: {}, pieceOut: 0, pieceProceeds: 0, fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0, maxDone: 0, stallDays: 0 };
   const grail = P.grail;
   const pieceSize = grail.pieceSize, RECIPES = recipesFor(pieceSize), maxPieces = Math.round(MAX_PIECE_ETH / pieceSize), openingPieces = Math.round(OPENING_ETH / pieceSize);
   const feeDay = new Float64Array(days + 2); // booked ticket fees per day
@@ -482,7 +482,10 @@ function simulate(P, seed, days, snapDays, opts) {
   // ---------- GRAIL (SPEC 11)
   function grailWeight() { let w = 0; for (const it of G) w += 1 / it.notional; return w; }
   function pieces() { let c = 0; for (const it of G) if (it.piece) c++; return c; }
-  function canMint() { return GR.fund >= pieceSize + mintFee - 1e-12 && G.length < MAX_GRAIL_ITEMS && pieces() < maxPieces; }
+  // Items counted against MAX_GRAIL_ITEMS: every listed item, or only the unfinished ones when doneOutsideCap is set.
+  function capCount() { let c = 0; for (const it of G) if (!(grail.doneOutsideCap && it.done)) c++; return c; }
+  function doneCount() { let c = 0; for (const it of G) if (it.done) c++; return c; }
+  function canMint() { return GR.fund >= pieceSize + mintFee - 1e-12 && capCount() < MAX_GRAIL_ITEMS && pieces() < maxPieces; }
   // Largest recipe whose output fits the target and whose inputs are listed and not done; returns the input positions or null.
   function recipe() {
     for (const [out, a, na, b, nb] of RECIPES) {
@@ -501,7 +504,7 @@ function simulate(P, seed, days, snapDays, opts) {
     const done = !piece && b === grail.target;
     G.push({ b, notional, since: 0, age: 0, cutAge: 0, done, piece: !!piece });
     if (b > GR.largest) GR.largest = b;
-    if (done) { GR.cycles++; if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
+    if (done) { GR.cycles++; GR.maxDone = Math.max(GR.maxDone, doneCount()); if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
   }
   function merge() {
     const r = recipe();
@@ -695,6 +698,7 @@ function simulate(P, seed, days, snapDays, opts) {
     series.grailBacking.push(G.reduce((a, it) => a + it.b, 0));
     series.grailFund.push(GR.fund); series.grailMax.push(G.reduce((a, it) => Math.max(a, it.b), 0));
     series.tickets.push(A.tickets);
+    if (GR.fund > 5 && !canMint()) GR.stallDays++;
     const fb = entryFeeBps(nv, day);
     series.feeBps.push(fb); series.cap.push(navCapAt(day)); series.volume.push(dailyVolume(day));
     series.entryPrice.push(S.shares > 0 ? (nv / S.shares) / (1 - fb / 1e4) : 0);
@@ -726,7 +730,7 @@ function simulate(P, seed, days, snapDays, opts) {
       breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
       grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles, grailFirstCycle: GR.firstCycleDay,
       grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailHitSizes: GR.hitSizes, pieceOut: GR.pieceOut, pieceProceeds: GR.pieceProceeds, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
-      grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length, weightExDone: sumOrd() + G.reduce((w, it) => w + (it.done ? 0 : 1 / it.notional), 0), grailDoneItems: G.filter(it => it.done).map(it => ({ price: it.notional, age: it.age, cutAge: it.cutAge })),
+      grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length, grailMaxDone: GR.maxDone, grailStallDays: GR.stallDays, grailStalled: GR.fund > 5 && !canMint(), weightExDone: sumOrd() + G.reduce((w, it) => w + (it.done ? 0 : 1 / it.notional), 0), grailDoneItems: G.filter(it => it.done).map(it => ({ price: it.notional, age: it.age, cutAge: it.cutAge })),
       capClosedDays: series.gate.slice(0, day).filter(g => g === 1).length, windowDays: series.gate.slice(0, day).filter(g => g === 2).length,
       cap: series.cap[day], dailyVolume: series.volume[day], entryFeeBps: series.feeBps[day],
       mintLineAccrued: A.mintLineAccrued, carry: S.margin - S.mintOwed, avgNav: series.nav.slice(0, day + 1).reduce((a, b) => a + b, 0) / (day + 1),
@@ -976,6 +980,7 @@ const GROUPS = [
     F('grail.pieceFloor', 'Piece floor', 'ETH', 0.05, 0.01, 1, 'Lowest price of a 1 ETH piece. A piece floors at this value x piece size.'),
     F('grail.floor', 'Merged floor (floorWei)', 'ETH', 0.1, 0.01, 100, 'Lowest price of a merged item (5 ETH and up) while Floor pulls is 0; with Floor pulls on, the lowest price is fixed at 0.1 ETH.'),
     F('grail.floorPulls', 'Floor pulls', 'pulls', 1000, 0, 1000000, 'Merged items (5 ETH and up) decay to the price where their selection odds are 1 in this many pulls against the live board weight, never below 0.1 ETH. 0 gives the fixed Floor.'),
+    { chk: true, path: ['grail', 'doneOutsideCap'], label: 'Finished GRAILs outside the item cap', hint: 'On: items that completed a cycle do not count toward the 16 item limit. The 6 ETH piece limit and the 16 limit on building items still apply.' },
   ] },
   { id: 'basis', title: 'Value received basis', fields: [
     F('shapesRedeemPct', 'Shapes redeem value', 'percent', 1, 1, 100, 'Share of backing a player receives.'),

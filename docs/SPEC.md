@@ -105,7 +105,7 @@ the rest is listed on the board).
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
 `grailProbCapBps` and the GRAIL parameters are set in `script/env/<env>.env`: target 25 ETH, `listBps` 7,500,
-`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 0.25 ETH, `floorWei` 0.1 ETH.
+`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 1 ETH, `floorWei` 1 ETH.
 
 ## 6. Lifecycle
 
@@ -204,8 +204,8 @@ the same for every capture in a batch.
 
 1. `acquire` and `acquireBatch` record `base` per request id. A direct FWA buy books zero proceeds at capture.
 2. `settle(maxCount)` (at most 20 per call) calls `processAcquisitions(maxCount)`, then walks FWA's sequence numbers
-   from `nextSequenceToBook` to FWA's processing queue. Each sequence adds one to `pullsSinceList` of every GRAIL
-   item. Per status:
+   from `nextSequenceToBook` to FWA's processing queue. Each sequence adds one to `grail.pulls`, the pull counter the GRAIL
+   decay reads. Per status:
    - Fulfilled ordinary item: `backing -= value`, `receivable += proceeds`, `margin += proceeds - value`, `mintLineOwed
      += mintFee * rungs`, the replacement row (below) is queued, margin split.
    - Fulfilled GRAIL item (any entry of `grailItems`, a Shape or a Draw Pack): `grail.receivable += proceeds` and the
@@ -287,10 +287,11 @@ One fund, one ladder, many listed pieces. The GRAIL is built on the board from 1
 can draw while it forms.
 
 Storage. `grail`: `fund` (ETH), `receivable`, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`,
-`decayWeiPerPull`, `pieceFloorWei`, `floorWei`. `grailItems`: at most `MAX_GRAIL_ITEMS` (16) entries of
-`collection` (Shapes or Draw Packs), `tokenId`, `backing`, `notional`, `listingId`, `pullsSinceList`, `done`
-(true for a completed GRAIL; a done item is never a recipe input).
-A piece is an item with backing of 1 ETH. At most `MAX_PIECES` (6) pieces exist at once.
+`decayWeiPerPull`, `pieceFloorWei`, `floorWei`. `grailItems`: entries of `collection` (Shapes or Draw Packs),
+`tokenId`, `backing`, `notional`, `listingId`, `listedAtPull`, `done` (true for a completed GRAIL; a done item is
+never a recipe input). At most `MAX_BUILDING_ITEMS` (16) items that are not done and at most `MAX_DONE_ITEMS` (32)
+done items exist at once. A piece is an item with backing of 1 ETH. At most `MAX_PIECES` (6) pieces exist at once.
+`grail.pulls` counts booked sequences; an item's pulls since listing are `grail.pulls - listedAtPull`.
 
 Ladder. `targetWei` is one of 5, 10, 25, 50, 100 ETH. `setGrailTarget(wei)` writes `nextTargetWei`;
 a cycle reads it at start. Launch target 25 ETH.
@@ -301,7 +302,7 @@ is outside ordinary NAV (section 4).
 
 A GRAIL step that reverts is skipped by `rotate` (`GrailStepSkipped`) and the rest of `rotate` runs.
 
-Mint (trigger GrailStep, inside `rotate`). While `fund >= 1 ETH + mintFee`, pieces < 6, items < 16, FWA
+Mint (trigger GrailStep, inside `rotate`). While `fund >= 1 ETH + mintFee`, pieces < 6, building items < 16, FWA
 holds no unsettled acquisition, and at most `MAX_GRAIL_MINTS_PER_ROTATE` (3) per call: mint one 1 ETH
 Shape, list it at `notional = backing`, `fund -= 1 ETH + mintFee`.
 
@@ -323,15 +324,16 @@ Opening. Inside `open()` before the board lists: if `fund >= 5 * (1 ETH + mintFe
 compose one 5 ETH Shape, list it at `notional = backing`. It is the first item of cycle 1.
 
 Decay, inside `settle` after the listing step and under the same listing condition, per listed item:
-`next = max(floor, notional - decayWeiPerPull * pullsSinceList)`, with `floor = pieceFloorWei` for a piece
+`next = max(floor, notional - decayWeiPerPull * (grail.pulls - listedAtPull))`, with `floor = pieceFloorWei` for a piece
 and `floorWei` otherwise. The reprice runs when the listing is Active and `next` is at least 1 percent
 below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls
-`updatePrice` and resets `pullsSinceList`. There is no lift: when the cap binds, the item keeps its price.
+`updatePrice` and sets `listedAtPull = grail.pulls`. There is no lift: when the cap binds, the item keeps its price.
 
 Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
 A captured intermediate does not stop the cycle; the recipe waits for new inputs.
 
-Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 0.1 ETH.
+Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
+lists at face and never decays; a merged item decays to 1 ETH and stays.
 
 ## 12. Admin
 
@@ -385,7 +387,7 @@ imported tokens.
 ## 14. Lens
 
 Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail()`, `claims()`,
-`reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `pullsSinceList`, selection weight in bps). `parameters()` lists the constructor values and
+`reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `listedAtPull`, selection weight in bps). `parameters()` lists the constructor values and
 the setter values, including the batch, replacement, reserve, `tipWei` and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
 solvency and board depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
 
