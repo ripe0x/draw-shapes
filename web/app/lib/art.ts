@@ -6,12 +6,16 @@ import { decodeFunctionResult, encodeFunctionData, type Address } from "viem";
 import { fwaCloneAbi, packsAbi, shapesAbi } from "./abi/external";
 import { useDeployment } from "../Providers";
 
-/** First `image` field of a data-URI JSON `tokenURI`, restricted to data:image URIs. */
-export function imageOf(uri: string): string {
+/** Parsed JSON of a `data:application/json` URI, plain or base64. */
+export function decodeDataJson(uri: string): { image?: unknown } {
   const m = /^data:application\/json(;base64)?,(.*)$/s.exec(uri);
   if (!m) throw new Error("Unsupported tokenURI");
-  const text = m[1] ? new TextDecoder().decode(Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0))) : decodeURIComponent(m[2]);
-  const image = JSON.parse(text).image;
+  return JSON.parse(m[1] ? new TextDecoder().decode(Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0))) : decodeURIComponent(m[2]));
+}
+
+/** First `image` field of a data-URI JSON `tokenURI`, restricted to data:image URIs. */
+export function imageOf(uri: string): string {
+  const image = decodeDataJson(uri).image;
   if (typeof image !== "string" || !image.startsWith("data:image/")) throw new Error("No inline image");
   return image;
 }

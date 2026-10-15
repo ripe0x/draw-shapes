@@ -3,6 +3,7 @@
 import { useListedItems, type ListedItem } from "../lib/art";
 import { eth } from "../lib/format";
 import { usePool } from "../lib/pool";
+import { useDeployment } from "../Providers";
 import { TokenArt } from "./TokenArt";
 
 /** Art tiles drawn at most; the rest of the board collapses into count lines. */
@@ -17,8 +18,10 @@ const kindOf = (i: ListedItem) => `${i.valueWei}-${i.pack}`;
  * the same way. Listings come from `useListedItems`, which reads FWA's live listing range.
  */
 export function PoolGrid() {
-  const listed = useListedItems().data;
+  const dep = useDeployment();
   const pool = usePool().data;
+  // Sponsored prizes list on the same FWA pool and show on their own card.
+  const listed = useListedItems().data?.filter((i) => [dep.shapes, dep.drawPacks].some((a) => a.toLowerCase() === i.collection.toLowerCase()));
   if (!listed || listed.length === 0) return null;
 
   const sorted = [...listed].sort(byValueDesc);

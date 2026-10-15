@@ -9,7 +9,7 @@ export function PullTicket({ count }: { count: number }) {
   const q = useQuote(count).data;
   const pool = usePool().data;
   if (!q || !pool) return null;
-  const odds = drawOdds(pool.board, pool.grail);
+  const odds = drawOdds(pool.board, pool.grail, pool.foreign);
   const atLeastTicketBps = odds.rows.filter((r) => r.backingWei >= q.fee).reduce((sum, r) => sum + r.chanceBps, 0n);
   const returnBps = q.fee > 0n ? (odds.averageBackingWei * 10_000n) / q.fee : 0n;
   const s = pool.params.feeSplit;

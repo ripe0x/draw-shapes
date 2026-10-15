@@ -33,6 +33,7 @@ export function usePool() {
       { ...lens, functionName: "admission" },
       { ...lens, functionName: "board" },
       { ...lens, functionName: "grail" },
+      { ...lens, functionName: "foreign" },
       { ...lens, functionName: "reopenStatus" },
       { ...lens, functionName: "settleDue" },
       { ...lens, functionName: "rotateDue" },
@@ -50,7 +51,7 @@ export function usePool() {
     query: {
       enabled: dep.present,
       refetchInterval: POLL_MS,
-      select: ([nav, sharePrice, params, admission, board, grail, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
+      select: ([nav, sharePrice, params, admission, board, grail, foreign, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
         nav,
         sharePrice,
         params,
@@ -59,6 +60,8 @@ export function usePool() {
         board,
         /** GRAIL fund, cycle, parameters and every GRAIL item. */
         grail,
+        /** Foreign listings (sponsored prizes) with their controller and FWA weight share. */
+        foreign,
         reopen,
         settleDue,
         rotateDue,
@@ -92,6 +95,7 @@ export type PoolData = NonNullable<ReturnType<typeof usePool>["data"]>;
 export type Row = PoolData["board"][number];
 export type Grail = PoolData["grail"];
 export type GrailItem = Grail["items"][number];
+export type ForeignItem = PoolData["foreign"][number];
 
 // ------------------------------------------------------------------ odds
 
@@ -106,17 +110,20 @@ export interface OddsRow {
   listed: bigint;
   /** Chance a single pull draws an item of this row, in bps. */
   chanceBps: bigint;
-  /** Shape, Draw Pack (rung count) or a GRAIL item. */
-  kind: { shape: true } | { pack: number } | { grail: true };
+  /** FWA selection weight of the row: 1e36 / price, times the listed count. */
+  weight: bigint;
+  /** Shape, Draw Pack (rung count), a GRAIL item or a foreign listing. */
+  kind: { shape: true } | { pack: number } | { grail: true } | { foreign: true };
 }
 
 /**
- * Selection odds of every listed row and listed GRAIL item, from the board's list prices and the
- * items' notionals under FWA's rule (weight 1e36 / price). `averageBackingWei` is the
- * weight-averaged redeemable backing of one draw.
+ * Selection odds of every listed row, listed GRAIL item and foreign listing, from the board's list
+ * prices and the items' notionals under FWA's rule (weight 1e36 / price). `averageBackingWei` is the
+ * weight-averaged redeemable backing of one draw; a foreign listing has none. Foreign rows come last
+ * and are left out of the listed item, backing and largest totals.
  */
-export function drawOdds(board: readonly Row[], grail: Grail) {
-  const parts: Omit<OddsRow, "chanceBps">[] = [];
+export function drawOdds(board: readonly Row[], grail: Grail, foreign: readonly ForeignItem[]) {
+  const parts: Omit<OddsRow, "chanceBps" | "weight">[] = [];
   board.forEach((r, i) => {
     if (r.listed === 0n || r.listingPrice === 0n) return;
     parts.push({
@@ -131,17 +138,21 @@ export function drawOdds(board: readonly Row[], grail: Grail) {
     if (g.listingId === 0n || g.notional === 0n) return;
     parts.push({ key: `grail-${g.listingId}`, backingWei: g.backing, priceWei: g.notional, listed: 1n, kind: { grail: true } });
   });
+  const own = parts.length;
+  foreign.forEach((f) => {
+    if (f.listingId === 0n || f.notional === 0n) return;
+    parts.push({ key: `foreign-${f.listingId}`, backingWei: 0n, priceWei: f.notional, listed: 1n, kind: { foreign: true } });
+  });
   const weights = parts.map((p) => weightOf(p.priceWei) * p.listed);
   const total = weights.reduce((a, b) => a + b, 0n);
-  const rows: OddsRow[] = parts
-    .map((p, i) => ({ ...p, chanceBps: total === 0n ? 0n : (weights[i] * 10_000n) / total }))
-    .sort((a, b) => (a.backingWei === b.backingWei ? 0 : a.backingWei < b.backingWei ? -1 : 1));
+  const rows: OddsRow[] = parts.map((p, i) => ({ ...p, weight: weights[i], chanceBps: total === 0n ? 0n : (weights[i] * 10_000n) / total }));
+  rows.splice(0, own, ...rows.slice(0, own).sort((a, b) => (a.backingWei === b.backingWei ? 0 : a.backingWei < b.backingWei ? -1 : 1)));
   const averageBackingWei =
     total === 0n ? 0n : parts.reduce((sum, p, i) => sum + weights[i] * p.backingWei, 0n) / total;
-  const listedItems = parts.reduce((sum, p) => sum + p.listed, 0n);
+  const listedItems = parts.slice(0, own).reduce((sum, p) => sum + p.listed, 0n);
   const listedBackingWei = parts.reduce((sum, p) => sum + p.listed * p.backingWei, 0n);
   const largestWei = parts.reduce((max, p) => (p.backingWei > max ? p.backingWei : max), 0n);
-  return { rows, averageBackingWei, listedItems, listedBackingWei, largestWei };
+  return { rows, total, averageBackingWei, listedItems, listedBackingWei, largestWei };
 }
 
 /** Odds of one GRAIL item per pull, in bps, under the same rule as `drawOdds`. */

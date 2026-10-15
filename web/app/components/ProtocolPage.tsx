@@ -6,6 +6,7 @@ import { useDeployment } from "../Providers";
 import { GrailBoard } from "./GrailBoard";
 import { Eth, Kv, shares } from "./Measure";
 import { OddsGlance } from "./OddsGlance";
+import { SponsoredPrizes } from "./SponsoredPrizes";
 import { ParamsDisclosure } from "./ParamsDisclosure";
 import { Upkeep } from "./Upkeep";
 import { VaultStats } from "./VaultStats";
@@ -195,6 +196,7 @@ export function ProtocolPage() {
       >
         <div className="protocol-data-grid">
           <GrailBoard detail />
+          <SponsoredPrizes detail />
         </div>
         <p className="vault-note">
           Rotate mints a 1 ETH piece while the fund covers it and merges listed pieces by fixed recipes, five ones to a 5, two
