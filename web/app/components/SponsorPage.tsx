@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { useAccount } from "wagmi";
 import { feeSplitAbi, sponsoredPrizeAbi } from "../lib/abi/sponsor";
 import { evmNowAddressUrl } from "../lib/errors";
@@ -9,10 +9,10 @@ import { useListedItems } from "../lib/art";
 import { oneInOf } from "../lib/foreign";
 import { eth, short, utc } from "../lib/format";
 import { drawOdds, usePool } from "../lib/pool";
-import { type DealState, type SponsorDeal, useSponsorDeal } from "../lib/sponsor";
+import { type DealState, type SponsorDeal, useSponsorDeal, useWalletTokens } from "../lib/sponsor";
 import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
-import { CyclingPunk, SponsorCtaBand, SponsorStakePanel, SponsorTakenBand } from "./SponsorBands";
+import { CyclingPunk, SponsorCtaBand, SponsorPunkPicker, SponsorStakePanel, SponsorTakenBand } from "./SponsorBands";
 import { TokenArt } from "./TokenArt";
 import { type Tx, TxButton, TxLine, useTx } from "./Tx";
 
@@ -57,6 +57,12 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
   const query = useSponsorDeal(record);
   const deal = query.data;
 
+  // While unstaked the connected sponsor picks the token; the first held token is the default.
+  const [picked, setPicked] = useState<bigint>();
+  const choosing = deal?.state === "awaiting" && same(address, deal.sponsor);
+  const owned = useWalletTokens(record?.collection, choosing ? address : undefined).data;
+  const selected = picked !== undefined && owned?.includes(picked) ? picked : owned?.[0];
+
   const item = deal && pool ? pool.foreign.find((f) => f.listingId === deal.listingId && f.listingId !== 0n) : undefined;
   const listPrice = item && item.notional !== 0n ? item.notional : undefined;
   const odds = pool ? drawOdds(pool.board, pool.grail, pool.foreign) : undefined;
@@ -88,14 +94,16 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
 
         {record && deal && (
           <>
-            <SponsorTakenBand collection={record.collection} tokenId={BigInt(record.tokenId)} sponsor={deal.sponsor} state={STATE_WORD[deal.state]}>
+            <SponsorTakenBand collection={record.collection} tokenId={deal.tokenId ?? selected} sponsor={deal.sponsor} state={STATE_WORD[deal.state]}>
               <dl className="sponsor-facts">
                 <div><dt>List price</dt><dd>{listPrice !== undefined ? `${eth(listPrice, 4)} ETH` : deal.state === "awaiting" ? `${eth(deal.parkedPriceWei, 4)} ETH once staked` : "-"}</dd></div>
+                <div><dt>Token</dt><dd>{deal.tokenId !== undefined ? `#${deal.tokenId}` : "your choice"}</dd></div>
                 <div><dt>Odds per pull</dt><dd>{oneIn ?? "-"}</dd></div>
                 <div><dt>Phase</dt><dd>{phaseText(deal)}</dd></div>
               </dl>
-              {deal.state === "awaiting" && <SponsorStakePanel prize={record.prize} collection={record.collection} tokenId={BigInt(record.tokenId)} deal={deal} />}
+              {deal.state === "awaiting" && <SponsorStakePanel record={record} deal={deal} tokens={choosing ? owned : undefined} selected={selected} />}
             </SponsorTakenBand>
+            {choosing && owned && owned.length > 0 && <SponsorPunkPicker collection={record.collection} tokens={owned} selected={selected} onPick={setPicked} />}
 
             <section className="sponsor-section">
               <div className="sponsor-label">Terms</div>

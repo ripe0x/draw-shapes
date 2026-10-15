@@ -8,11 +8,13 @@ import { erc721Abi } from "viem";
 import { useAccount, useEnsName } from "wagmi";
 import { evmNowAddressUrl } from "../lib/errors";
 import { short } from "../lib/format";
+import { useForeignImage } from "../lib/foreign";
 import { useCyclingPunkArt } from "../lib/punkArt";
 import { sponsoredPrizeAbi } from "../lib/abi/sponsor";
-import type { SponsorDeal } from "../lib/sponsor";
+import { type SponsorDeal, useStakeGate } from "../lib/sponsor";
+import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
-import { CollectionName, ForeignArt } from "./SponsoredPrizes";
+import { CollectionName } from "./SponsoredPrizes";
 import { TxButton, TxLine, useTx } from "./Tx";
 
 /** Square tile showing one token of `collection` at a time, cycling through a random sample. */
@@ -20,6 +22,17 @@ export function CyclingPunk({ collection }: { collection?: Address }) {
   const src = useCyclingPunkArt(collection);
   return (
     <div className="sponsor-punk" aria-hidden>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {src && <img src={src} alt="" referrerPolicy="no-referrer" />}
+    </div>
+  );
+}
+
+/** Square tile with one token's image. */
+function TokenSquare({ collection, tokenId }: { collection: Address; tokenId: bigint }) {
+  const src = useForeignImage(collection, tokenId).data;
+  return (
+    <div className="sponsor-punk" aria-label={`Token ${tokenId.toString()}`}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {src && <img src={src} alt="" referrerPolicy="no-referrer" />}
     </div>
@@ -45,7 +58,8 @@ export function SponsorCtaBand() {
 }
 
 /** Band for a deal: the prize, its state, the sponsor (ENS on mainnet, else the short
- *  address) and the prize art. `children` render under the state line. */
+ *  address) and the prize art. Without a `tokenId` the heading is the collection name and the
+ *  art cycles through the collection. `children` render under the state line. */
 export function SponsorTakenBand({
   collection,
   tokenId,
@@ -54,7 +68,7 @@ export function SponsorTakenBand({
   children,
 }: {
   collection: Address;
-  tokenId: bigint;
+  tokenId?: bigint;
   sponsor: Address;
   state: string;
   children?: ReactNode;
@@ -65,7 +79,8 @@ export function SponsorTakenBand({
     <div className="sponsor-band sponsor-band-with-art">
       <div>
         <h2>
-          <CollectionName collection={collection} /> #{tokenId.toString()}
+          <CollectionName collection={collection} />
+          {tokenId !== undefined && ` #${tokenId.toString()}`}
         </h2>
         <p className="sponsor-band-line">
           {state}
@@ -78,7 +93,7 @@ export function SponsorTakenBand({
         {children}
       </div>
       <div className="sponsor-band-art">
-        <ForeignArt collection={collection} tokenId={tokenId} />
+        {tokenId === undefined ? <CyclingPunk collection={collection} /> : <TokenSquare collection={collection} tokenId={tokenId} />}
       </div>
     </div>
   );
@@ -86,16 +101,52 @@ export function SponsorTakenBand({
 
 const same = (a?: string, b?: string) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 
-/** Stake panel of a deal awaiting its sponsor: connect, then approve the prize contract for the
- *  token (step 1 of 2) and call `stake()` (step 2 of 2). A landed transaction refetches the deal. */
-export function SponsorStakePanel({ prize, collection, tokenId, deal }: { prize: Address; collection: Address; tokenId: bigint; deal: SponsorDeal }) {
+/** Selectable tiles of the sponsor's tokens of `collection`; a single token shows as one plain tile. */
+export function SponsorPunkPicker({ collection, tokens, selected, onPick }: { collection: Address; tokens: bigint[]; selected?: bigint; onPick: (id: bigint) => void }) {
+  const many = tokens.length > 1;
+  return (
+    <div className="sponsor-passes" role={many ? "radiogroup" : undefined} aria-label={many ? "Token to stake" : undefined}>
+      {tokens.map((id) => (
+        <PunkTile key={id.toString()} collection={collection} tokenId={id} selected={id === selected} selectable={many} onPick={() => onPick(id)} />
+      ))}
+    </div>
+  );
+}
+
+function PunkTile({ collection, tokenId, selected, selectable, onPick }: { collection: Address; tokenId: bigint; selected: boolean; selectable: boolean; onPick: () => void }) {
+  const art = (
+    <div className="sponsor-tile-art">
+      <TokenSquare collection={collection} tokenId={tokenId} />
+    </div>
+  );
+  const label = `#${tokenId.toString()}${selected ? " · selected" : ""}`;
+  if (!selectable) {
+    return (
+      <div className="sponsor-tile">
+        {art}
+        <div className="sponsor-tile-label">{label}</div>
+      </div>
+    );
+  }
+  return (
+    <button type="button" role="radio" aria-checked={selected} className={`sponsor-tile sponsor-tile-pick${selected ? " is-selected" : ""}`} onClick={onPick}>
+      {art}
+      <div className="sponsor-tile-label">{label}</div>
+    </button>
+  );
+}
+
+/** Stake panel of a deal awaiting its sponsor: connect, then for the selected token approve the
+ *  prize contract (step 1 of 2) and call `stake(tokenId)` (step 2 of 2). `tokens` are the sponsor
+ *  wallet's tokens of the collection, undefined while unread. A landed transaction refetches the deal. */
+export function SponsorStakePanel({ record, deal, tokens, selected }: { record: SponsorRecord; deal: SponsorDeal; tokens?: bigint[]; selected?: bigint }) {
   const dep = useDeployment();
   const { address } = useAccount();
   const approve = useTx();
   const stake = useTx();
   const isSponsor = same(address, deal.sponsor);
-  const holds = same(deal.tokenHolder, deal.sponsor);
-  const id = tokenId.toString();
+  const gate = useStakeGate(record, deal.sponsor, selected).data;
+  const id = selected?.toString();
 
   if (!address) {
     return (
@@ -117,21 +168,33 @@ export function SponsorStakePanel({ prize, collection, tokenId, deal }: { prize:
       </div>
     );
   }
-  if (!holds) {
+  if (!tokens) {
     return (
       <div className="sponsor-stake">
-        <p className="sponsor-band-line">This wallet does not hold token #{id}.</p>
+        <p className="sponsor-band-line">Reading this wallet.</p>
       </div>
     );
   }
-  if (!deal.approved) {
+  if (selected === undefined) {
+    return (
+      <div className="sponsor-stake">
+        <p className="sponsor-band-line">
+          This wallet holds no <CollectionName collection={record.collection} />.
+        </p>
+      </div>
+    );
+  }
+  if (!gate?.approved) {
     return (
       <div className="sponsor-stake">
         <TxButton
           tx={approve}
           label={`Approve punk #${id}`}
           className="sponsor-pill sponsor-pill-invert"
-          onClick={() => void approve.run(() => approve.write({ address: collection, abi: erc721Abi, chainId: dep.chainId, functionName: "approve", args: [prize, tokenId] }))}
+          disabled={!gate}
+          onClick={() =>
+            void approve.run(() => approve.write({ address: record.collection, abi: erc721Abi, chainId: dep.chainId, functionName: "approve", args: [record.prize, selected] }))
+          }
         />
         <p className="sponsor-band-line">Step 1 of 2. Approval lets the prize contract move this one token when you send the next transaction.</p>
         <TxLine tx={approve} />
@@ -144,11 +207,11 @@ export function SponsorStakePanel({ prize, collection, tokenId, deal }: { prize:
         tx={stake}
         label={`Stake punk #${id}`}
         className="sponsor-pill sponsor-pill-invert"
-        disabled={!deal.canStake}
-        onClick={() => void stake.run(() => stake.write({ address: prize, abi: sponsoredPrizeAbi, chainId: dep.chainId, functionName: "stake" }))}
+        disabled={!gate.canStake}
+        onClick={() => void stake.run(() => stake.write({ address: record.prize, abi: sponsoredPrizeAbi, chainId: dep.chainId, functionName: "stake", args: [selected] }))}
       />
       <p className="sponsor-band-line">
-        {deal.canStake
+        {gate.canStake
           ? "Step 2 of 2. This transaction moves the token to the pool, locks the fee split and sets the reclaim date."
           : "Waiting for the operator to enable this deal."}
       </p>

@@ -8,8 +8,6 @@ export interface SponsorRecord {
   feeSplit: Address;
   prize: Address;
   collection: Address;
-  /** Decimal string, so the record crosses the server/client boundary as plain JSON. */
-  tokenId: string;
 }
 
 /**
@@ -34,7 +32,7 @@ export function getSponsorRecord(): SponsorRecord | undefined {
     }
     const r = JSON.parse(text as string);
     if (!isAddress(r.feeSplit) || !isAddress(r.prize) || !isAddress(r.collection)) return undefined;
-    return { feeSplit: r.feeSplit, prize: r.prize, collection: r.collection, tokenId: BigInt(r.tokenId).toString() };
+    return { feeSplit: r.feeSplit, prize: r.prize, collection: r.collection };
   } catch {
     return undefined;
   }

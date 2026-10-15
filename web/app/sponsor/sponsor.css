@@ -340,3 +340,45 @@ a.sponsor-pill {
 .sponsor-stake .error-line {
   color: var(--rule);
 }
+
+.sponsor-passes {
+  margin-top: 28px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+}
+.sponsor-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sponsor-tile-art {
+  width: 108px;
+}
+.sponsor-tile-art .sponsor-punk {
+  border-radius: 6px;
+  box-shadow: none;
+}
+.sponsor-tile-pick {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sponsor-tile-pick .sponsor-tile-art {
+  outline: 3px solid transparent;
+  outline-offset: 3px;
+}
+.sponsor-tile-pick.is-selected .sponsor-tile-art {
+  outline-color: var(--ink);
+}
+.sponsor-tile-label {
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  color: var(--faint);
+}
+.sponsor-tile-pick.is-selected .sponsor-tile-label {
+  color: var(--ink);
+}

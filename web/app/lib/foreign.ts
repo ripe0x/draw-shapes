@@ -1,12 +1,21 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { erc721Abi, type Address } from "viem";
+import { decodeFunctionResult, encodeFunctionData, erc721Abi, parseAbi, type Address } from "viem";
 import { usePublicClient } from "wagmi";
 import { decodeDataJson } from "./art";
 import { feeSplitAbi, sponsoredPrizeAbi } from "./abi/sponsor";
 import { short } from "./format";
 import { useDeployment } from "../Providers";
+
+/** Wrapped Cryptopunks on Ethereum mainnet. A mainnet fork serves the same address. */
+export const WRAPPED_PUNKS: Address = "0xb7F7F6C52F2e2fdb1963Eab30438024864c313F6";
+/** CryptoPunksData on Ethereum mainnet: the original punk art by index. */
+const PUNKS_DATA: Address = "0x16F5A35647D6F03D5D3da7b35409D65ba03aF3B2";
+const punksDataAbi = parseAbi(["function punkImageSvg(uint16 index) view returns (string)"]);
+const SVG_PREFIX = "data:image/svg+xml;utf8,";
+
+type Client = NonNullable<ReturnType<typeof usePublicClient>>;
 
 const IPFS_GATEWAY = "https://ipfs.io/ipfs/";
 const FETCH_MS = 8_000;
@@ -32,6 +41,19 @@ async function imageFrom(tokenUri: string): Promise<string> {
   return image.startsWith("data:image/") ? image : webUrl(image);
 }
 
+/** The original punk art for Wrapped Cryptopunks token `tokenId`, without the wrapper ribbon of its `tokenURI`
+ *  image. Each read is its own eth_call: the SVG render is gas heavy and aggregated multicalls run out of gas. The SVG is percent-encoded so `#` colours survive in a data URL. */
+async function punkImage(client: Client, tokenId: bigint): Promise<string> {
+  const { data } = await client.call({
+    to: PUNKS_DATA,
+    data: encodeFunctionData({ abi: punksDataAbi, functionName: "punkImageSvg", args: [Number(tokenId)] }),
+    batch: false,
+  });
+  const svg = decodeFunctionResult({ abi: punksDataAbi, functionName: "punkImageSvg", data: data ?? "0x" });
+  if (!svg.startsWith(SVG_PREFIX)) throw new Error("No image");
+  return SVG_PREFIX + encodeURIComponent(svg.slice(SVG_PREFIX.length));
+}
+
 /** The collection's `name()`, read once and kept. Falls back to the shortened address. */
 export function useCollectionName(collection: Address) {
   const dep = useDeployment();
@@ -46,8 +68,6 @@ export function useCollectionName(collection: Address) {
   });
 }
 
-type Client = NonNullable<ReturnType<typeof usePublicClient>>;
-
 /** Query options for one foreign token's image, read once and kept. An error means no usable image. */
 export const foreignImageQuery = (client: Client | undefined, chainId: number, collection: Address, tokenId: bigint) => ({
   queryKey: ["foreign-image", chainId, collection.toLowerCase(), tokenId.toString()],
@@ -55,7 +75,10 @@ export const foreignImageQuery = (client: Client | undefined, chainId: number, c
   staleTime: Infinity,
   gcTime: Infinity,
   retry: 1,
-  queryFn: async () => imageFrom(await client!.readContract({ address: collection, abi: erc721Abi, functionName: "tokenURI", args: [tokenId] })),
+  queryFn: async () =>
+    collection.toLowerCase() === WRAPPED_PUNKS.toLowerCase()
+      ? punkImage(client!, tokenId)
+      : imageFrom(await client!.readContract({ address: collection, abi: erc721Abi, functionName: "tokenURI", args: [tokenId] })),
 });
 
 /** The foreign token's image, read once and kept. An error means no usable image. */

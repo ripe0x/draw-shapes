@@ -4,11 +4,10 @@ import { useEffect, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { parseAbi, type Address } from "viem";
 import { usePublicClient } from "wagmi";
-import { foreignImageQuery } from "./foreign";
+import { foreignImageQuery, WRAPPED_PUNKS } from "./foreign";
 import { useDeployment } from "../Providers";
 
-/** Wrapped Cryptopunks on Ethereum mainnet. A mainnet fork serves the same address. */
-export const WRAPPED_PUNKS: Address = "0xb7F7F6C52F2e2fdb1963Eab30438024864c313F6";
+export { WRAPPED_PUNKS };
 
 const SAMPLE_SIZE = 10;
 const CYCLE_MS = 1_500;
