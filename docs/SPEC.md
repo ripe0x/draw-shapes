@@ -339,6 +339,27 @@ below `notional`, and the listed GRAIL weight at `next` stays within `grailProbC
 Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
 A captured intermediate does not stop the cycle; the recipe waits for new inputs.
 
+Foreign listings. A prize the pool did not mint, owned by a controller contract that holds every rule about it.
+Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `tokenId`, `controller`, `listingId`,
+`notional`. A foreign item is outside ordinary NAV and outside the GRAIL fund.
+- `registerForeign(collection, tokenId, controller, priceWei)`: admin, Live only. Transfers the ERC-721 from the
+  admin to the pool, lists it on the FWA pool at `priceWei`, records the entry. Reverts `ForeignFull`, `AlreadyRegistered`
+  and when `controller` is zero.
+- `repriceForeign(listingId, priceWei)`: the entry's controller only, while the listing is Active and FWA holds no
+  unsettled acquisition. Calls `updatePrice` and stores `notional`. The GRAIL weight rule in section 9 applies to the
+  listed foreign weight as well: the reprice is refused when the listed GRAIL and foreign weight at `priceWei` would pass
+  `grailProbCapBps`.
+- `withdrawForeign(listingId, to)`: the entry's controller only, while the listing is unsettled-free. Withdraws the listing,
+  transfers the token to `to`, removes the entry.
+- Capture: in the booking walk a Fulfilled foreign listing sends its proceeds to `controller.onForeignCapture(listingId,
+  tokenId, proceeds)` by a plain call with the ETH value, removes the entry, and books nothing else. The call's revert is
+  swallowed and the proceeds are kept in `cash` as margin in that case.
+- Refunded delivery: the token returns to the pool unlisted; the controller may `withdrawForeign` or the admin may
+  `registerForeign` again.
+- Exit: `exportStep` withdraws every foreign listing to its controller before the GRAIL estate moves.
+- Lens: `foreign()` returns every entry with its selection weight in bps.
+The pool holds no term of any deal. A controller decides prices, phases, reclaim rights and where capture proceeds go.
+
 Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
 lists at face and never decays; a merged item decays to 1 ETH and stays.
 
