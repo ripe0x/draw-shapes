@@ -580,8 +580,8 @@ contract PlayMonthTest is ForkBase, Deploy {
             line = string.concat(_c(_c(line, b), notional), ",", _fixed4(odds));
         }
         {
-            Lens.GrailView memory gv = lens.grail();
-            line = _c(_c(line, gv.fund), gv.targetWei);
+            IPoolTypes.Grail memory g = IPool(address(pool)).grail();
+            line = _c(_c(line, g.fund), g.targetWei);
         }
         line = _c(_c(line, rotates), rotTrig[0]);
         line = _c(_c(line, rotTrig[1]), rotTrig[2]);
