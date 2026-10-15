@@ -65,7 +65,7 @@ function ItemCard({ g, item, chanceBps }: { g: Grail; item: GrailItem; chanceBps
         <Stat label="Backing" value={<Eth wei={item.backing} digits={3} />} />
         <Stat label="List price" value={listed ? <Eth wei={item.notional} digits={4} /> : "Not listed"} />
         <Stat label="Odds per pull" value={listed ? oneIn(chanceBps) : "Not listed"} />
-        <Stat label="Pulls since list" value={item.pullsSinceList.toLocaleString("en-US")} />
+        <Stat label="Pulls since list" value={(g.pulls - item.listedAtPull).toLocaleString("en-US")} />
       </div>
       <p className="vault-note">
         {listed

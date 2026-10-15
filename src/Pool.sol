@@ -90,6 +90,7 @@ contract Pool is PoolBooks {
         _setTip(p.tipWei);
 
         _setGrail(p.grail.decayWeiPerPull, p.grail.pieceFloorWei, p.grail.floorWei, p.grail.listBps);
+        _setGrailStep(p.grail.stepUpSeconds, p.grail.stepDownSeconds);
         _setGrailTarget(p.grail.targetWei);
         _grail.targetWei = p.grail.targetWei;
         _grail.cycleId = 1;
@@ -400,7 +401,7 @@ contract Pool is PoolBooks {
     }
 
     /// @notice Delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`,
-    ///         `setGrail`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other call to
+    ///         `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other call to
     ///         `adminModule`, and returns the module's return data or revert data.
     fallback() external payable {
         address module = adminModule;
@@ -409,7 +410,8 @@ contract Pool is PoolBooks {
             sig == IPool.listBatch.selector || sig == IPool.openBoard.selector || sig == IPool.queueMissing.selector
                 || sig == IPool.grailStep.selector
                 || sig == IPool.grailReprice.selector || sig == IPool.grailReady.selector
-                || sig == IPool.setGrail.selector || sig == IPool.setGrailTarget.selector
+                || sig == IPool.setGrail.selector || sig == IPool.setGrailStep.selector
+                || sig == IPool.setGrailTarget.selector
                 || sig == IPool.grail.selector || sig == IPool.grailItems.selector
                 || sig == IPool.boardItems.selector
         ) module = listingModule;

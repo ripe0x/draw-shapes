@@ -520,14 +520,14 @@ contract PoolAdmin is PoolBooks {
     /// @notice Credits `msg.value` to the GRAIL fund and, when `collection` is nonzero, takes the
     ///         GRAIL item `tokenId` of `collection` from `oldPool`. `done` keeps the completed-GRAIL
     ///         flag. The item is unlisted on arrival, priced at its backing or at `listBps` of it
-    ///         when it is not a piece, and listed by the next `rotate`. When `MAX_GRAIL_ITEMS` items
-    ///         are held, the arriving item is redeemed and its proceeds join the fund.
+    ///         when it is not a piece, and listed by the next `rotate`. When the cap of the arriving kind
+    ///         (`MAX_DONE_ITEMS` done, `MAX_BUILDING_ITEMS` otherwise) is reached, the arriving item is redeemed and its proceeds join the fund.
     function importGrail(address collection, uint256 tokenId, bool done) external payable onlyDelegated onlyOldPool {
         _grail.fund += msg.value;
         if (collection == address(0)) return;
         _requireOwned(collection, tokenId);
         if (_registered[collection][tokenId]) revert AlreadyRegistered();
-        if (_grailItems.length >= MAX_GRAIL_ITEMS) {
+        if (_grailFull(done)) {
             uint256 before = address(this).balance;
             _call(collection, IShapes.redeem.selector, tokenId, 0);
             _grail.fund += address(this).balance - before;

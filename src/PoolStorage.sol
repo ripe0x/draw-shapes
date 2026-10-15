@@ -23,7 +23,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant GRAIL_PIECE = 100 * Denominations.UNIT;
     /// @dev Smallest GRAIL target, 500 ladder units. Bounds `floorWei` with `listBps`.
     uint256 internal constant GRAIL_MIN_TARGET = 500 * Denominations.UNIT;
-    uint256 internal constant MAX_GRAIL_ITEMS = 16;
+    uint256 internal constant MAX_BUILDING_ITEMS = 16;
+    uint256 internal constant MAX_DONE_ITEMS = 32;
     uint256 internal constant MAX_PIECES = 6;
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant VOLUME_DAYS = 7;
@@ -55,7 +56,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     /// @dev Maintenance share of booked margin, still held as FWA owner proceeds.
     uint256 internal _maintenanceReceivable;
     Grail internal _grail;
-    /// @dev GRAIL items owned by the pool, listed or not. At most `MAX_GRAIL_ITEMS`.
+    /// @dev GRAIL items owned by the pool, listed or not. At most `MAX_BUILDING_ITEMS` not done and `MAX_DONE_ITEMS` done.
     GrailItem[] internal _grailItems;
     /// @dev Position plus one of each listed GRAIL item inside `_grailItems`, by FWA listing id.
     mapping(uint256 listingId => uint256) internal _grailAt;
@@ -262,12 +263,22 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     }
 
     /// @dev Appends GRAIL item `it` to `_grailItems` and registers its token. A nonzero
-    ///      `it.listingId` is indexed in `_grailAt`. Reverts `GrailItemsFull` at `MAX_GRAIL_ITEMS`.
+    ///      `it.listingId` is indexed in `_grailAt`. The caller checks
+    ///      `_grailFull(it.done)`.
     function _addGrailItem(GrailItem memory it) internal {
-        if (_grailItems.length >= MAX_GRAIL_ITEMS) revert GrailItemsFull();
         _grailItems.push(it);
         if (it.listingId != 0) _grailAt[it.listingId] = _grailItems.length;
         _registered[it.collection][it.tokenId] = true;
+    }
+
+    /// @dev True when the number of GRAIL items whose `done` flag equals `done` has reached the
+    ///      cap of that kind.
+    function _grailFull(bool done) internal view returns (bool) {
+        uint256 n;
+        for (uint256 i; i < _grailItems.length; ++i) {
+            if (_grailItems[i].done == done) ++n;
+        }
+        return n >= (done ? MAX_DONE_ITEMS : MAX_BUILDING_ITEMS);
     }
 
     /// @dev Removes the GRAIL item at `index` from `_grailItems`, `_grailAt` and `_registered`.
@@ -447,6 +458,13 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         g.decayWeiPerPull = decayWeiPerPull;
         g.pieceFloorWei = pieceFloorWei;
         g.floorWei = floorWei;
+    }
+
+    /// @dev Stores the ladder step thresholds. `stepUpSeconds` is below `stepDownSeconds`.
+    function _setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) internal {
+        if (stepUpSeconds >= stepDownSeconds) revert GrailStepInvalid();
+        _grail.stepUpSeconds = stepUpSeconds;
+        _grail.stepDownSeconds = stepDownSeconds;
     }
 
     /// @dev Sets the target of the next cycle. It is 500, 1,000, 2,500, 5,000 or 10,000 ladder

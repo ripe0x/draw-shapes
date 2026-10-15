@@ -37,6 +37,8 @@ interface IPoolTypes {
         uint256 decayWeiPerPull;
         uint256 pieceFloorWei;
         uint256 floorWei;
+        uint32 stepUpSeconds;
+        uint32 stepDownSeconds;
     }
 
     /// @dev The GRAIL fund and parameters. `fund` pays mints, `receivable` holds booked proceeds
@@ -51,11 +53,16 @@ interface IPoolTypes {
         uint256 decayWeiPerPull;
         uint256 pieceFloorWei;
         uint256 floorWei;
+        uint64 pulls;
+        uint64 cycleStartedAt;
+        uint32 stepUpSeconds;
+        uint32 stepDownSeconds;
     }
 
     /// @dev A GRAIL item owned by the pool: a piece, an intermediate, or a completed GRAIL.
     ///      `listingId` is the FWA listing id, zero while the item is unlisted. `done` marks the
-    ///      completed GRAIL of a cycle, which is not an input to a merge.
+    ///      completed GRAIL of a cycle, which is not an input to a merge. `listedAtPull` is
+    ///      `Grail.pulls` when the item was last listed or repriced.
     struct GrailItem {
         address collection;
         bool done;
@@ -63,7 +70,7 @@ interface IPoolTypes {
         uint256 backing;
         uint256 notional;
         uint256 listingId;
-        uint256 pullsSinceList;
+        uint256 listedAtPull;
     }
 
     struct Claim {
@@ -172,6 +179,7 @@ interface IPoolTypes {
     error TokenNotReceived();
     error AlreadyMigrated();
     error GrailFloorInvalid();
+    error GrailStepInvalid();
     error LimitOutOfRange();
     error RowInUse();
     error Accounted();
@@ -376,6 +384,9 @@ interface IPool is IPoolTypes {
     function setFounderWindow(uint32 seconds_) external;
     function setMix(PricingLib.MixRow[] memory rows) external;
     function setGrail(uint256 decayWeiPerPull, uint256 pieceFloorWei, uint256 floorWei, uint256 listBps) external;
+
+    /// @notice Sets the ladder step thresholds. `stepUpSeconds` is below `stepDownSeconds`.
+    function setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) external;
     function setGrailTarget(uint256 targetWei) external;
     function setMaxBatch(uint256 n) external;
     function setConcurrency(uint256 n) external;

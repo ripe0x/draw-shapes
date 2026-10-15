@@ -662,13 +662,13 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _assertI1();
     }
 
-    function test_directAcquireAdvancesPullsSinceListOfAListedGrail() public {
+    function test_directAcquireAdvancesTheGrailPullCounter() public {
         _openReady();
         vm.warp(pool.lastRotateAt() + pool.rotateInterval());
         assertTrue(pool.stepGrail());
         warpPastCooldown(clone);
         IPoolTypes.GrailItem memory before = IPool(address(pool)).grailItems()[0];
-        assertEq(before.pullsSinceList, 0);
+        assertEq(IPool(address(pool)).grail().pulls, 0);
         assertTrue(before.listingId != 0);
 
         _gateOff();
@@ -676,7 +676,8 @@ contract PoolPullForkTest is ForkBase, PoolFixture {
         _capture(requestId, _listingOfRow(0, 0));
         pool.bookOnly(5);
 
-        assertEq(IPool(address(pool)).grailItems()[0].pullsSinceList, 1);
+        assertEq(IPool(address(pool)).grail().pulls, 1);
+        assertEq(IPool(address(pool)).grailItems()[0].listedAtPull, 0, "listing predates the pull");
     }
 
     function test_poolPullIsBookedOnce() public {

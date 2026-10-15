@@ -49,7 +49,7 @@ abstract contract PoolBooks is PoolStorage {
 
     /// @dev Books up to `maxItems` FWA acquisitions in sequence order from `nextSequenceToBook`
     ///      to `end`. Returns the new `nextSequenceToBook`. Every sequence passed adds one to
-    ///      `pullsSinceList` of each listed GRAIL track, whatever its status. A Fulfilled acquisition is a capture:
+    ///      `grail.pulls`, whatever its status. A Fulfilled acquisition is a capture:
     ///      FWA pays the owner `paid - (paid - base) / 2`, and a request without a recorded base
     ///      books zero proceeds, which `_bookSurplus` books from FWA's owner proceeds. A refunded
     ///      delivery returns its token to held items. A DeliveryPending acquisition is written off:
@@ -301,11 +301,9 @@ abstract contract PoolBooks is PoolStorage {
         if (_read(drawPacks, IERC721Value.valueOf.selector, packId) != expected) revert PackValueMismatch();
     }
 
-    /// @dev Each GRAIL item's `pullsSinceList` rises by `count`.
+    /// @dev `grail.pulls` rises by `count`, at most `MAX_SETTLE_ITEMS` per walk.
     function _recordPulls(uint256 count) internal {
-        for (uint256 i; i < _grailItems.length; ++i) {
-            _grailItems[i].pullsSinceList += count;
-        }
+        _grail.pulls += uint64(count);
     }
 
     /// @dev Board depth in items: `max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`.

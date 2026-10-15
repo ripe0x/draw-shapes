@@ -197,7 +197,7 @@ contract LensForkTest is ForkBase, PoolFixture {
         assertEq(it.backing, 5 ether);
         assertEq(it.notional, 5 ether, "the opening five lists at face");
         assertEq(it.listingId, storedItems[0].listingId);
-        assertEq(it.pullsSinceList, 0);
+        assertEq(it.listedAtPull, 0);
         assertFalse(it.done);
         assertEq(it.weightBps, PricingLib.weightOf(it.notional) * 10_000 / clone.totalWeight());
         assertGt(it.weightBps, 0);

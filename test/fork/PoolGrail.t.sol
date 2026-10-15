@@ -285,21 +285,68 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
     function test_mintStopsAtSixPieces() public {
         _openEmpty(25 ether);
         for (uint256 i; i < 6; ++i) {
-            pool.addGrailItem(SHAPES_ADDR, 9_000_000 + i, 1 ether, 1 ether, 9_000_000 + i, true);
+            pool.addGrailItem(SHAPES_ADDR, 9_000_000 + i, 1 ether, 1 ether, 9_000_000 + i, false);
         }
         _setFund(10 * _pieceCost());
         _warpToRotation();
         assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "six pieces exist");
     }
 
-    function test_mintStopsAtSixteenItems() public {
-        _openEmpty(25 ether);
-        for (uint256 i; i < 16; ++i) {
-            pool.addGrailItem(SHAPES_ADDR, 9_000_000 + i, 5 ether, 3.75 ether, 9_000_000 + i, true);
+    /// @dev Adds `n` fake items that no recipe uses: 3 ETH when building, 25 ETH when done.
+    function _fillItems(uint256 n, bool done, uint256 idBase) internal {
+        for (uint256 i; i < n; ++i) {
+            pool.addGrailItem(SHAPES_ADDR, idBase + i, done ? 25 ether : 3 ether, 1 ether, idBase + i, done);
         }
+    }
+
+    function test_buildingCapOfSixteenBlocksAMintWhileDoneItemsAreBelowThirtyTwo() public {
+        _openEmpty(25 ether);
+        _fillItems(16, false, 9_000_000);
+        _fillItems(31, true, 9_100_000);
         _setFund(10 * _pieceCost());
         _warpToRotation();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "sixteen items exist");
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "sixteen building items exist");
+        assertEq(_items().length, 47);
+    }
+
+    function test_doneItemsDoNotCountAgainstTheBuildingCap() public {
+        _openEmpty(25 ether);
+        _fillItems(15, false, 9_000_000);
+        _fillItems(20, true, 9_100_000);
+        _setFund(3 * _pieceCost());
+        _rotate();
+        assertEq(_items().length, 36, "one piece minted: 15 building plus the piece reach the cap of 16");
+        assertEq(_fund(), 2 * _pieceCost());
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the building cap now binds");
+    }
+
+    function test_theDoneCapOfThirtyTwoBlocksTheCompletingMerge() public {
+        _openEmpty(25 ether);
+        _fillItems(31, true, 9_100_000);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2, "the 32nd done item is allowed");
+        assertEq(_items().length, 32);
+
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the recipe waits at 32 done items");
+        vm.expectRevert(IPoolTypes.GrailItemsFull.selector);
+        pool.addGrailItem(SHAPES_ADDR, 9_200_000, 25 ether, 1 ether, 9_200_000, true);
+    }
+
+    function test_aMergeThatIsNotDoneRunsAtTheDoneCap() public {
+        _openEmpty(25 ether);
+        _fillItems(32, true, 9_100_000);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_countBacking(10 ether), 1, "a 10 ETH intermediate is not done");
     }
 
     function test_grailStepWaitsWhileAnAcquisitionIsUnsettled() public {
@@ -531,6 +578,88 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         assertEq(_g().cycleId, 3, "and the 10 ETH item completed the second cycle");
     }
 
+    // ---------------------------------------------------------------- ladder step
+
+    function _setStep() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setGrailStep(14 days, 60 days);
+    }
+
+    /// @dev Opens a 25 ETH cycle with the 14 and 60 day step, waits `wait`, then completes the cycle.
+    function _completeCycle25(uint256 wait) internal {
+        _openEmpty(25 ether);
+        _setStep();
+        assertEq(_g().cycleStartedAt, IPool(address(pool)).openingDeadlineAt(), "cycle 1 starts at open");
+        vm.warp(vm.getBlockTimestamp() + wait);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().cycleStartedAt, vm.getBlockTimestamp(), "cycle 2 starts at completion");
+    }
+
+    function test_aCycleCompletedInsideFourteenDaysStepsTheNextTargetUp() public {
+        _completeCycle25(13 days);
+        assertEq(_g().targetWei, 50 ether);
+        assertEq(_g().nextTargetWei, 50 ether);
+    }
+
+    function test_aCycleCompletedAfterSixtyDaysStepsTheNextTargetDown() public {
+        _completeCycle25(61 days);
+        assertEq(_g().targetWei, 10 ether);
+        assertEq(_g().nextTargetWei, 10 ether);
+    }
+
+    function test_aCycleBetweenTheStepsLeavesTheNextTarget() public {
+        _completeCycle25(30 days);
+        assertEq(_g().targetWei, 25 ether);
+        assertEq(_g().nextTargetWei, 25 ether);
+    }
+
+    function test_setGrailTargetAfterTheStepOverridesIt() public {
+        _completeCycle25(1 days);
+        assertEq(_g().nextTargetWei, 50 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailTarget(5 ether);
+        assertEq(_g().nextTargetWei, 5 ether);
+        assertEq(_g().targetWei, 50 ether, "the running cycle keeps its target");
+    }
+
+    function test_theLadderDoesNotStepAboveOneHundredEth() public {
+        _openEmpty(100 ether);
+        _setStep();
+        _seed(50 ether);
+        _seed(50 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().nextTargetWei, 100 ether);
+    }
+
+    function test_theLadderDoesNotStepBelowFiveEth() public {
+        _openEmpty(5 ether);
+        _setStep();
+        vm.warp(vm.getBlockTimestamp() + 61 days);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().nextTargetWei, 5 ether);
+    }
+
+    function test_setGrailStepRequiresUpBelowDownAndTheAdmin() public {
+        _openEmpty(25 ether);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
+        IPool(address(pool)).setGrailStep(60 days, 60 days);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setGrailStep(1, 2);
+        _setStep();
+        assertEq(_g().stepUpSeconds, 14 days);
+        assertEq(_g().stepDownSeconds, 60 days);
+    }
+
     // ---------------------------------------------------------------- opening five
 
     function test_openFormsTheOpeningFiveListedAtFace() public {
@@ -578,13 +707,13 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         pool.recordPulls(9);
         pool.settle(20);
         assertEq(_items()[0].notional, 1 ether, "9 pulls decay 0.009 ETH, under 1 percent");
-        assertEq(_items()[0].pullsSinceList, 9);
+        assertEq(_g().pulls - _items()[0].listedAtPull, 9);
 
         pool.recordPulls(1);
         pool.pushReplacement(1);
         pool.settle(20);
         assertEq(_items()[0].notional, 0.99 ether, "10 pulls reach 1 percent");
-        assertEq(_items()[0].pullsSinceList, 0, "the reprice restarts the count");
+        assertEq(_items()[0].listedAtPull, _g().pulls, "the reprice restarts the count");
         (uint256 price,) = _price(listingId);
         assertEq(price, 0.99 ether);
 
@@ -622,7 +751,49 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
 
         assertEq(_items()[0].notional, 0.97 ether, "30 pulls on the older piece");
         assertEq(_items()[1].notional, 5 ether, "no pulls on the new item");
-        assertEq(_items()[0].pullsSinceList, 0);
+        assertEq(_items()[0].listedAtPull, _g().pulls);
+    }
+
+    function test_grailPullsRisesOncePerBookedSequence() public {
+        _openEmpty(25 ether);
+        _seed(1 ether);
+        _seed(1 ether);
+        _seed(1 ether);
+        assertEq(_g().pulls, 0);
+        _captureItem(0);
+        assertEq(_g().pulls, 1);
+        _captureItem(0);
+        assertEq(_g().pulls, 2);
+        pool.recordPulls(5);
+        assertEq(_g().pulls, 7);
+    }
+
+    function test_aMergedItemDecaysToOneEthAndAPieceAtFaceNeverReprices() public {
+        _openEmpty(25 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrail(0.001 ether, 1 ether, 1 ether, 7_500);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_items()[0].backing, 10 ether);
+        assertEq(_items()[0].notional, 7.5 ether);
+        uint256 pieceId = _seed(1 ether);
+        uint256 pieceListing = _items()[1].listingId;
+        _makeSettleDue();
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(10_000);
+
+        pool.recordPulls(1_000_000);
+        pool.settle(20);
+
+        assertEq(_items()[0].notional, 1 ether, "the merged item stops at 1 ETH");
+        (uint256 price,) = _price(_items()[0].listingId);
+        assertEq(price, 1 ether);
+        assertEq(_items()[1].tokenId, pieceId);
+        assertEq(_items()[1].notional, 1 ether, "a piece lists at face and stays");
+        assertEq(_items()[1].listedAtPull, 0, "the piece was never repriced");
+        (price,) = _price(pieceListing);
+        assertEq(price, 1 ether);
     }
 
     // ---------------------------------------------------------------- capture

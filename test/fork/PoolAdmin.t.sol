@@ -341,7 +341,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPoolTypes.Grail memory before_ = IPool(address(pool)).grail();
         IPoolTypes.GrailItem[] memory itemsBefore = IPool(address(pool)).grailItems();
         assertEq(itemsBefore.length, 4);
-        assertEq(itemsBefore[0].pullsSinceList, 3);
+        assertEq(before_.pulls, 3);
 
         _expectParamSet(IPool.setGrail.selector);
         vm.prank(admin);

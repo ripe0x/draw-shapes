@@ -85,6 +85,10 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         if (at > block.timestamp) vm.warp(at);
     }
 
+    function _pullsSinceList() internal view returns (uint256) {
+        return IPool(address(pool)).grail().pulls - _item().listedAtPull;
+    }
+
     function _item() internal view returns (IPoolTypes.GrailItem memory) {
         return IPool(address(pool)).grailItems()[0];
     }
@@ -172,7 +176,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by settle");
         assertEq(price, 4.899 ether, "101 pulls at 0.001 ETH: 100 recorded and the booked pull");
         assertEq(_item().notional, 4.899 ether);
-        assertEq(_item().pullsSinceList, 0, "the reprice restarts the pull count");
+        assertEq(_pullsSinceList(), 0, "the reprice restarts the pull count");
     }
 
     // ---------------------------------------------------------------- A2: refund gate
@@ -219,7 +223,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).setGrailProbCap(1);
 
         pool.recordPulls(100);
-        assertEq(_item().pullsSinceList, 100);
+        assertEq(_pullsSinceList(), 100);
         vm.prank(admin);
         IPool(address(pool)).setBatch(1, 1 hours);
         pool.pushReplacement(0);
@@ -228,7 +232,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         (uint256 price,) = _price(listingId);
         assertEq(price, 5 ether, "the lower price would put the GRAIL weight above the cap");
         assertEq(_item().notional, 5 ether);
-        assertEq(_item().pullsSinceList, 100, "pulls keep counting");
+        assertEq(_pullsSinceList(), 100, "pulls keep counting");
 
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);

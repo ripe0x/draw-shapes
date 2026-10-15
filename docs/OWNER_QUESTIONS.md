@@ -389,6 +389,9 @@ No entry is open.
    a sixth piece may stay listed after the 5 ETH merge (the recipe takes any five pieces), and a completed GRAIL stays
    listed while the next cycle builds. The completed item carries a `done` flag so it is not a merge input. Place:
    `PoolListing.grailStep`, `grailReprice`, `PoolBooks._capture`, `PoolAdmin.setGrail`-family. SPEC 5, 11 and 13.
+   2026-10-15 floor decision: `pieceFloorWei` and `floorWei` are both 1 ETH, so a piece lists at face and a merged item decays to 1 ETH.
+   Done items are capped apart from building items (`MAX_DONE_ITEMS` 32, `MAX_BUILDING_ITEMS` 16) so finished GRAILs do not stall the fund.
+   Ladder step: a cycle under `stepUpSeconds` (14 days) moves `nextTargetWei` one rung up, one over `stepDownSeconds` (60 days) one rung down (`setGrailStep`).
 
 42. **Board depth follows NAV.** (decided, in SPEC) Owner decision of 2026-10-14. `boardItems() = max(minItems, (nav -
    nav * reserveBps / 10_000) / meanRowCost)`, with `nav` the ordinary NAV (already net of `claims`) and `meanRowCost`

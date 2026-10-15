@@ -155,6 +155,10 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         pool.addGrailFund{value: 5 ether}();
     }
 
+    function _pullsSinceList() internal view returns (uint256) {
+        return IPool(address(pool)).grail().pulls - _item().listedAtPull;
+    }
+
     function _item() internal view returns (IPoolTypes.GrailItem memory) {
         return IPool(address(pool)).grailItems()[0];
     }
@@ -328,7 +332,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         assertEq(_notionalOf(), 4.9 ether, "100 pulls at 0.001 ETH");
         assertGt(refund, 0, "a due settle that repriced pays the refund");
         assertEq(keeper.balance, refund);
-        assertEq(_item().pullsSinceList, 0, "the reprice restarts the pull count");
+        assertEq(_pullsSinceList(), 0, "the reprice restarts the pull count");
     }
 
     function test_aDecayBelowOnePercentDoesNotReprice() public {
@@ -357,7 +361,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
 
         assertEq(_notionalOf(), 5 ether, "the reprice rides on a due settle");
         assertEq(refund, 0);
-        assertEq(_item().pullsSinceList, 100);
+        assertEq(_pullsSinceList(), 100);
     }
 
     function test_rotateLeavesTheListPriceAlone() public {
@@ -368,14 +372,14 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         _warpToSpacing();
         _assertDue(IPoolTypes.RotateTrigger.Held);
         uint256 before_ = _notionalOf();
-        uint256 pullsBefore = _item().pullsSinceList;
+        uint256 pullsBefore = _pullsSinceList();
         assertEq(pullsBefore, 6, "one booked capture and five recorded pulls");
 
         vm.prank(keeper);
         pool.rotate();
 
         assertEq(_notionalOf(), before_, "rotate lists the queue and does not reprice");
-        assertEq(_item().pullsSinceList, pullsBefore, "the pull count is unchanged");
+        assertEq(_pullsSinceList(), pullsBefore, "the pull count is unchanged");
     }
 
     function test_aDueSettleDoesNotRepriceUnderANonzeroCooldown() public {
@@ -390,7 +394,7 @@ contract PoolTriggersForkTest is ForkBase, PoolFixture {
         assertEq(grailListedInSettle, 0);
         assertEq(listedInSettle, 0);
         assertEq(refund, 0);
-        assertEq(_item().pullsSinceList, 100, "the pull count keeps running");
+        assertEq(_pullsSinceList(), 100, "the pull count keeps running");
     }
 
     function test_listWhilePausedLetsADueSettleRepriceUnderACooldown() public {

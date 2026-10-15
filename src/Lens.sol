@@ -60,7 +60,7 @@ contract Lens {
         uint256 backing;
         uint256 notional;
         uint256 listingId;
-        uint256 pullsSinceList;
+        uint256 listedAtPull;
         uint256 weightBps;
     }
 
@@ -74,6 +74,10 @@ contract Lens {
         uint256 decayWeiPerPull;
         uint256 pieceFloorWei;
         uint256 floorWei;
+        uint256 pulls;
+        uint256 cycleStartedAt;
+        uint256 stepUpSeconds;
+        uint256 stepDownSeconds;
         GrailItemView[] items;
     }
 
@@ -254,6 +258,8 @@ contract Lens {
             (s.fund, s.receivable, s.targetWei, s.nextTargetWei, s.cycleId);
         (g.listBps, g.decayWeiPerPull, g.pieceFloorWei, g.floorWei) =
             (s.listBps, s.decayWeiPerPull, s.pieceFloorWei, s.floorWei);
+        (g.pulls, g.cycleStartedAt, g.stepUpSeconds, g.stepDownSeconds) =
+            (s.pulls, s.cycleStartedAt, s.stepUpSeconds, s.stepDownSeconds);
         IPoolTypes.GrailItem[] memory items = _ip().grailItems();
         g.items = new GrailItemView[](items.length);
         uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
@@ -261,7 +267,7 @@ contract Lens {
             IPoolTypes.GrailItem memory it = items[i];
             uint256 weightBps = it.listingId != 0 && total != 0 ? PricingLib.weightOf(it.notional) * BPS / total : 0;
             g.items[i] = GrailItemView(
-                it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.pullsSinceList, weightBps
+                it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.listedAtPull, weightBps
             );
         }
     }

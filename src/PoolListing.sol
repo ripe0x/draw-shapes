@@ -35,6 +35,7 @@ contract PoolListing is PoolBooks {
     ///         against its target depth, `MAX_OPEN_MINTS` entries in all, then fills and lists the queue and the held items, `MAX_OPEN_MINTS` at most.
     ///         Returns the number listed.
     function openBoard() external onlyDelegated onlySelf returns (uint256) {
+        if (_grail.cycleStartedAt == 0) _grail.cycleStartedAt = uint64(block.timestamp);
         _openGrail();
         _queueMissing(MAX_OPEN_MINTS);
         return _listBatch(MAX_OPEN_MINTS);
@@ -60,6 +61,14 @@ contract PoolListing is PoolBooks {
     {
         _admin();
         _setGrail(decayWeiPerPull, pieceFloorWei, floorWei, listBps);
+    }
+
+    /// @dev `stepUpSeconds` is below `stepDownSeconds`. A completed cycle steps `nextTargetWei` one
+    ///      rung up when it took less than `stepUpSeconds` and one rung down when it took more than
+    ///      `stepDownSeconds`.
+    function setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) external onlyDelegated {
+        _admin();
+        _setGrailStep(stepUpSeconds, stepDownSeconds);
     }
 
     /// @dev `targetWei` is 5, 10, 25, 50 or 100 ETH on the mainnet ladder. The running cycle keeps
@@ -103,7 +112,7 @@ contract PoolListing is PoolBooks {
     }
 
     /// @notice Applies the price decay to every Active GRAIL listing: the price falls to `max(floor,
-    ///         notional - decayWeiPerPull * pullsSinceList)` when that is at least 1 percent below
+    ///         notional - decayWeiPerPull * (grail.pulls - listedAtPull))` when that is at least 1 percent below
     ///         the notional and the Active GRAIL weight at the new price stays within
     ///         `grailProbCapBps` of the FWA selection weight. The caller ensures FWA holds no
     ///         unsettled acquisition. Returns whether a price changed.
@@ -125,7 +134,7 @@ contract PoolListing is PoolBooks {
             GrailItem storage it = _grailItems[i];
             uint256 old = it.notional;
             uint256 next = PricingLib.decayedNotional(
-                old, g.decayWeiPerPull, it.pullsSinceList, it.backing == GRAIL_PIECE ? g.pieceFloorWei : g.floorWei
+                old, g.decayWeiPerPull, g.pulls - it.listedAtPull, it.backing == GRAIL_PIECE ? g.pieceFloorWei : g.floorWei
             );
             if (next >= old || old - next < old / 100) continue;
             uint256 oldWeight = PricingLib.weightOf(old);
@@ -136,7 +145,7 @@ contract PoolListing is PoolBooks {
             (weight, total) = (newWeight, newTotal);
             _call(address(fwaPool), IFWAClone.updatePrice.selector, it.listingId, next);
             it.notional = next;
-            it.pullsSinceList = 0;
+            it.listedAtPull = g.pulls;
             emit GrailListed(it.listingId, it.collection, it.tokenId, it.backing, next);
             changed = true;
         }
@@ -172,14 +181,18 @@ contract PoolListing is PoolBooks {
     }
 
     /// @dev True when the fund covers a piece and its mint fee and the caps on pieces and items
-    ///      allow another.
+    ///      allow another. Done items do not count against the building cap.
     function _canMint(uint256 fee) internal view returns (bool) {
-        if (_grail.fund < GRAIL_PIECE + fee || _grailItems.length >= MAX_GRAIL_ITEMS) return false;
+        if (_grail.fund < GRAIL_PIECE + fee) return false;
         uint256 pieces;
+        uint256 building;
         for (uint256 i; i < _grailItems.length; ++i) {
-            if (_grailItems[i].backing == GRAIL_PIECE) ++pieces;
+            GrailItem storage it = _grailItems[i];
+            if (it.done) continue;
+            ++building;
+            if (it.backing == GRAIL_PIECE) ++pieces;
         }
-        return pieces < MAX_PIECES;
+        return building < MAX_BUILDING_ITEMS && pieces < MAX_PIECES;
     }
 
     /// @dev Mints `quantity` pieces to this contract and returns the first token id. The ids are
@@ -195,13 +208,31 @@ contract PoolListing is PoolBooks {
     ///      next one starts with `nextTargetWei`.
     function _publish(address collection, uint256 tokenId, uint256 backing_, uint256 notional) internal {
         bool done = backing_ == _grail.targetWei;
+        if (_grailFull(done)) revert GrailItemsFull();
         uint256 id = _callFull(address(fwaPool), 0, IFWAClone.listNFT.selector, uint160(collection), tokenId, notional);
-        _addGrailItem(GrailItem(collection, done, tokenId, backing_, notional, id, 0));
+        _addGrailItem(GrailItem(collection, done, tokenId, backing_, notional, id, _grail.pulls));
         emit GrailListed(id, collection, tokenId, backing_, notional);
         if (done) {
+            _stepTarget();
             emit GrailCycleCompleted(_grail.cycleId++, _grail.nextTargetWei);
             _grail.targetWei = _grail.nextTargetWei;
+            _grail.cycleStartedAt = uint64(block.timestamp);
         }
+    }
+
+    /// @dev Moves `nextTargetWei` one rung up the 5, 10, 25, 50, 100 ETH ladder when the cycle took
+    ///      less than `stepUpSeconds`, and one rung down when it took more than `stepDownSeconds`.
+    ///      The ends of the ladder stay.
+    function _stepTarget() internal {
+        Grail storage g = _grail;
+        uint256 elapsed = block.timestamp - g.cycleStartedAt;
+        uint256 units = g.nextTargetWei / Denominations.UNIT;
+        if (elapsed < g.stepUpSeconds) {
+            units = units == 500 ? 1_000 : units == 1_000 ? 2_500 : units == 2_500 ? 5_000 : 10_000;
+        } else if (elapsed > g.stepDownSeconds) {
+            units = units == 10_000 ? 5_000 : units == 5_000 ? 2_500 : units == 2_500 ? 1_000 : 500;
+        }
+        g.nextTargetWei = units * Denominations.UNIT;
     }
 
     /// @dev Lists every unlisted GRAIL item at its stored `notional`. Returns whether one was listed.
@@ -213,7 +244,7 @@ contract PoolListing is PoolBooks {
                 address(fwaPool), 0, IFWAClone.listNFT.selector, uint160(it.collection), it.tokenId, it.notional
             );
             it.listingId = id;
-            it.pullsSinceList = 0;
+            it.listedAtPull = _grail.pulls;
             _grailAt[id] = i + 1;
             emit GrailListed(id, it.collection, it.tokenId, it.backing, it.notional);
             listed = true;
@@ -223,17 +254,23 @@ contract PoolListing is PoolBooks {
     /// @dev Picks the largest recipe whose output fits the cycle target and whose inputs are
     ///      eligible, and returns the output backing in wei and the positions in `_grailItems` of
     ///      the inputs in ascending order. `out` is zero when no recipe is ready. Eligible items
-    ///      are listed with an Active FWA listing and are not the completed GRAIL. Recipes, by
+    ///      are listed with an Active FWA listing and are not the completed GRAIL. A recipe whose output is the
+    ///      completed GRAIL waits while `MAX_DONE_ITEMS` done items exist. Recipes, by
     ///      output in ladder units: 10,000 from two 5,000; 5,000 from two 2,500; 2,500 from two
     ///      1,000 and one 500; 1,000 from two 500; 500 from five pieces.
     function _recipe() internal view returns (uint256 out, uint256[] memory idx) {
         uint256 n = _grailItems.length;
         uint256[] memory units = new uint256[](n);
         uint256[5] memory count; // eligible items of 100, 500, 1000, 2500, 5000 units
+        uint256 doneItems;
         for (uint256 i; i < n; ++i) {
             GrailItem storage it = _grailItems[i];
+            if (it.done) {
+                ++doneItems;
+                continue;
+            }
             uint256 id = it.listingId;
-            if (id == 0 || it.done || _listingStatus(id) != uint256(IFWAClone.ListingStatus.Active)) continue;
+            if (id == 0 || _listingStatus(id) != uint256(IFWAClone.ListingStatus.Active)) continue;
             uint256 u = it.backing / Denominations.UNIT;
             units[i] = u;
             if (u == 100) ++count[0];
@@ -253,6 +290,7 @@ contract PoolListing is PoolBooks {
         else if (target >= 1_000 && count[1] >= 2) (outUnits, kindA, nA) = (1_000, 500, 2);
         else if (target >= 500 && count[0] >= FIVE_PIECES) (outUnits, kindA, nA) = (500, 100, FIVE_PIECES);
         else return (0, idx);
+        if (outUnits * Denominations.UNIT == _grail.targetWei && doneItems >= MAX_DONE_ITEMS) return (0, idx);
 
         uint256 needB = kindB == 0 ? 0 : 1;
         idx = new uint256[](nA + needB);

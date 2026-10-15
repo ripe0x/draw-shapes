@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 20,852 B, `PoolAdmin` 24,484 B, `PoolListing` 15,189 B, `Lens` 16,036 B (limit 24,576 B).
+Runtime sizes: `Pool` 20,899 B, `PoolAdmin` 24,546 B, `PoolListing` 16,113 B, `Lens` 16,419 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 

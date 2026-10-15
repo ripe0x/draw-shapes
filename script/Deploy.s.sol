@@ -75,7 +75,9 @@ contract Deploy is Script {
             listBps: vm.envUint("GRAIL_LIST_BPS"),
             decayWeiPerPull: vm.envUint("GRAIL_DECAY_WEI_PER_PULL"),
             pieceFloorWei: vm.envUint("GRAIL_PIECE_FLOOR_WEI"),
-            floorWei: vm.envUint("GRAIL_FLOOR_WEI")
+            floorWei: vm.envUint("GRAIL_FLOOR_WEI"),
+            stepUpSeconds: SafeCastLib.toUint32(vm.envUint("GRAIL_STEP_UP_SECONDS")),
+            stepDownSeconds: SafeCastLib.toUint32(vm.envUint("GRAIL_STEP_DOWN_SECONDS"))
         });
         uint256 navCapFloor = vm.envUint("NAV_CAP_FLOOR_WEI");
         p.navCapFloor = navCapFloor == 0 ? type(uint256).max : navCapFloor;
@@ -224,7 +226,8 @@ contract Deploy is Script {
         require(
             s.targetWei == g.targetWei && s.nextTargetWei == g.targetWei && s.cycleId == 1 && s.fund == 0
                 && s.listBps == g.listBps && s.decayWeiPerPull == g.decayWeiPerPull
-                && s.pieceFloorWei == g.pieceFloorWei && s.floorWei == g.floorWei,
+                && s.pieceFloorWei == g.pieceFloorWei && s.floorWei == g.floorWei
+                && s.stepUpSeconds == g.stepUpSeconds && s.stepDownSeconds == g.stepDownSeconds,
             "grail"
         );
         require(IPool(address(pool)).grailItems().length == 0, "grailItems");

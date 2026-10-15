@@ -232,7 +232,8 @@ contract PoolHarness is Pool {
     function addGrailItem(address collection, uint256 tokenId, uint256 backing_, uint256 notional, uint256 listingId, bool done)
         external
     {
-        _addGrailItem(GrailItem(collection, done, tokenId, backing_, notional, listingId, 0));
+        if (_grailFull(done)) revert GrailItemsFull();
+        _addGrailItem(GrailItem(collection, done, tokenId, backing_, notional, listingId, _grail.pulls));
     }
 
     /// @dev Credits `msg.value` to the GRAIL fund.
@@ -311,7 +312,9 @@ abstract contract PoolFixture is Test {
             listBps: 7_500,
             decayWeiPerPull: 0.001 ether,
             pieceFloorWei: 0.25 ether,
-            floorWei: 1 ether
+            floorWei: 1 ether,
+            stepUpSeconds: 0,
+            stepDownSeconds: type(uint32).max
         });
         p.navCapFloor = 1_000 ether;
         p.turnoverBps = 1_250;
