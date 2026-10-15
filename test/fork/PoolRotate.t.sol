@@ -36,12 +36,6 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        // A step above every bucket keeps `rotate` from growing the GRAIL tracks; PoolGrail.t.sol
-        // covers growth.
-        p.minor.stepWei = 500 ether;
-        p.minor.targetWei = 1_000 ether;
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
         pool = new PoolHarness(p);
         vm.prank(admin);
         IPool(address(pool)).createFwaPool(0);
@@ -54,19 +48,28 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
 
     function _openReady() internal {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
+        _drainGrailFund();
         warpPastCooldown(clone);
     }
 
+    /// @dev Empties the GRAIL fund so `rotate` has no GRAIL work; PoolGrail.t.sol covers the GRAIL.
+    function _drainGrailFund() internal {
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
+    }
+
     function _openLarge() internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.sizeBoard(60);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
+        _drainGrailFund();
         warpPastCooldown(clone);
     }
 
@@ -108,6 +111,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         vm.prank(exiter);
         pool.deposit{value: depositWei}();
         pool.loseCash(pool.cash() - cashLeft);
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
         assertEq(pool.cash(), cashLeft);
     }
 
@@ -121,9 +125,7 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
     }
 
     function _assertI1() internal view {
-        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
-        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + minorBucket + majorBucket, "I1");
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + IPool(address(pool)).grail().fund, "I1");
     }
 
     /// @dev I2: `backing` is the value of every held and listed item, `_listedByRow` holds exactly
@@ -305,28 +307,28 @@ contract PoolRotateForkTest is ForkBase, PoolFixture {
         assertEq(keeper.balance, s.refund);
     }
 
-    function test_rotateBlockedByAnUnsettledAcquisitionPaysNoRefund() public {
+    function test_rotateIsNotDueForTheGrailStepWhileAnAcquisitionIsUnsettled() public {
         _openReady();
-        vm.prank(admin);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0.001 ether, 0.01 ether);
+        pool.addGrailFund{value: 5 ether}();
         pool.setMaintenance(1 ether);
         vm.deal(address(pool), address(pool).balance + 1 ether);
-        _acquire(player, 1);
         _warpToRotation();
-        uint256 lastBefore = pool.lastRotateAt();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
-
-        vm.recordLogs();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "the fund covers pieces");
         vm.prank(keeper);
         pool.rotate();
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 lastBefore = pool.lastRotateAt();
+        uint256 maintenanceBefore = pool.maintenance();
+        uint256 keeperBefore = keeper.balance;
 
-        (bool changed, bool inventoryChanged, uint256 refund) = abi.decode(logs[logs.length - 1].data, (bool, bool, uint256));
-        assertFalse(changed);
-        assertFalse(inventoryChanged);
-        assertEq(refund, 0);
-        assertEq(pool.maintenance(), 1 ether);
-        assertEq(keeper.balance, 0);
+        warpPastCooldown(clone);
+        _acquire(player, 1);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the GRAIL step waits while busy");
+        vm.prank(keeper);
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
+        assertEq(pool.maintenance(), maintenanceBefore, "no refund");
+        assertEq(keeper.balance, keeperBefore, "keeper unpaid");
         assertEq(pool.lastRotateAt(), lastBefore, "interval keeps running");
     }
 

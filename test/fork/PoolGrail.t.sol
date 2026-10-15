@@ -3,19 +3,18 @@ pragma solidity 0.8.28;
 
 import {Vm} from "forge-std/Test.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {Pool} from "../../src/Pool.sol";
 import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {PoolHarness, PoolFixture} from "../unit/Pool.t.sol";
 import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 
-/// @notice GRAIL tracks against deployed Shapes, a Draw Packs deployment and a FWA clone created by
-///         the pool: growth steps, compose at native denominations, decay in `settle`, capture and
-///         the selection probability lift.
-/// @dev Minor track: step 0.05 ETH, target 0.5 ETH, list at 80 percent, decay 0.001 ETH per pull,
-///      floor 0.1 ETH. Its backing reaches a native denomination at 0.1 ETH and 0.5 ETH. Major
-///      track: step 0.15 ETH, target 1 ETH, list at 90 percent, no native backing below 1.05 ETH.
-///      A 100 ETH deposit routes about 11 ETH to the two buckets.
+/// @notice The GRAIL against deployed Shapes, a Draw Packs deployment and a FWA clone created by
+///         the pool: fund credits, piece mints, the merge recipes, the opening five, cycles,
+///         decay, capture and the busy rule.
+/// @dev Launch-style parameters: target 25 ETH, list 75 percent, decay 0.001 ETH per pull, piece
+///      floor 0.25 ETH, floor 1 ETH. Most tests open a pool with a 30 ETH deposit, whose 3.3 ETH
+///      contribution is below the opening five, and then control the fund directly. The recipe
+///      tests seed real tokens listed at FWA through `_seed` and let `rotate` merge them.
 contract PoolGrailForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -31,19 +30,22 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         deployDrawPacks(admin);
         mintFee = shapes.mintFee();
         vm.deal(alice, 10_000 ether);
+    }
 
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    function _deployPool(uint256 target) internal {
         IPoolTypes.Params memory p = _params();
         p.shapes = SHAPES_ADDR;
         p.drawPacks = address(drawPacks);
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: 0.5 ether, stepWei: 0.05 ether, listBps: 8_000, decayWeiPerPull: 0.001 ether, floorWei: 0.1 ether
-        });
-        p.major = IPoolTypes.GrailParams({
-            targetWei: 1 ether, stepWei: 0.15 ether, listBps: 9_000, decayWeiPerPull: 0.002 ether, floorWei: 0.3 ether
-        });
+        p.grail.targetWei = target;
         pool = new PoolHarness(p);
         vm.prank(admin);
         IPool(address(pool)).createFwaPool(0);
@@ -52,633 +54,859 @@ contract PoolGrailForkTest is ForkBase, PoolFixture {
         clone.setBool(41, true);
     }
 
-    // ---------------------------------------------------------------- helpers
-
-    function _openReady() internal {
+    /// @dev Deploys with `target`, deposits `depositWei`, opens and leaves the fund as the open left it.
+    function _open(uint256 target, uint256 depositWei) internal {
+        _deployPool(target);
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: depositWei}();
         vm.warp(IPool(address(pool)).openingDeadlineAt());
-        pool.open();
+        while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
+        while (pool.settleDue() == IPoolTypes.SettleTrigger.Deep) pool.settle(20);
         warpPastCooldown(clone);
+    }
+
+    /// @dev A pool with no opening five, target `target`, and an empty fund.
+    function _openEmpty(uint256 target) internal {
+        _open(target, 30 ether);
+        assertEq(_items().length, 0, "no opening five below five pieces of fund");
+        _setFund(0);
+    }
+
+    function _setFund(uint256 wei_) internal {
+        uint256 fund = _fund();
+        if (fund > wei_) pool.loseGrailFund(fund - wei_);
+        else if (fund < wei_) pool.addGrailFund{value: wei_ - fund}();
+    }
+
+    function _fund() internal view returns (uint256) {
+        return IPool(address(pool)).grail().fund;
+    }
+
+    function _g() internal view returns (IPoolTypes.Grail memory) {
+        return IPool(address(pool)).grail();
+    }
+
+    function _items() internal view returns (IPoolTypes.GrailItem[] memory) {
+        return IPool(address(pool)).grailItems();
+    }
+
+    function _pieceCost() internal view returns (uint256) {
+        return 1 ether + mintFee;
     }
 
     function _warpToRotation() internal {
         uint256 at = pool.lastRotateAt() + pool.rotateInterval();
-        if (block.timestamp < at) vm.warp(at);
+        if (vm.getBlockTimestamp() < at) vm.warp(at);
     }
 
-    function _bucket(uint256 t) internal view returns (uint256 v) {
-        (v,,,,,,,,,,,) = IPool(address(pool)).grail(t);
+    function _rotate() internal {
+        _warpToRotation();
+        vm.prank(keeper);
+        pool.rotate();
     }
 
-    function _packId(uint256 t) internal view returns (uint256 v) {
-        (, v,,,,,,,,,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _backing(uint256 t) internal view returns (uint256 v) {
-        (,, v,,,,,,,,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _notional(uint256 t) internal view returns (uint256 v) {
-        (,,, v,,,,,,,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _pulls(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,, v,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _receivable(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,,, v,) = IPool(address(pool)).grail(t);
-    }
-
-    function _listing(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,,,, v) = IPool(address(pool)).grail(t);
-    }
-
-    /// @dev Step plus the mint fees of the Shapes `defaultMakeup(step)` mints.
-    function _cost(uint256 step) internal view returns (uint256 cost) {
-        uint32[] memory counts = drawPacks.defaultMakeup(step);
-        for (uint256 i; i < counts.length; ++i) {
-            cost += counts[i] * mintFee;
+    /// @dev Rotates until `rotateDue` is `None`, at most `max` times. Returns the rotations run.
+    function _rotateAll(uint256 max) internal returns (uint256 n) {
+        while (n < max) {
+            _warpToRotation();
+            if (pool.rotateDue() == IPoolTypes.RotateTrigger.None) return n;
+            vm.prank(keeper);
+            pool.rotate();
+            ++n;
         }
-        cost += step;
+    }
+
+    /// @dev Lists `id` of `coll` at FWA from the pool at `notional` and books it as a GRAIL item.
+    function _list(address coll, uint256 id, uint256 backing_, uint256 notional) internal {
+        vm.prank(address(pool));
+        uint256 listingId = clone.listNFT(coll, id, notional);
+        pool.addGrailItem(coll, id, backing_, notional, listingId, false);
+    }
+
+    /// @dev Mints a Shape of `value` to the pool and books it as a listed GRAIL item at `value`.
+    function _seed(uint256 value) internal returns (uint256 id) {
+        id = mintShapes(address(pool), value, 1);
+        _list(SHAPES_ADDR, id, value, value);
+    }
+
+    /// @dev Builds a Draw Pack of the Shapes `values` owned by the pool and books it as a listed
+    ///      GRAIL item.
+    function _seedPack(uint256[] memory values) internal returns (uint256 packId) {
+        uint256[] memory ids = new uint256[](values.length);
+        uint256 total;
+        for (uint256 i; i < values.length; ++i) {
+            ids[i] = mintShapes(address(this), values[i], 1);
+            total += values[i];
+        }
+        shapes.setApprovalForAll(address(drawPacks), true);
+        packId = drawPacks.createPackTo(ids, new uint32[](9), address(pool));
+        _list(address(drawPacks), packId, total, total);
+    }
+
+    function _seedPack25() internal returns (uint256) {
+        uint256[] memory v = new uint256[](3);
+        v[0] = 10 ether;
+        v[1] = 10 ether;
+        v[2] = 5 ether;
+        return _seedPack(v);
     }
 
     function _price(uint256 listingId) internal view returns (uint256 price, IFWAClone.ListingStatus status) {
         (,,,,, price,, status) = clone.listings(listingId);
     }
 
-    /// @dev One growth step of track `t` alone, as the GRAIL step of `rotate` applies it.
-    function _grow(uint256 t) internal {
-        _warpPastRotateGate(pool);
-        vm.prank(keeper);
-        pool.growTrack(uint8(t));
+    function _countBacking(uint256 backing_) internal view returns (uint256 n) {
+        IPoolTypes.GrailItem[] memory items = _items();
+        for (uint256 i; i < items.length; ++i) {
+            if (items[i].backing == backing_) ++n;
+        }
     }
 
     /// @dev Makes `settleDue` nonzero: `batchMin` 1 and one queued replacement.
     function _makeSettleDue() internal {
         vm.prank(admin);
         IPool(address(pool)).setBatch(1, 1 hours);
-        if (pool.replacementLength() == 0) pool.pushReplacement(0);
+        if (pool.replacementLength() == 0) pool.pushReplacement(1);
         assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None, "settle is due");
     }
 
-    function _settleAsKeeper() internal {
+    /// @dev One pooled acquisition fulfilled on the GRAIL item at `index`, then settled. Returns the
+    ///      `GrailCaptured` backing and proceeds.
+    function _captureItem(uint256 index) internal returns (uint256 backing_, uint256 proceeds) {
+        warpPastCooldown(clone);
+        uint256 listingId = _items()[index].listingId;
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 1);
+        fulfill(clone, ids[0], wordFor(clone, listingId));
+        vm.recordLogs();
         vm.prank(keeper);
         pool.settle(20);
-    }
-
-    function _rotateAsKeeper() internal {
-        _warpPastRotateGate(pool);
-        vm.prank(keeper);
-        pool.rotate();
-    }
-
-    function _acquire(address who, uint256 count) internal returns (uint256[] memory ids) {
-        return acquirePooled(address(pool), clone, who, count);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.GrailCaptured.selector) {
+                (backing_, proceeds) = abi.decode(logs[i].data, (uint256, uint256));
+            }
+        }
     }
 
     function _assertI1() internal view {
-        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + _bucket(0) + _bucket(1), "I1");
+        assertGe(address(pool).balance, pool.cash() + pool.maintenance() + _fund(), "I1");
     }
 
-    /// @dev Number of `topic` logs emitted by the pool, and the data of the last one.
-    function _count(Vm.Log[] memory logs, bytes32 topic) internal view returns (uint256 n, bytes memory last) {
-        return _countTrack(logs, topic, type(uint256).max);
+    // ---------------------------------------------------------------- fund credits
+
+    function test_theEntryContributionGoesToTheFundInFull() public {
+        _deployPool(25 ether);
+        assertEq(_fund(), 0);
+        uint256 contribution = pool.contributionFor(30 ether, 0);
+        vm.prank(alice);
+        pool.deposit{value: 30 ether}();
+        assertEq(_fund(), contribution);
+        assertGt(contribution, 0);
+        _assertI1();
     }
 
-    /// @dev As `_count`, restricted to logs whose first indexed argument is `track`. A `track` of
-    ///      `type(uint256).max` matches every log.
-    function _countTrack(Vm.Log[] memory logs, bytes32 topic, uint256 track)
-        internal
-        view
-        returns (uint256 n, bytes memory last)
-    {
-        for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter != address(pool) || logs[i].topics[0] != topic) continue;
-            if (track != type(uint256).max && uint256(logs[i].topics[1]) != track) continue;
-            ++n;
-            last = logs[i].data;
-        }
-    }
-
-    // ---------------------------------------------------------------- guards
-
-    function test_growthStepIsDueOnlyOnceTheBucketCoversTheStep() public {
-        _openReady();
-        uint256 cost = _cost(0.05 ether);
-        pool.loseGrailBucket(0, _bucket(0) - cost + 1);
-        pool.loseGrailBucket(1, _bucket(1));
-        _warpPastRotateGate(pool);
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "short by one wei");
-        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
-        pool.rotate();
-
-        pool.addGrailBucket{value: 1}(0);
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
-        pool.rotate();
-        assertEq(_bucket(0), 0, "the step spent the bucket exactly");
-        assertEq(_backing(0), 0.05 ether);
-        assertEq(pool.lastRotateAt(), block.timestamp, "growth is an inventory change");
-    }
-
-    function test_rotateWaitsToGrowWhileAcquisitionsAreUnsettled() public {
-        _openReady();
-        _grow(0);
-        warpPastCooldown(clone);
-        uint256[] memory ids = _acquire(player, 1);
-        assertEq(clone.unsettledAcquisitionCount(), 1);
-
-        _warpPastRotateGate(pool);
-        uint256 lastBefore = pool.lastRotateAt();
-        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
-        pool.rotate();
-        assertEq(_backing(0), 0.05 ether, "locked while an acquisition is unsettled");
-        assertEq(_backing(1), 0, "locked while an acquisition is unsettled");
-        assertEq(pool.lastRotateAt(), lastBefore, "a rotate that grew nothing leaves the spacing alone");
-
-        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
-        _rotateAsKeeper();
-        assertEq(_backing(0), 0.1 ether, "grows once the acquisition settled");
-        assertEq(_backing(1), 0.15 ether);
-    }
-
-    // ---------------------------------------------------------------- growth
-
-    function test_firstGrowthCreatesTheTrackPackAndListsItAtTheNotional() public {
-        _openReady();
-        uint256 cost = _cost(0.05 ether);
-        uint256 bucketBefore = _bucket(0);
-        uint256 balanceBefore = address(pool).balance;
-        uint256 cashBefore = pool.cash();
-        uint256 backingBefore = pool.backing();
-        uint256 expectedPack = drawPacks.totalMinted() + 1;
-
+    function test_fundGrailCreditsTheFund() public {
+        _openEmpty(25 ether);
         vm.expectEmit(true, false, false, true, address(pool));
-        emit IPoolTypes.GrailGrown(0, expectedPack, 0.05 ether, 0.04 ether);
-        _grow(0);
-
-        assertEq(cost, 0.05 ether + mintFee, "defaultMakeup(0.05) is one Shape");
-        assertEq(bucketBefore - _bucket(0), cost, "the bucket paid the step and the mint fee");
-        assertEq(balanceBefore - address(pool).balance, cost, "the ETH left the pool");
-        assertEq(pool.cash(), cashBefore, "ordinary cash untouched");
-        assertEq(pool.backing(), backingBefore, "ordinary backing untouched");
-        assertEq(_packId(0), expectedPack);
-        assertEq(_backing(0), 0.05 ether);
-        assertEq(drawPacks.valueOf(expectedPack), _backing(0), "pack value equals track backing");
-        assertEq(drawPacks.contentsOf(expectedPack).length, 1);
-        assertEq(_notional(0), 0.04 ether, "80 percent of the backing");
-        assertEq(_pulls(0), 0);
-        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
-        assertEq(price, 0.04 ether);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
-        assertEq(drawPacks.ownerOf(expectedPack), address(clone), "FWA holds the pack");
-        assertEq(_packId(1), 0, "the other track is untouched");
+        emit IPoolTypes.GrailFunded(bob, 2 ether);
+        vm.deal(bob, 2 ether);
+        vm.prank(bob);
+        IPool(address(pool)).fundGrail{value: 2 ether}();
+        assertEq(_fund(), 2 ether);
         _assertI1();
     }
 
-    function test_secondGrowthWithdrawsTheListingAddsToThePackAndRelists() public {
-        _openReady();
-        _grow(1);
-        uint256 packId = _packId(1);
-        uint256 firstListing = _listing(1);
-        assertEq(_backing(1), 0.15 ether);
-        assertEq(drawPacks.contentsOf(packId).length, 2, "0.1 and 0.05");
-        uint256 cost = _cost(0.15 ether);
-        uint256 bucketBefore = _bucket(1);
-
-        _grow(1);
-
-        assertEq(_packId(1), packId, "same pack");
-        assertEq(_backing(1), 0.3 ether);
-        assertEq(drawPacks.valueOf(packId), 0.3 ether);
-        assertEq(drawPacks.contentsOf(packId).length, 4);
-        assertEq(bucketBefore - _bucket(1), cost);
-        assertEq(_notional(1), 0.27 ether);
-        assertTrue(_listing(1) != firstListing, "relisted under a new id");
-        (, IFWAClone.ListingStatus oldStatus) = _price(firstListing);
-        assertEq(uint8(oldStatus), uint8(IFWAClone.ListingStatus.Withdrawn));
-        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(1));
-        assertEq(price, 0.27 ether);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
-        assertEq(drawPacks.ownerOf(packId), address(clone));
-        _assertI1();
-    }
-
-    function test_composeAtANativeDenominationLeavesOnePackOfOneShape() public {
-        _openReady();
-        _grow(0);
-        uint256 firstPack = _packId(0);
-        uint256 survivor = drawPacks.contentsOf(firstPack)[0];
-        uint256 bucketBefore = _bucket(0);
-
-        _grow(0);
-
-        assertEq(_backing(0), 0.1 ether, "0.05 twice is the 0.1 rung");
-        uint256 packId = _packId(0);
-        assertTrue(packId != firstPack, "a fresh pack");
-        assertFalse(drawPacks.exists(firstPack), "the opened pack is burned");
-        uint256[] memory contents = drawPacks.contentsOf(packId);
-        assertEq(contents.length, 1, "one composed Shape");
-        assertEq(contents[0], survivor, "the first Shape survives");
-        assertEq(shapes.backingOf(survivor), 0.1 ether);
-        assertEq(shapes.denomIndexOf(survivor), 2);
-        assertEq(drawPacks.valueOf(packId), 0.1 ether);
-        assertEq(bucketBefore - _bucket(0), _cost(0.05 ether));
-        assertEq(_notional(0), 0.08 ether);
-        assertEq(drawPacks.ownerOf(packId), address(clone));
-        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
-        assertEq(price, 0.08 ether);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
-        assertEq(shapes.ownerOf(survivor), address(drawPacks), "the pack custodies the Shape");
-        _assertI1();
-    }
-
-    function test_growthStopsAtTheTargetAfterComposingTheHalfEthShape() public {
-        _openReady();
-        uint256 bucketBefore = _bucket(0);
-        for (uint256 i = 1; i <= 10; ++i) {
-            _grow(0);
-            assertEq(_backing(0), i * 0.05 ether);
-            assertEq(drawPacks.valueOf(_packId(0)), _backing(0), "pack value equals track backing");
-            uint256 expectedShapes = i <= 2 || i == 10 ? 1 : i - 1;
-            assertEq(drawPacks.contentsOf(_packId(0)).length, expectedShapes, "composed at 0.1 and 0.5 only");
-        }
-        assertEq(bucketBefore - _bucket(0), 10 * _cost(0.05 ether), "I5: ten steps, ten costs");
-        assertEq(_notional(0), 0.4 ether);
-
-        _warpPastRotateGate(pool);
-        vm.expectRevert(IPoolTypes.GrailNotReady.selector);
-        pool.growTrack(0);
-        _assertI1();
-    }
-
-    function test_majorTrackGrowsInItsOwnStep() public {
-        _openReady();
-        _grow(1);
-        assertEq(_backing(1), 0.15 ether);
-        assertEq(_notional(1), 0.135 ether);
-        assertEq(drawPacks.valueOf(_packId(1)), 0.15 ether);
-        assertEq(_backing(0), 0, "minor untouched");
-    }
-
-    // ---------------------------------------------------------------- rotate
-
-    function test_rotateGrowsFundedTracks() public {
-        _openReady();
-        _warpToRotation();
-
+    function test_theFeedShareOfASettledCaptureReachesTheFund() public {
+        _openEmpty(25 ether);
+        warpPastCooldown(clone);
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 1);
+        uint256[] memory listed = pool.listedIds(1);
+        fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
         vm.recordLogs();
         vm.prank(keeper);
-        pool.rotate();
+        pool.settle(20);
         Vm.Log[] memory logs = vm.getRecordedLogs();
-
-        (uint256 grown,) = _count(logs, IPoolTypes.GrailGrown.selector);
-        assertEq(grown, 2, "both tracks grew");
-        assertEq(_backing(0), 0.05 ether);
-        assertEq(_backing(1), 0.15 ether);
-        assertTrue(_listing(0) != 0 && _listing(1) != 0);
-        assertEq(pool.lastRotateAt(), block.timestamp, "a GRAIL listing change is an inventory change");
+        uint256 feed;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.MarginSplit.selector) {
+                (,,, feed) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
+            }
+        }
+        assertGt(feed, 0, "the pack capture left a feed share");
+        assertEq(_fund(), feed, "harvest credited the feed share to the fund");
+        assertEq(_g().receivable, 0);
         _assertI1();
     }
 
-    function test_rotateSkipsTracksThatAreNotReady() public {
-        _openReady();
-        pool.loseGrailBucket(0, _bucket(0));
+    // ---------------------------------------------------------------- mint
+
+    function test_aPieceMintsWhenTheFundCoversItAndListsAtFace() public {
+        _openEmpty(25 ether);
+        _setFund(_pieceCost() - 1);
         _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "short by one wei");
+        pool.addGrailFund{value: 1}();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
 
-        vm.recordLogs();
-        pool.rotate();
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        vm.expectEmit(false, false, false, false, address(pool));
+        emit IPoolTypes.GrailMinted(0, 1, _pieceCost());
+        _rotate();
 
-        (uint256 grown,) = _count(logs, IPoolTypes.GrailGrown.selector);
-        assertEq(grown, 1, "only the funded track grew");
-        assertEq(_backing(0), 0);
-        assertEq(_backing(1), 0.15 ether);
-    }
-
-    function test_decayInSettleLowersThePriceByPullsTimesDecayDownToTheFloor() public {
-        _openReady();
-        for (uint256 i; i < 10; ++i) {
-            _grow(0);
-        }
-        uint256 listingId = _listing(0);
-        assertEq(_notional(0), 0.4 ether);
-
-        pool.recordPulls(100);
-        assertEq(_pulls(0), 100, "listed track counts pulls");
-        _makeSettleDue();
-        vm.recordLogs();
-        _settleAsKeeper();
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-
-        assertEq(_listing(0), listingId, "repriced in place");
-        assertEq(_notional(0), 0.3 ether, "100 pulls at 0.001 ETH");
-        (uint256 price,) = _price(listingId);
-        assertEq(price, 0.3 ether);
-        assertEq(_pulls(0), 0, "the reprice restarts the count");
-        (uint256 listed,) = _count(logs, IPoolTypes.GrailListed.selector);
-        assertGe(listed, 1);
-
-        pool.recordPulls(5_000);
-        _makeSettleDue();
-        _settleAsKeeper();
-        (price,) = _price(listingId);
-        assertEq(price, 0.1 ether, "never below the floor");
-        assertEq(_notional(0), 0.1 ether);
-
-        pool.recordPulls(10);
-        _makeSettleDue();
-        _settleAsKeeper();
-        (price,) = _price(listingId);
-        assertEq(price, 0.1 ether, "at the floor there is nothing to reprice");
-        assertEq(_pulls(0), 10, "pulls keep counting");
+        assertEq(_fund(), 0, "the piece and its mint fee left the fund");
+        IPoolTypes.GrailItem memory it = _items()[0];
+        assertEq(_items().length, 1);
+        assertEq(it.collection, SHAPES_ADDR);
+        assertEq(it.backing, 1 ether);
+        assertEq(it.notional, 1 ether, "listed at face");
+        assertFalse(it.done);
+        assertEq(shapes.backingOf(it.tokenId), 1 ether);
+        assertEq(shapes.ownerOf(it.tokenId), address(clone));
+        (uint256 price, IFWAClone.ListingStatus status) = _price(it.listingId);
+        assertEq(price, 1 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertTrue(IPool(address(pool)).registered(SHAPES_ADDR, it.tokenId));
+        assertEq(pool.lastRotateAt(), vm.getBlockTimestamp(), "a mint is an inventory change");
         _assertI1();
     }
 
-    function test_decayBelowOnePercentOfTheListPriceDoesNotReprice() public {
-        _openReady();
-        for (uint256 i; i < 10; ++i) {
-            _grow(0);
-        }
-        for (uint256 i; i < 7; ++i) {
-            _grow(1);
-        }
-        assertEq(_backing(1), 1.05 ether, "the major track is at its target");
-        uint256 listingId = _listing(0);
-        assertEq(_notional(0), 0.4 ether);
+    function test_atMostThreePiecesMintPerRotate() public {
+        _openEmpty(25 ether);
+        _setFund(10 * _pieceCost());
+        _rotate();
+        assertEq(_items().length, 3);
+        assertEq(_fund(), 7 * _pieceCost());
+        _rotate();
+        assertEq(_items().length, 2, "three more pieces made six and five of them merged");
+        assertEq(_countBacking(1 ether), 1);
+        assertEq(_countBacking(5 ether), 1);
+        assertEq(_fund(), 4 * _pieceCost());
+    }
 
-        pool.recordPulls(3);
+    function test_mintStopsAtSixPieces() public {
+        _openEmpty(25 ether);
+        for (uint256 i; i < 6; ++i) {
+            pool.addGrailItem(SHAPES_ADDR, 9_000_000 + i, 1 ether, 1 ether, 9_000_000 + i, false);
+        }
+        _setFund(10 * _pieceCost());
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "six pieces exist");
+    }
+
+    /// @dev Adds `n` fake items that no recipe uses: 3 ETH when building, 25 ETH when done.
+    function _fillItems(uint256 n, bool done, uint256 idBase) internal {
+        for (uint256 i; i < n; ++i) {
+            pool.addGrailItem(SHAPES_ADDR, idBase + i, done ? 25 ether : 3 ether, 1 ether, idBase + i, done);
+        }
+    }
+
+    function test_buildingCapOfSixteenBlocksAMintWhileDoneItemsAreBelowThirtyTwo() public {
+        _openEmpty(25 ether);
+        _fillItems(16, false, 9_000_000);
+        _fillItems(31, true, 9_100_000);
+        _setFund(10 * _pieceCost());
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "sixteen building items exist");
+        assertEq(_items().length, 47);
+    }
+
+    function test_doneItemsDoNotCountAgainstTheBuildingCap() public {
+        _openEmpty(25 ether);
+        _fillItems(15, false, 9_000_000);
+        _fillItems(20, true, 9_100_000);
+        _setFund(3 * _pieceCost());
+        _rotate();
+        assertEq(_items().length, 36, "one piece minted: 15 building plus the piece reach the cap of 16");
+        assertEq(_fund(), 2 * _pieceCost());
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the building cap now binds");
+    }
+
+    function test_theDoneCapOfThirtyTwoBlocksTheCompletingMerge() public {
+        _openEmpty(25 ether);
+        _fillItems(31, true, 9_100_000);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2, "the 32nd done item is allowed");
+        assertEq(_items().length, 32);
+
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the recipe waits at 32 done items");
+        vm.expectRevert(IPoolTypes.GrailItemsFull.selector);
+        pool.addGrailItem(SHAPES_ADDR, 9_200_000, 25 ether, 1 ether, 9_200_000, true);
+    }
+
+    function test_aMergeThatIsNotDoneRunsAtTheDoneCap() public {
+        _openEmpty(25 ether);
+        _fillItems(32, true, 9_100_000);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_countBacking(10 ether), 1, "a 10 ETH intermediate is not done");
+    }
+
+    function test_grailStepWaitsWhileAnAcquisitionIsUnsettled() public {
+        _openEmpty(25 ether);
+        _setFund(3 * _pieceCost());
+        acquirePooled(address(pool), clone, player, 1);
+        assertEq(clone.unsettledAcquisitionCount(), 1);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "busy");
+        vm.expectRevert(IPoolTypes.RotateNotDue.selector);
+        pool.rotate();
+        vm.expectRevert(IPoolTypes.FwaBusy.selector);
+        pool.stepGrail();
+        assertEq(_items().length, 0);
+        assertEq(_fund(), 3 * _pieceCost());
+    }
+
+    // ---------------------------------------------------------------- merge recipes
+
+    function test_fivePiecesMergeIntoAFiveAndASixthPieceStaysListed() public {
+        _openEmpty(25 ether);
+        uint256[] memory pieceIds = new uint256[](6);
+        for (uint256 i; i < 6; ++i) {
+            pieceIds[i] = _seed(1 ether);
+        }
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep), "a recipe is ready");
+
+        _rotate();
+
+        assertEq(_items().length, 2, "five pieces became one item");
+        assertEq(_countBacking(1 ether), 1, "a sixth piece stays");
+        assertEq(_countBacking(5 ether), 1);
+        IPoolTypes.GrailItem memory five = _items()[_items()[0].backing == 5 ether ? 0 : 1];
+        assertEq(five.collection, SHAPES_ADDR);
+        assertEq(shapes.backingOf(five.tokenId), 5 ether);
+        assertEq(five.notional, 3.75 ether, "backing at listBps");
+        assertFalse(five.done, "a 5 ETH item is not the 25 ETH target");
+        (uint256 price, IFWAClone.ListingStatus status) = _price(five.listingId);
+        assertEq(price, 3.75 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(_g().cycleId, 1);
+        uint256 burned;
+        for (uint256 i; i < 6; ++i) {
+            if (!shapes.exists(pieceIds[i])) ++burned;
+        }
+        assertEq(burned, 4, "four pieces were burned into the survivor");
+    }
+
+    function test_exactlyFivePiecesMerge() public {
+        _openEmpty(25 ether);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        assertEq(_items().length, 1);
+        assertEq(_items()[0].backing, 5 ether);
+    }
+
+    function test_fourPiecesDoNotMerge() public {
+        _openEmpty(25 ether);
+        for (uint256 i; i < 4; ++i) {
+            _seed(1 ether);
+        }
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None));
+    }
+
+    function test_twoFivesMergeIntoATen() public {
+        _openEmpty(25 ether);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_items().length, 1);
+        IPoolTypes.GrailItem memory ten = _items()[0];
+        assertEq(ten.backing, 10 ether);
+        assertEq(ten.collection, SHAPES_ADDR);
+        assertEq(shapes.backingOf(ten.tokenId), 10 ether);
+        assertEq(ten.notional, 7.5 ether);
+    }
+
+    function test_twoTensAndAFiveMergeIntoA25DrawPack() public {
+        _openEmpty(25 ether);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_items().length, 2, "the second five stays");
+        assertEq(_countBacking(5 ether), 1);
+        IPoolTypes.GrailItem memory pack;
+        for (uint256 i; i < 2; ++i) {
+            if (_items()[i].backing == 25 ether) pack = _items()[i];
+        }
+        assertEq(pack.collection, address(drawPacks));
+        assertEq(drawPacks.valueOf(pack.tokenId), 25 ether);
+        assertEq(drawPacks.ownerOf(pack.tokenId), address(clone));
+        assertEq(pack.notional, 18.75 ether);
+        assertTrue(pack.done, "25 ETH is the cycle target");
+        assertEq(drawPacks.contentsOf(pack.tokenId).length, 3);
+        assertEq(_g().cycleId, 2, "the cycle completed");
+    }
+
+    function test_twoPacksOf25ComposeIntoA50Shape() public {
+        _openEmpty(50 ether);
+        _seedPack25();
+        _seedPack25();
+        _rotate();
+        assertEq(_items().length, 1);
+        IPoolTypes.GrailItem memory fifty = _items()[0];
+        assertEq(fifty.backing, 50 ether);
+        assertEq(fifty.collection, SHAPES_ADDR);
+        assertEq(shapes.backingOf(fifty.tokenId), 50 ether);
+        assertEq(fifty.notional, 37.5 ether);
+        assertTrue(fifty.done);
+        assertEq(_g().cycleId, 2);
+    }
+
+    function test_twoFiftiesComposeIntoA100Shape() public {
+        _openEmpty(100 ether);
+        _seed(50 ether);
+        _seed(50 ether);
+        _rotate();
+        assertEq(_items().length, 1);
+        IPoolTypes.GrailItem memory hundred = _items()[0];
+        assertEq(hundred.backing, 100 ether);
+        assertEq(shapes.backingOf(hundred.tokenId), 100 ether);
+        assertEq(hundred.notional, 75 ether);
+        assertTrue(hundred.done);
+    }
+
+    function test_aRecipeLargerThanTheTargetDoesNotRun() public {
+        _openEmpty(10 ether);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "25 ETH exceeds the 10 ETH target");
+    }
+
+    function test_aMergeWaitsWhileAnAcquisitionIsUnsettled() public {
+        _openEmpty(25 ether);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        acquirePooled(address(pool), clone, player, 1);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "busy");
+        vm.expectRevert(IPoolTypes.FwaBusy.selector);
+        pool.stepGrail();
+        assertEq(_items().length, 5);
+    }
+
+    function test_aTenFundedPieceCycleRunsFromFundToCompletion() public {
+        _openEmpty(10 ether);
+        _setFund(10 * _pieceCost());
+        uint256 rotations = _rotateAll(10);
+        assertGt(rotations, 1);
+        assertEq(_items().length, 1);
+        IPoolTypes.GrailItem memory ten = _items()[0];
+        assertEq(ten.backing, 10 ether);
+        assertTrue(ten.done);
+        assertEq(_fund(), 0);
+        assertEq(_g().cycleId, 2);
+        _assertI1();
+    }
+
+    // ---------------------------------------------------------------- cycles
+
+    function test_theCycleCompletesAtTheTargetAndTheNextTargetComesFromNextTargetWei() public {
+        _openEmpty(5 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailTarget(10 ether);
+        assertEq(_g().targetWei, 5 ether, "the running cycle keeps its target");
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.GrailCycleCompleted(1, 10 ether);
+        _rotate();
+
+        IPoolTypes.Grail memory g = _g();
+        assertEq(g.cycleId, 2);
+        assertEq(g.targetWei, 10 ether);
+        assertEq(g.nextTargetWei, 10 ether);
+        assertTrue(_items()[0].done);
+    }
+
+    function test_aCompletedGrailStaysListedWhilePiecesKeepMinting() public {
+        _openEmpty(5 ether);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        IPoolTypes.GrailItem memory completed = _items()[0];
+        assertTrue(completed.done);
+        assertEq(_g().cycleId, 2);
+
+        _setFund(3 * _pieceCost());
+        _rotate();
+
+        assertEq(_items().length, 4, "three pieces joined the completed GRAIL");
+        assertEq(_items()[0].tokenId, completed.tokenId);
+        (, IFWAClone.ListingStatus status) = _price(completed.listingId);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "still listed");
+    }
+
+    function test_aCompletedGrailIsNotAMergeInput() public {
+        _openEmpty(5 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailTarget(10 ether);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        uint256 completedId = _items()[0].tokenId;
+        assertTrue(_items()[0].done);
+
+        _seed(5 ether);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.None), "the completed five is not an input");
+
+        _seed(5 ether);
+        _rotate();
+        assertEq(_countBacking(10 ether), 1, "the two new fives merged");
+        assertEq(_countBacking(5 ether), 1);
+        assertTrue(shapes.exists(completedId), "the completed five stayed");
+        assertEq(_g().cycleId, 3, "and the 10 ETH item completed the second cycle");
+    }
+
+    // ---------------------------------------------------------------- ladder step
+
+    function _setStep() internal {
+        vm.prank(admin);
+        IPool(address(pool)).setGrailStep(14 days, 60 days);
+    }
+
+    /// @dev Opens a 25 ETH cycle with the 14 and 60 day step, waits `wait`, then completes the cycle.
+    function _completeCycle25(uint256 wait) internal {
+        _openEmpty(25 ether);
+        _setStep();
+        assertEq(_g().cycleStartedAt, IPool(address(pool)).openingDeadlineAt(), "cycle 1 starts at open");
+        vm.warp(vm.getBlockTimestamp() + wait);
+        _seed(10 ether);
+        _seed(10 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().cycleStartedAt, vm.getBlockTimestamp(), "cycle 2 starts at completion");
+    }
+
+    function test_aCycleCompletedInsideFourteenDaysStepsTheNextTargetUp() public {
+        _completeCycle25(13 days);
+        assertEq(_g().targetWei, 50 ether);
+        assertEq(_g().nextTargetWei, 50 ether);
+    }
+
+    function test_aCycleCompletedAfterSixtyDaysStepsTheNextTargetDown() public {
+        _completeCycle25(61 days);
+        assertEq(_g().targetWei, 10 ether);
+        assertEq(_g().nextTargetWei, 10 ether);
+    }
+
+    function test_aCycleBetweenTheStepsLeavesTheNextTarget() public {
+        _completeCycle25(30 days);
+        assertEq(_g().targetWei, 25 ether);
+        assertEq(_g().nextTargetWei, 25 ether);
+    }
+
+    function test_setGrailTargetAfterTheStepOverridesIt() public {
+        _completeCycle25(1 days);
+        assertEq(_g().nextTargetWei, 50 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailTarget(5 ether);
+        assertEq(_g().nextTargetWei, 5 ether);
+        assertEq(_g().targetWei, 50 ether, "the running cycle keeps its target");
+    }
+
+    function test_theLadderDoesNotStepAboveOneHundredEth() public {
+        _openEmpty(100 ether);
+        _setStep();
+        _seed(50 ether);
+        _seed(50 ether);
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().nextTargetWei, 100 ether);
+    }
+
+    function test_theLadderDoesNotStepBelowFiveEth() public {
+        _openEmpty(5 ether);
+        _setStep();
+        vm.warp(vm.getBlockTimestamp() + 61 days);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        assertEq(_g().cycleId, 2);
+        assertEq(_g().nextTargetWei, 5 ether);
+    }
+
+    function test_setGrailStepRequiresUpBelowDownAndTheAdmin() public {
+        _openEmpty(25 ether);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
+        IPool(address(pool)).setGrailStep(60 days, 60 days);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setGrailStep(1, 2);
+        _setStep();
+        assertEq(_g().stepUpSeconds, 14 days);
+        assertEq(_g().stepDownSeconds, 60 days);
+    }
+
+    // ---------------------------------------------------------------- opening five
+
+    function test_openFormsTheOpeningFiveListedAtFace() public {
+        _deployPool(25 ether);
+        vm.prank(alice);
+        pool.deposit{value: 100 ether}();
+        uint256 contribution = _fund();
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.open();
+
+        IPoolTypes.GrailItem[] memory items = _items();
+        assertEq(items.length, 1);
+        assertEq(items[0].collection, SHAPES_ADDR);
+        assertEq(items[0].backing, 5 ether);
+        assertEq(items[0].notional, 5 ether, "listed at face");
+        assertEq(shapes.backingOf(items[0].tokenId), 5 ether);
+        assertEq(shapes.ownerOf(items[0].tokenId), address(clone));
+        (uint256 price, IFWAClone.ListingStatus status) = _price(items[0].listingId);
+        assertEq(price, 5 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(_fund(), contribution - 5 * _pieceCost(), "five pieces and their mint fees");
+        assertEq(_g().cycleId, 1);
+        assertFalse(items[0].done);
+        _assertI1();
+    }
+
+    function test_openFormsNoOpeningFiveBelowFivePiecesOfFund() public {
+        _deployPool(25 ether);
+        vm.prank(alice);
+        pool.deposit{value: 30 ether}();
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
+        pool.open();
+        assertEq(_items().length, 0);
+    }
+
+    // ---------------------------------------------------------------- decay
+
+    function test_aPieceDecaysFromTheFaceToThePieceFloor() public {
+        _openEmpty(25 ether);
+        _setFund(_pieceCost());
+        _rotate();
         _makeSettleDue();
-        _settleAsKeeper();
-        (uint256 price,) = _price(listingId);
-        assertEq(price, 0.4 ether, "0.75 percent waits");
-        assertEq(_pulls(0), 3, "the pulls keep counting");
+        uint256 listingId = _items()[0].listingId;
+
+        pool.recordPulls(9);
+        pool.settle(20);
+        assertEq(_items()[0].notional, 1 ether, "9 pulls decay 0.009 ETH, under 1 percent");
+        assertEq(_g().pulls - _items()[0].listedAtPull, 9);
 
         pool.recordPulls(1);
+        pool.pushReplacement(1);
+        pool.settle(20);
+        assertEq(_items()[0].notional, 0.99 ether, "10 pulls reach 1 percent");
+        assertEq(_items()[0].listedAtPull, _g().pulls, "the reprice restarts the count");
+        (uint256 price,) = _price(listingId);
+        assertEq(price, 0.99 ether);
+
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(10_000);
+        pool.recordPulls(1_000_000);
+        pool.pushReplacement(1);
+        pool.settle(20);
+        assertEq(_items()[0].notional, 0.25 ether, "stops at the piece floor");
+        (price,) = _price(listingId);
+        assertEq(price, 0.25 ether);
+    }
+
+    function test_aLargerItemDecaysToTheFloorNotThePieceFloor() public {
+        _openEmpty(25 ether);
+        _seed(5 ether);
         _makeSettleDue();
-        _settleAsKeeper();
-        assertEq(_notional(0), 0.396 ether, "4 pulls at 0.001 ETH");
-        assertEq(_pulls(0), 0);
-        _assertI1();
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(10_000);
+
+        pool.recordPulls(1_000_000);
+        pool.settle(20);
+
+        assertEq(_items()[0].notional, 1 ether, "floorWei, not pieceFloorWei");
     }
 
-    function test_growthRunsInsideRotateAndRestartsTheSpacing() public {
-        _openReady();
-        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.rotate();
-
-        _warpToRotation();
-        pool.rotate();
-        assertEq(_backing(0), 0.05 ether);
-        assertEq(pool.lastRotateAt(), block.timestamp, "growth restarts the spacing");
-        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.rotate();
-
-        vm.warp(block.timestamp + pool.rotateInterval() - 1);
-        vm.expectRevert(IPoolTypes.RotateTooSoon.selector);
-        pool.rotate();
-        vm.warp(block.timestamp + 1);
-        pool.rotate();
-        assertEq(_backing(0), 0.1 ether);
-    }
-
-    function test_growthRelistResetsThePullCount() public {
-        _openReady();
-        _grow(0);
-        warpPastCooldown(clone);
-        uint256[] memory ids = _acquire(player, 2);
-        assertEq(_pulls(0), 0, "pulls count towards decay when booked");
-        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
-        fulfill(clone, ids[1], wordAvoiding(clone, _listing(0)));
-        pool.bookOnly(5);
-        assertEq(_pulls(0), 2, "booked pulls count towards decay");
-        _grow(0);
-        assertEq(_pulls(0), 0, "relisting restarts the count");
-    }
-
-    function test_decayWaitsWhileAcquisitionsAreUnsettled() public {
-        _openReady();
-        for (uint256 i; i < 10; ++i) {
-            _grow(0);
-        }
-        warpPastCooldown(clone);
-        uint256[] memory ids = _acquire(player, 1);
-        pool.recordPulls(100);
+    function test_eachItemDecaysByItsOwnPullCount() public {
+        _openEmpty(25 ether);
+        _seed(1 ether);
+        pool.recordPulls(30);
+        _seed(5 ether);
         _makeSettleDue();
 
-        _settleAsKeeper();
+        pool.settle(20);
 
-        assertEq(_notional(0), 0.4 ether, "locked while an acquisition is unsettled");
-        assertEq(_pulls(0), 100, "the unsettled pull is counted once booked");
-
-        fulfill(clone, ids[0], wordAvoiding(clone, _listing(0)));
-        _settleAsKeeper();
-        assertEq(_notional(0), 0.4 ether - 101 * 0.001 ether, "repriced once settled");
+        assertEq(_items()[0].notional, 0.97 ether, "30 pulls on the older piece");
+        assertEq(_items()[1].notional, 5 ether, "no pulls on the new item");
+        assertEq(_items()[0].listedAtPull, _g().pulls);
     }
 
-    function test_settleListsAPackThatIsNoLongerListed() public {
-        _openReady();
-        for (uint256 i; i < 10; ++i) {
-            _grow(0);
-        }
-        uint256 packId = _packId(0);
-        pool.unlistGrail(0);
-        assertEq(_listing(0), 0);
-        assertEq(drawPacks.ownerOf(packId), address(pool));
+    function test_grailPullsRisesOncePerBookedSequence() public {
+        _openEmpty(25 ether);
+        _seed(1 ether);
+        _seed(1 ether);
+        _seed(1 ether);
+        assertEq(_g().pulls, 0);
+        _captureItem(0);
+        assertEq(_g().pulls, 1);
+        _captureItem(0);
+        assertEq(_g().pulls, 2);
+        pool.recordPulls(5);
+        assertEq(_g().pulls, 7);
+    }
+
+    function test_aMergedItemDecaysToOneEthAndAPieceAtFaceNeverReprices() public {
+        _openEmpty(25 ether);
+        vm.prank(admin);
+        IPool(address(pool)).setGrail(0.001 ether, 1 ether, 1 ether, 7_500);
+        _seed(5 ether);
+        _seed(5 ether);
+        _rotate();
+        assertEq(_items()[0].backing, 10 ether);
+        assertEq(_items()[0].notional, 7.5 ether);
+        uint256 pieceId = _seed(1 ether);
+        uint256 pieceListing = _items()[1].listingId;
         _makeSettleDue();
+        vm.prank(admin);
+        IPool(address(pool)).setGrailProbCap(10_000);
 
-        _settleAsKeeper();
+        pool.recordPulls(1_000_000);
+        pool.settle(20);
 
-        assertTrue(_listing(0) != 0, "listed again");
-        assertEq(_packId(0), packId);
-        assertEq(drawPacks.ownerOf(packId), address(clone));
-        (uint256 price, IFWAClone.ListingStatus status) = _price(_listing(0));
-        assertEq(price, 0.4 ether);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+        assertEq(_items()[0].notional, 1 ether, "the merged item stops at 1 ETH");
+        (uint256 price,) = _price(_items()[0].listingId);
+        assertEq(price, 1 ether);
+        assertEq(_items()[1].tokenId, pieceId);
+        assertEq(_items()[1].notional, 1 ether, "a piece lists at face and stays");
+        assertEq(_items()[1].listedAtPull, 0, "the piece was never repriced");
+        (price,) = _price(pieceListing);
+        assertEq(price, 1 ether);
     }
 
     // ---------------------------------------------------------------- capture
 
-    function test_captureBooksProceedsToTheTrackAndRegrowsFromItsBucket() public {
-        _openReady();
-        _grow(0);
-        _grow(0);
-        warpPastCooldown(clone);
-        uint256 packId = _packId(0);
-        uint256 listingId = _listing(0);
-        uint256 backingBefore = pool.backing();
-        int256 marginBefore = IPool(address(pool)).margin();
-        uint256 receivableBefore = pool.receivable();
-        uint256 bucketBefore = _bucket(0);
+    function test_capturingAPieceBooksTheReceivableAndHarvestCreditsTheFund() public {
+        _openEmpty(25 ether);
+        _setFund(_pieceCost());
+        _rotate();
+        uint256 fundBefore = _fund();
+        assertEq(_items().length, 1);
+        uint256 listingId = _items()[0].listingId;
 
-        uint256[] memory ids = _acquire(player, 1);
-        fulfill(clone, ids[0], wordFor(clone, listingId));
-        (,, uint256 paid,, IFWAClone.AcquisitionStatus status) = clone.acquisitions(ids[0]);
-        assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Fulfilled));
-        (uint256 base, bool recorded) = pool.baseOf(ids[0]);
-        assertTrue(recorded);
-        uint256 proceeds = paid - (paid - base) / 2;
+        (uint256 backing_, uint256 proceeds) = _captureItem(0);
 
-        vm.expectEmit(true, true, false, true, address(pool));
-        emit IPoolTypes.GrailCaptured(0, ids[0], proceeds);
-        pool.bookOnly(5);
-
-        assertEq(drawPacks.ownerOf(packId), player, "the player received the pack");
-        assertEq(_receivable(0), proceeds, "proceeds booked to the track");
-        assertEq(_packId(0), 0);
-        assertEq(_backing(0), 0);
-        assertEq(_notional(0), 0);
-        assertEq(_listing(0), 0);
-        assertEq(_pulls(0), 0);
-        assertEq(pool.backing(), backingBefore, "ordinary backing untouched");
-        assertEq(IPool(address(pool)).margin(), marginBefore, "no ordinary margin");
-        assertEq(pool.receivable(), receivableBefore, "no ordinary receivable");
-        assertEq(pool.replacementLength(), 0, "no replacement");
-        assertEq(_bucket(0), bucketBefore, "the bucket receives the proceeds at harvest");
-
-        assertTrue(pool.harvest());
-        assertEq(_receivable(0), 0);
-        assertEq(_bucket(0), bucketBefore + proceeds);
-        _assertI1();
-
-        // I5: the track regrows from its own bucket.
-        uint256 beforeRegrow = _bucket(0);
-        warpPastCooldown(clone);
-        _grow(0);
-        assertEq(beforeRegrow - _bucket(0), _cost(0.05 ether));
-        assertTrue(_packId(0) != packId && _packId(0) != 0, "a new pack");
-        assertEq(_backing(0), 0.05 ether);
-        assertEq(drawPacks.valueOf(_packId(0)), 0.05 ether);
-    }
-
-    function test_growthBooksACaptureBeforeItGrows() public {
-        _openReady();
-        _grow(0);
-        warpPastCooldown(clone);
-        uint256 oldPack = _packId(0);
-        uint256[] memory ids = _acquire(player, 1);
-        fulfill(clone, ids[0], wordFor(clone, _listing(0)));
-        assertEq(_packId(0), oldPack, "the capture is not booked yet");
-
-        warpPastCooldown(clone);
-        _grow(0);
-
-        assertEq(drawPacks.ownerOf(oldPack), player);
-        assertTrue(_packId(0) != oldPack, "a new pack");
-        assertEq(_backing(0), 0.05 ether, "the track restarted");
-        assertEq(_receivable(0), 0, "proceeds harvested into the bucket");
-        _assertI1();
-    }
-
-    function test_bucketAccountingAcrossGrowthCaptureAndRegrowth() public {
-        _openReady();
-        uint256 start = _bucket(0);
-        uint256 spent;
-        for (uint256 i; i < 3; ++i) {
-            _grow(0);
-            spent += _cost(0.05 ether);
-        }
-        warpPastCooldown(clone);
-        uint256[] memory ids = _acquire(player, 1);
-        fulfill(clone, ids[0], wordFor(clone, _listing(0)));
-        vm.recordLogs();
-        pool.bookOnly(5);
-        (, bytes memory data) = _count(vm.getRecordedLogs(), IPoolTypes.GrailCaptured.selector);
-        uint256 proceeds = abi.decode(data, (uint256));
+        assertEq(backing_, 1 ether);
         assertGt(proceeds, 0);
-        pool.harvest();
-        warpPastCooldown(clone);
-        for (uint256 i; i < 2; ++i) {
-            _grow(0);
-            spent += _cost(0.05 ether);
-        }
-        assertEq(_bucket(0) + _receivable(0), start + proceeds - spent, "I5: bucket = in + proceeds - spent");
-        assertEq(_backing(0), 0.1 ether);
+        assertEq(_items().length, 0, "the item left grailItems");
+        assertEq(_g().receivable, 0, "harvested");
+        assertEq(_fund(), fundBefore + proceeds, "the proceeds reached the fund");
+        assertEq(_g().cycleId, 1, "the cycle keeps running");
+        (, IFWAClone.ListingStatus status) = _price(listingId);
+        assertTrue(status != IFWAClone.ListingStatus.Active);
         _assertI1();
     }
 
-    function test_writtenOffGrailListingResetsTheTrackWithoutProceeds() public {
-        _openReady();
-        _grow(0);
-        uint256 listingId = _listing(0);
-        int256 marginBefore = IPool(address(pool)).margin();
-        uint256 backingBefore = pool.backing();
+    function test_capturingTheCompletedGrailBooksItsProceedsAndTheNextCycleContinues() public {
+        _openEmpty(5 ether);
+        for (uint256 i; i < 5; ++i) {
+            _seed(1 ether);
+        }
+        _rotate();
+        assertTrue(_items()[0].done);
+        uint256 fundBefore = _fund();
 
-        vm.expectEmit(true, true, false, true, address(pool));
-        emit IPoolTypes.GrailCaptured(0, 77, 0);
-        pool.writeOff(77, listingId);
+        (uint256 backing_, uint256 proceeds) = _captureItem(0);
 
-        assertEq(_packId(0), 0);
-        assertEq(_backing(0), 0);
-        assertEq(_listing(0), 0);
-        assertEq(_receivable(0), 0);
-        assertEq(IPool(address(pool)).margin(), marginBefore);
-        assertEq(pool.backing(), backingBefore);
+        assertEq(backing_, 5 ether);
+        assertGt(proceeds, 0);
+        assertEq(_items().length, 0);
+        assertEq(_fund(), fundBefore + proceeds);
+        assertEq(_g().cycleId, 2, "the next cycle was already running");
+        _assertI1();
     }
 
-    // ---------------------------------------------------------------- selection probability
+    function test_capturingAnIntermediateLeavesTheCycleRunning() public {
+        _openEmpty(25 ether);
+        _seed(5 ether);
+        _seed(10 ether);
+        IPoolTypes.Grail memory before_ = _g();
 
-    function _capExceeded() internal view returns (bool) {
-        (uint256 price,) = _price(_listing(0));
-        return (1e36 / price) * 10_000 > clone.totalWeight() * IPool(address(pool)).grailProbCapBps();
+        _captureItem(0);
+
+        assertEq(_items().length, 1);
+        assertEq(_items()[0].backing, 10 ether);
+        IPoolTypes.Grail memory after_ = _g();
+        assertEq(after_.cycleId, before_.cycleId);
+        assertEq(after_.targetWei, before_.targetWei);
+        _assertI1();
     }
 
-    function test_settleLiftsAGrailPriceWhoseWeightExceedsTheProbabilityCap() public {
-        _openReady();
-        pool.loseGrailBucket(1, _bucket(1));
-        vm.startPrank(admin);
-        IPool(address(pool)).setConcurrency(0);
-        IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.01 ether);
-        vm.stopPrank();
-        _grow(0);
-        pool.loseGrailBucket(0, _bucket(0));
-        uint256 listingId = _listing(0);
-        uint256 ceiling = _backing(0) * 8_000 / 10_000;
-        assertEq(_notional(0), ceiling);
+    function test_aRefundedDeliveryLeavesTheItemUnlistedAndRotateListsItAgain() public {
+        _openEmpty(25 ether);
+        _seed(5 ether);
+        IPoolTypes.GrailItem memory it = _items()[0];
+        pool.unlistGrail(0);
+        assertEq(_items()[0].listingId, 0);
+        _warpToRotation();
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
 
-        // Ten pulls decay the 0.04 ETH list price to 0.03 ETH, which the cap allows on the full board.
-        pool.recordPulls(10);
-        _makeSettleDue();
-        _settleAsKeeper();
-        assertEq(_notional(0), 0.03 ether);
-        assertFalse(_capExceeded());
+        _rotate();
 
-        // A cap between the GRAIL weight share at 0.03 ETH and at the ceiling puts the track above the
-        // cap now and within it once lifted.
-        uint256 rest = clone.totalWeight() - 1e36 / _notional(0);
-        uint256 shareAtCeiling = (1e36 / ceiling) * 10_000 / (rest + 1e36 / ceiling);
-        assertLt(shareAtCeiling + 1, (1e36 / _notional(0)) * 10_000 / (rest + 1e36 / _notional(0)));
-        vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(shareAtCeiling + 1);
-        assertTrue(_capExceeded(), "the GRAIL weight is above the cap");
+        assertTrue(_items()[0].listingId != 0, "listed again");
+        assertEq(_items()[0].notional, it.notional);
+        (, IFWAClone.ListingStatus status) = _price(_items()[0].listingId);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
+    }
 
-        // Acquisitions open above the cap. The request expires so the board keeps its weight.
-        warpPastCooldown(clone);
-        uint256[] memory ids = _acquire(player, 1);
-        expire(clone, ids[0]);
-        pool.bookOnly(5);
-        assertEq(clone.unsettledAcquisitionCount(), 0);
-        assertTrue(_capExceeded());
+    /// @dev A retired FWA clone rejects `listNFT`, so the relist inside `grailStep` reverts.
+    function test_rotateSkipsAFailingGrailStep() public {
+        _openEmpty(25 ether);
+        _seed(5 ether);
+        pool.unlistGrail(0);
 
-        _makeSettleDue();
+        uint256 shares = pool.sharesOf(alice);
+        vm.prank(alice);
+        pool.withdraw(shares);
+        uint256 queued = pool.claims();
+        assertGt(queued, 0, "claim queued");
+        vm.deal(player, 10 ether);
+        vm.prank(player);
+        pool.deposit{value: 10 ether}();
+
+        vm.prank(address(pool));
+        clone.retirePool();
+        vm.warp(vm.getBlockTimestamp() + pool.rotateInterval());
+        assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.Claim));
+
         vm.recordLogs();
-        _settleAsKeeper();
-        (uint256 listed,) = _countTrack(vm.getRecordedLogs(), IPoolTypes.GrailListed.selector, 0);
-        assertEq(listed, 1);
+        vm.prank(keeper);
+        pool.rotate();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 skipped;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.GrailStepSkipped.selector) {
+                ++skipped;
+                assertTrue(abi.decode(logs[i].data, (bytes4)) != bytes4(0), "revert selector reported");
+                emit log_named_bytes("skipped selector", abi.encodePacked(abi.decode(logs[i].data, (bytes4))));
+            }
+        }
+        assertEq(skipped, 1, "GrailStepSkipped emitted once");
 
-        (uint256 price,) = _price(listingId);
-        assertEq(_listing(0), listingId, "repriced in place");
-        assertEq(_notional(0), price);
-        assertGt(price, 0.03 ether, "lifted");
-        assertLe(price, ceiling);
-        assertFalse(_capExceeded(), "the cap holds at the lifted price");
-        assertEq(_pulls(0), 0, "the lift restarts the count");
-
-        // One wei lower would exceed the cap.
-        uint256 lowerWeight = 1e36 / (price - 1);
-        uint256 total = clone.totalWeight() - 1e36 / price + lowerWeight;
-        assertGt(lowerWeight * 10_000, total * IPool(address(pool)).grailProbCapBps(), "the lifted price is the smallest admissible");
+        assertLt(pool.claims(), queued, "the claim was paid by the same rotate");
+        assertEq(_items()[0].listingId, 0, "the item stays unlisted");
         _assertI1();
     }
 }

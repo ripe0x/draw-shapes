@@ -197,9 +197,7 @@ contract PoolInvariantsTest is PoolFixture {
     }
 
     function _grailBuckets() internal view returns (uint256 total) {
-        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
-        return minorBucket + majorBucket;
+        return IPool(address(pool)).grail().fund;
     }
 
     /// forge-config: default.invariant.runs = 64

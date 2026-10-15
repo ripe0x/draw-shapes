@@ -14,7 +14,8 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 /// @notice Board build against deployed Shapes, deployed Shape Packs and a FWA clone created by
 ///         the pool through the deployed factory.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
-///      2 x 0.01 ETH (3,000 bps). `minItems` is 10, so the first targets are 7 and 3 items.
+///      2 x 0.01 ETH (3,000 bps). `minItems` is 10, so the first targets are 7 and 3 items
+///      while NAV is below the point where `boardItems()` exceeds it.
 contract PoolBoardForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -44,10 +45,11 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         p.mix[1].rungs[1] = 0;
     }
 
-    /// @dev Clears the purchase operator of the FWA pool so wallets can acquire from it directly.
+    /// @dev Clears the purchase operator of the FWA pool from the pool (its owner), the state `adminCall` can produce, so a wallet
+    ///      can acquire from the FWA pool directly and the walk books unrecorded captures.
     function _gateOff() internal {
-        vm.prank(admin);
-        IPool(address(pool)).setPurchaseGate(false);
+        vm.prank(address(pool));
+        clone.setPurchaseOperator(address(0));
     }
 
     function _create(IPoolTypes.Params memory p) internal {
@@ -78,6 +80,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
             IPoolTypes.Item memory it = pool.listedItem(id);
+            if (it.value == 0) continue; // a GRAIL listing, tracked in `grailItems`
             assertEq(it.listingId, id, "registry id");
             (address collection, address depositor,, uint256 tokenId,, uint256 price,, IFWAClone.ListingStatus status) =
                 clone.listings(id);
@@ -152,12 +155,13 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         pool.open();
     }
 
-    function test_openRepeatsUntilTheBoardIsBuiltThenGoesLive() public {
+    function test_openRepeatsUntilMinItemsAreListedThenGoesLive() public {
         IPoolTypes.Params memory p = _forkParams();
         p.minItems = 60;
         _create(p);
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         assertFalse(clone.localPurchasesEnabled());
 
@@ -173,11 +177,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
         pool.open();
         assertEq(pool.listedCount(), 60, "board at target after 20 mints");
-        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening), "a full batch keeps the pool Opening");
-
-        pool.open();
-        assertEq(pool.listedCount(), 60);
-        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live));
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live), "minItems listed sets Live");
         assertEq(IPool(address(pool)).rowCount(0), 42);
         assertEq(IPool(address(pool)).rowCount(1), 18);
 
@@ -205,7 +205,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     }
 
     function test_restockPaysQueuedClaimsBeforeMinting() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         address saver = makeAddr("saver");
         vm.deal(saver, 10 ether);
         vm.prank(saver);
@@ -232,14 +232,15 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     function test_openBuildsBoardToMinItemsByRowShare() public {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         uint256 cashBefore = pool.cash();
         _open();
 
         assertEq(IPool(address(pool)).rowCount(0), 7);
         assertEq(IPool(address(pool)).rowCount(1), 3);
         assertEq(pool.heldCount(), 0);
-        assertEq(clone.activeListingCount(), 10);
+        assertEq(clone.activeListingCount(), 11, "ten ordinary items and the opening five");
 
         (uint256 sum, uint256 listedCount) = _checkListings();
         assertEq(listedCount, 10);
@@ -251,7 +252,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
     }
 
     function test_packRowRegistryValueEqualsValueOf() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         uint256 packs;
         uint256 next = clone.nextListingId();
         for (uint256 id = 1; id < next; ++id) {
@@ -344,7 +345,7 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         assertEq(pool.backing(), 0);
         assertEq(IPool(address(pool)).rowCount(0), 0);
 
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         assertEq(shapes.ownerOf(id), address(pool));
         assertEq(pool.heldCount(), 0);
         assertEq(pool.backing(), 7 * 0.1 ether + 3 * 0.02 ether);
@@ -352,12 +353,12 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
 
     /// @dev Exercises the ported acquire and fulfill helpers against the clone the pool created.
     function test_forkHelpersAcquireAndFulfill() public {
-        _depositAndOpen(100 ether);
+        _depositAndOpen(_openingDeposit(address(pool)));
         vm.prank(address(pool));
         clone.setBool(41, true);
         warpPastCooldown(clone);
 
-        uint256 listingId = 1;
+        uint256 listingId = 2; // listing 1 is the opening five
         _gateOff();
         uint256 requestId = acquireAs(alice, bob, clone, block.timestamp + 1 hours);
         fulfill(clone, requestId, wordFor(clone, listingId));

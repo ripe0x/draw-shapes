@@ -1,0 +1,438 @@
+.landing-page {
+  width: min(100% - 64px, 1360px);
+  margin-inline: auto;
+  padding: 0 0 96px;
+  color: var(--body);
+}
+
+.landing-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-block: 40px 8px;
+  text-align: center;
+  /* Sticky site header height, so scrolling to #pull leaves the headline visible. */
+  scroll-margin-top: 77px;
+}
+/* A column flex item defaults to a content-sized min-width, so long text overflows a narrow
+   viewport. Direct children take the container width. */
+.landing-hero > * {
+  max-width: 100%;
+  width: 100%;
+}
+
+.landing-hero-promise {
+  margin: 0;
+  font-family: var(--font-archivo), sans-serif;
+  font-weight: 800;
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.landing-hero-pool-summary {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.landing-hero-pool-summary strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* Cards are absolutely positioned, so the height is fixed to fit the front card and its label.
+   Clip is horizontal only, so a dragged card stays visible and the page gains no horizontal
+   scroll. */
+.landing-hero-fan {
+  position: relative;
+  width: 100%;
+  height: 440px;
+  margin: 24px 0 24px;
+  overflow: clip visible;
+}
+/* The single-column hero fan spans the viewport, so the outer cards reach the screen edge. */
+.landing-hero > .landing-hero-fan {
+  width: 100vw;
+  max-width: none;
+  /* 388px holds the front card (350px) and its label. */
+  height: 388px;
+  margin: 48px calc(50% - 50vw) 8px;
+}
+.landing-hero-card {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  /* transform is set inline per card (resting or drag-follow). */
+}
+.landing-hero-card-label {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.landing-hero-carousel {
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  overscroll-behavior-x: contain;
+}
+.landing-hero-carousel.is-grabbing {
+  cursor: grabbing;
+}
+.landing-hero-carousel:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
+}
+.landing-hero-slide {
+  --d: 0;
+  --a: max(var(--d), calc(var(--d) * -1));
+  --c: clamp(-1, var(--d), 1);
+  --k: calc(1 - 0.25 * min(var(--a), 1) - 0.17 * clamp(0, var(--a) - 1, 1));
+  width: 250px;
+  transform:
+    translateX(-50%)
+    translate(calc(var(--c) * 150px + (var(--d) - var(--c)) * 150px), calc(min(var(--a), 1) * 12px))
+    rotate(calc((var(--c) * 10 - (var(--d) - var(--c)) * 2 - 1) * 1deg));
+  z-index: calc(100 - var(--a) * 10);
+  will-change: transform;
+}
+.landing-hero-slide-art {
+  transform: scale(var(--k));
+  transform-origin: top center;
+}
+.landing-hero-slide .landing-hero-card-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(350px * var(--k) + 8px);
+  margin-top: 0;
+}
+.landing-hero-slide .shape-art {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+}
+
+/* PullCard hero variant: centered, with the hero's button and spacing. */
+.pull-card-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  text-align: center;
+}
+.pull-card-hero .pull-status-row,
+.pull-card-hero .pull-cta {
+  justify-content: center;
+}
+.pull-card-hero .pull-price {
+  max-width: 420px;
+}
+/* Quantity control: a segmented pill with one button per pull count, the selected one inverted. */
+.pull-quantity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 4px;
+}
+.pull-quantity-label {
+  font-size: 14px;
+  font-weight: 700;
+}
+.pull-quantity-options {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.pull-quantity-options button {
+  width: 46px;
+  min-height: 44px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 700;
+}
+.pull-quantity-options button:last-child {
+  border-right: 0;
+}
+.pull-quantity-options button.is-selected {
+  background: var(--ink);
+  color: var(--page);
+}
+.landing-pull-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--ink);
+  color: var(--page);
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  padding: 20px 40px;
+  font: inherit;
+  font-family: var(--font-archivo), sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.landing-pull-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
+}
+.landing-pull-btn:disabled {
+  cursor: default;
+  background: var(--rule);
+  border-color: var(--rule);
+  color: var(--muted);
+}
+
+.landing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--row);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.landing-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.landing-pill.is-live {
+  background: #e3f4e6;
+  color: #1f6b3c;
+}
+.landing-pill.is-live .landing-pill-dot {
+  background: #1f9a52;
+}
+.landing-pill.is-warn {
+  background: #f5ecdd;
+  color: var(--warn);
+}
+.landing-pill.is-warn .landing-pill-dot {
+  background: var(--warn);
+}
+.landing-pill.is-bad {
+  background: #f6e4e2;
+  color: var(--bad);
+}
+.landing-pill.is-bad .landing-pill-dot {
+  background: var(--bad);
+}
+
+.landing-pool-layout {
+  margin-top: 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+  gap: 40px;
+  align-items: stretch;
+}
+
+.landing-facts {
+  margin-top: 48px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 28px;
+  padding: 28px 34px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--page);
+}
+.landing-fact-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--page);
+}
+.landing-fact-sub {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #b3b1a9;
+}
+.landing-fact-sub a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.landing-supply-band {
+  margin-top: 56px;
+  background: var(--ink);
+  color: var(--page);
+  border-radius: 10px;
+  padding: 28px 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.landing-supply-title {
+  font-weight: 800;
+  font-size: 23px;
+  letter-spacing: -0.5px;
+}
+.landing-supply-sub {
+  font-size: 14px;
+  color: #b3b1a9;
+  margin-top: 6px;
+}
+.landing-supply-link {
+  flex: 0 0 auto;
+  background: var(--page);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 12px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.landing-how-it-works {
+  margin-top: 36px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .landing-hero-promise {
+    font-size: 36px;
+  }
+  .landing-hero-fan {
+    /* transform does not shrink the layout height, so this is the 440px box times the 0.8 scale. */
+    height: 352px;
+    transform: scale(0.8);
+    transform-origin: top center;
+  }
+  /* The fan scales from its top center, so its box is 1 / 0.8 of the viewport wide. Height is
+     388px * 0.8. */
+  .landing-hero > .landing-hero-fan {
+    width: 125vw;
+    height: 310px;
+    margin-inline: calc(50% - 62.5vw);
+  }
+  .pull-quantity-options {
+    max-width: 100%;
+  }
+  .pull-quantity-options button {
+    width: 44px;
+  }
+  .landing-facts {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .landing-facts {
+    padding: 24px;
+  }
+  .landing-supply-band {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 800px) {
+  .landing-pool-layout {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-hero-card {
+    transition: none !important;
+  }
+}
+
+.landing-grail-col > .card + .card {
+  margin-top: 16px;
+}
+
+.landing-pool-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 14px;
+}
+.landing-pool-title {
+  margin: 0;
+  font-family: var(--font-archivo), sans-serif;
+  font-weight: 800;
+  font-size: 30px;
+  letter-spacing: -0.6px;
+  color: var(--ink);
+}
+.landing-pool-count {
+  font-size: 14px;
+  color: var(--faint);
+}
+.landing-pool-body {
+  margin-top: 24px;
+}
+.landing-grid-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.landing-prize-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 16px;
+}
+.landing-grid-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.landing-grid-value {
+  font-weight: 700;
+  font-size: 15px;
+}
+.landing-grid-tag {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
+.landing-commons-line {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  border-top: 1px solid var(--rule);
+  padding-top: 18px;
+  font-size: 16px;
+}
+.landing-commons-count {
+  font-weight: 800;
+  font-size: 24px;
+}
+.landing-odds-row {
+  margin-top: 48px;
+}
+
+@media (max-width: 620px) {
+  .landing-pool-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .landing-pool-body {
+    margin-top: 18px;
+  }
+  .landing-prize-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+}

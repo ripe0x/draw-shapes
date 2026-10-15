@@ -1,0 +1,510 @@
+.pack-panel {
+  margin-top: 14px;
+  width: 100%;
+}
+/* Cards are at most 240px wide. One to four share a row on desktop; five wrap as three over two,
+   each card spanning two of six columns. */
+.pack-row {
+  --pack-cols: 3;
+  display: grid;
+  grid-template-columns: repeat(var(--pack-cols), minmax(0, 1fr));
+  gap: 14px;
+  width: 100%;
+  max-width: calc(var(--pack-cols) * 240px + (var(--pack-cols) - 1) * 14px);
+  margin-inline: auto;
+}
+.pack-row-1 { --pack-cols: 1; }
+.pack-row-2 { --pack-cols: 2; }
+.pack-row-3 { --pack-cols: 3; }
+.pack-row-4 { --pack-cols: 4; }
+.pack-row-5 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  max-width: 748px;
+}
+.pack-row-many {
+  max-width: 748px;
+}
+.pack-row-5 > .pack {
+  grid-column: span 2;
+}
+.pack-row-5 > .pack:nth-child(4) {
+  grid-column: 2 / span 2;
+}
+.pack-row-5 > .pack:nth-child(5) {
+  grid-column: 4 / span 2;
+}
+.pack-row > .pack-grail {
+  grid-column: 1 / -1;
+}
+.pack {
+  width: 100%;
+  min-width: 0;
+  max-width: 240px;
+  border: 1px solid var(--rule);
+  padding: 16px;
+  background: var(--row);
+  transition: transform 500ms cubic-bezier(0.34, 1.56, 0.64, 1), margin 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.pack-row > .pack {
+  max-width: none;
+}
+.pack-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.pack-value {
+  margin: 7px 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.pack-tier {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+
+/* Sealed packs overlap as a fan and flatten to a row once the first one opens. Only the face
+   rotates. Horizontal padding keeps the rotated outer faces inside the panel. */
+.pack-row-fanned {
+  padding-inline: 24px;
+}
+.pack-row-fanned .pack:nth-child(1) {
+  margin-right: -28px;
+  z-index: 1;
+}
+.pack-row-fanned .pack:nth-child(2) {
+  z-index: 3;
+}
+.pack-row-fanned .pack:nth-child(3) {
+  margin-left: -28px;
+  z-index: 1;
+}
+.pack-row-fanned .pack:nth-child(1) .pack-face {
+  transform: rotate(-4deg) translateY(6px);
+}
+.pack-row-fanned .pack:nth-child(3) .pack-face {
+  transform: rotate(4deg) translateY(6px);
+}
+
+.pack-face {
+  position: relative;
+  aspect-ratio: 250 / 350;
+  border-radius: var(--card-radius);
+  border: 3px solid var(--edge, var(--ink));
+  margin-bottom: 10px;
+  overflow: hidden;
+  background-color: var(--page);
+  background-image:
+    repeating-radial-gradient(circle at 50% 42%, rgba(17, 17, 15, 0.14) 0 1px, transparent 1px 14px),
+    repeating-linear-gradient(0deg, rgba(17, 17, 15, 0.07) 0 1px, transparent 1px 16px),
+    repeating-linear-gradient(90deg, rgba(17, 17, 15, 0.07) 0 1px, transparent 1px 16px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+  transition: transform 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+/* Draw reel: a strip of `--frames` faces that moves its own width in `--frames` steps, 250ms per
+   frame. */
+.pack-reel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  width: calc(var(--frames) * 100%);
+  animation: pack-reel-run calc(var(--frames) * 250ms) steps(var(--frames)) infinite;
+}
+.pack-reel-frame {
+  flex: 0 0 calc(100% / var(--frames));
+  height: 100%;
+}
+.pack-reel-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+@keyframes pack-reel-run {
+  to { transform: translateX(-100%); }
+}
+.pack-sealed .pack-face.pack-face-reel::after,
+.pack-drawing .pack-face.pack-face-reel::after {
+  content: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pack-reel {
+    animation: none;
+  }
+}
+.pack-wordmark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-archivo), sans-serif;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+/* Sealed/drawing: a diagonal shimmer sweeps the face. Ready: a slow breathing scale. Reduced
+   motion drops both to a static face. */
+.pack-sealed .pack-face::after,
+.pack-drawing .pack-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.5) 50%, transparent 65%);
+  background-size: 240% 240%;
+  animation: pack-shimmer-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes pack-shimmer-sweep {
+  0% { background-position: 130% -30%; }
+  100% { background-position: -30% 130%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pack-sealed .pack-face::after,
+  .pack-drawing .pack-face::after {
+    animation: none;
+  }
+  .pack,
+  .pack-face {
+    transition: none;
+  }
+}
+
+.pack-flip {
+  perspective: 1000px;
+  margin-bottom: 10px;
+}
+.pack-flip-inner {
+  position: relative;
+  aspect-ratio: 250 / 350;
+  transform-style: preserve-3d;
+  transition: transform 600ms cubic-bezier(0.4, 0.2, 0.2, 1);
+}
+.pack-flip-inner.is-flipped {
+  transform: rotateY(180deg);
+}
+.pack-flip-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  border-radius: var(--card-radius);
+  overflow: hidden;
+  background: var(--art);
+}
+.pack-flip-face .shape-art {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 250 / 350;
+  border-radius: 0;
+}
+.pack-flip-front {
+  transform: rotateY(180deg);
+}
+.shape-pack-view {
+  width: 100%;
+  aspect-ratio: 250 / 350;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+  padding: 12%;
+  color: var(--page);
+  background: var(--ink);
+  border-radius: var(--card-radius);
+}
+.shape-pack-view.has-image {
+  padding: 0;
+  background: transparent;
+}
+.pack-flip-face:has(.shape-pack-view.has-image) { background: transparent; }
+.pack-flip-face .shape-pack-view { height: 100%; }
+.pack-flip-face:has(.pack-stack) { background: transparent; }
+/* Draw Pack: the component Shapes stacked in a 500 x 700 frame, each card offset by TokenArt. */
+.token-art.is-pack {
+  aspect-ratio: 250 / 350;
+  flex: 0 0 auto;
+}
+.pack-stack {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 500 / 700;
+}
+.pack-stack-card {
+  position: absolute;
+  overflow: hidden;
+  background: var(--art);
+  border-radius: var(--card-radius);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.pack-stack-card img {
+  display: block;
+}
+.shape-pack-stack {
+  position: relative;
+  width: 58%;
+  aspect-ratio: 5 / 7;
+}
+.shape-pack-stack span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--page);
+  border-radius: 3px;
+  background: var(--ink);
+}
+.shape-pack-stack span:first-child { transform: rotate(-8deg) translateX(-12%); }
+.shape-pack-stack span:nth-child(2) { transform: rotate(8deg) translateX(12%); }
+.shape-pack-stack span:last-child { transform: none; }
+.shape-pack-stack span:last-child::after {
+  content: "+";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 700 36px/1 var(--font-archivo), sans-serif;
+}
+.shape-pack-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pack-flip-inner {
+    transition: none;
+  }
+}
+
+@keyframes pack-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.pack-opened .pack-value {
+  animation: pack-fade-up 380ms ease-out both;
+  animation-delay: 160ms;
+}
+.pack-opened .pack-result-line {
+  animation: pack-fade-up 380ms ease-out both;
+  animation-delay: 280ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pack-opened .pack-value,
+  .pack-opened .pack-result-line {
+    animation: none;
+  }
+}
+/* Nested states share one type scale: title 13px, body 12px, links and tx lines 11px. */
+.pack-refund .vault-note,
+.pack-pending .vault-note,
+.pack-broken .vault-note {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pack-refund .tx-line,
+.pack-pending .tx-line,
+.pack-broken .tx-line {
+  font-size: 11px;
+}
+
+.pack-progress {
+  margin-bottom: 8px;
+}
+.pack-steps {
+  display: flex;
+  position: relative;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.pack-steps::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: calc(50% / var(--steps));
+  right: calc(50% / var(--steps));
+  height: 1px;
+  background: var(--rule);
+}
+.pack-steps li {
+  position: relative;
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  padding-block: 5px;
+  cursor: default;
+}
+.pack-steps li:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
+}
+.pack-step-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--page);
+  border: 1px solid var(--border);
+}
+.pack-steps li.is-active .pack-step-dot,
+.pack-steps li.is-done .pack-step-dot {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.pack-steps li.is-active .pack-step-dot {
+  box-shadow: 0 0 0 3px var(--rule-inner);
+}
+/* Step name, shown on hover or keyboard focus. The first and last tips anchor to the strip ends
+   to stay inside the card. */
+.pack-step-tip {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  background: var(--ink);
+  color: var(--page);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms;
+}
+.pack-steps li:first-child .pack-step-tip {
+  left: 0;
+  transform: none;
+}
+.pack-steps li:last-child .pack-step-tip {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.pack-steps li:hover .pack-step-tip,
+.pack-steps li:focus-visible .pack-step-tip {
+  opacity: 1;
+}
+.pack-step-current {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--ink);
+}
+
+.pack-broken {
+  --edge: var(--bad);
+}
+.pack-refund {
+  --edge: var(--warn);
+}
+.pack-broken .pack-face {
+  clip-path: polygon(0 0, 100% 0, 100% 42%, 55% 50%, 100% 58%, 100% 100%, 0 100%, 0 58%, 45% 50%, 0 42%);
+}
+
+.pack-grail {
+  --edge: var(--tier-fill, var(--ink));
+  max-width: 100%;
+  background: var(--tier-fill, var(--ink));
+  color: var(--page);
+  border-color: var(--tier-fill, var(--ink));
+  padding: 24px;
+  text-align: center;
+}
+.pack-tier-minor { --tier-fill: var(--tier-minor); }
+.pack-tier-major { --tier-fill: var(--tier-major); }
+.pack-grail .pack-tier,
+.pack-grail .pack-value {
+  color: var(--page);
+}
+.pack-grail .vault-note {
+  color: var(--page);
+  opacity: 0.75;
+  margin-inline: auto;
+}
+.pack-grail .btn-outline {
+  color: var(--page);
+  border-color: var(--page);
+}
+.pack-grail .btn-outline:hover {
+  border-color: var(--page);
+  opacity: 0.85;
+}
+.pack-grail .btn-filled {
+  background: var(--page);
+  color: var(--tier-fill, var(--ink));
+  border-color: var(--page);
+}
+.pack-grail .pack-flip {
+  max-width: 220px;
+  margin-inline: auto;
+}
+
+.pack-summary {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+}
+.pack-again {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.pack-summary .stat-grid {
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 600px) {
+  .pack-row,
+  .pack-row-5,
+  .pack-row-many {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    max-width: none;
+  }
+  .pack-row-1 {
+    grid-template-columns: minmax(0, 240px);
+    justify-content: center;
+  }
+  .pack-row-5 > .pack,
+  .pack-row-5 > .pack:nth-child(4),
+  .pack-row-5 > .pack:nth-child(5) {
+    grid-column: auto;
+  }
+  .pack-row > .pack-grail {
+    grid-column: 1 / -1;
+  }
+  /* At phone width a sealed batch uses the wrapping grid. The selectors match the nth-child rules
+     above so they win on specificity. */
+  .pack-row-fanned {
+    padding-inline: 0;
+  }
+  .pack-row-fanned .pack:nth-child(1),
+  .pack-row-fanned .pack:nth-child(2),
+  .pack-row-fanned .pack:nth-child(3) {
+    margin: 0;
+    z-index: auto;
+  }
+  .pack-row-fanned .pack:nth-child(1) .pack-face,
+  .pack-row-fanned .pack:nth-child(3) .pack-face {
+    transform: none;
+  }
+  .pack-sealed,
+  .pack-broken,
+  .pack-refund {
+    flex-basis: 100%;
+    max-width: 100%;
+  }
+}

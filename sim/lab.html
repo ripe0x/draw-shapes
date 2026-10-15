@@ -165,7 +165,22 @@ table.kv i.sw{display:inline-block;width:10px;height:10px;border-radius:2px;marg
       <div class="legend" id="navlegend"></div>
       <div class="chart" id="navchart"></div>
       <p class="note" id="depnote"></p>
+      <h3 style="margin-top:16px">Pool NAV against the deposit cap</h3>
+      <div class="legend" id="capnavlegend"></div>
+      <div class="chart" id="capchart"></div>
+      <p class="note" id="capnote"></p>
       <div class="two" style="margin-top:14px" id="owner"></div>
+    </section>
+
+    <section class="panel" id="grailp">
+      <h2>GRAIL: one fund, listed pieces</h2>
+      <dl class="metrics" id="gmetrics"></dl>
+      <h3>Fund and listed items over 365 days</h3>
+      <div class="legend" id="glegend"></div>
+      <div class="chart" id="gchart"></div>
+      <h3 style="margin-top:16px">Hits per 30 day month</h3>
+      <div class="tw"><table class="cmp" id="gtbl"></table></div>
+      <p class="note" id="gnote"></p>
     </section>
 
     <section class="panel" id="keep">
@@ -227,7 +242,12 @@ table.kv i.sw{display:inline-block;width:10px;height:10px;border-radius:2px;marg
 // MODEL BEGIN
 const LADDER = [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100];
 const TICK = 300;
-const CONCURRENCY = 10, THIN_MARGIN = 5, MAX_LIST = 10;
+const CONCURRENCY = 10, THIN_MARGIN = 5, MAX_LIST = 25;
+const MAX_PIECE_ETH = 6, MAX_GRAIL_ITEMS = 16, MAX_GRAIL_MINTS = 3, MAX_GRAIL_MERGES = 2, OPENING_ETH = 5;
+const DAY = 86400, VOLUME_DAYS = 7;
+const MIN_MERGED_PRICE = 0.1, MERGED_FROM = 5;
+// Recipes, largest output first: [output, input size, input count, extra input size, extra input count]. The last one takes pieces: 5 ETH of them.
+function recipesFor(pieceSize) { return [[100, 50, 2, 0, 0], [50, 25, 2, 0, 0], [25, 10, 2, 5, 1], [10, 5, 2, 0, 0], [5, pieceSize, Math.round(5 / pieceSize), 0, 0]]; }
 const GAS_BASE = 100000, GAS_ITEM = 150000, GAS_OVERHEAD = 30000;
 const NB = 2400, LMIN = Math.log(1e-3), LSPAN = Math.log(1e6);
 
@@ -250,29 +270,19 @@ function defaultParams() {
       { backing: 0.1, rungs: 1, share: 4 },
       { backing: 0.5, rungs: 1, share: 1 },
     ],
-    minItems: 100, mintFee: 0.001,
-    premiumBps: 200, maintBps: 100, feedBps: 400, minorShareBps: 2000,
-    entryBase: 1100, entrySlope: 2000, entryCap: 2500, entryRef: 55,
+    minItems: 100, boardByNav: true, mintFee: 0.001,
+    premiumBps: 200, maintBps: 100, feedBps: 400,
+    entryFloorBps: 1000, entryCapBps: 2500, paybackDays: 20,
+    navCapFloor: 69, turnoverBps: 1250, founderWindowDays: 30,
     edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
-    minor: { target: 1, step: 0.1, listBps: 10000, decay: 0.0001, floor: 0.25 },
-    major: { target: 25, step: 0.5, listBps: 7500, decay: 0.0001, floor: 1 },
-    openingEth: 50, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
-    navCap: 100, ticketsPerDay: 500,
+    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1, floorPulls: 20000, doneOutsideCap: false },
+    openingEth: 55, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
+    ticketsPerDay: 500,
     rotateInterval: 900,
     restoreK: 8, surpriseBps: 200, bandBps: 3000, reserveBps: 1000, payInShapesBps: 1000,
     batchMin: 20, batchMaxAge: 3600, cooldownSeconds: 0, gasPriceGwei: 1, tipWei: 2e14, decayInSettle: true,
     shapesRedeemPct: 100, fwaCashoutPct: 90,
   };
-}
-
-function stepFees(step, mintFee) {
-  let left = Math.round(step * 100), n = 0;
-  for (let i = LADDER.length - 1; i >= 0; i--) {
-    const u = Math.round(LADDER[i] * 100);
-    const c = Math.floor(left / u);
-    n += c; left -= c * u;
-  }
-  return n * mintFee;
 }
 
 function newHist() { return new Float64Array(NB); }
@@ -308,7 +318,6 @@ function simulate(P, seed, days, snapDays, opts) {
   const edge = Math.max(0, P.edgePct / 100);
   const redeem = P.shapesRedeemPct / 100;
   const mintFee = P.mintFee;
-  const minorShare = P.minorShareBps / 1e4;
   const gas = P.gasPriceGwei * 1e-9, tip = P.tipWei / 1e18;
   const capProb = P.grailProbCapBps / 1e4;
 
@@ -321,16 +330,19 @@ function simulate(P, seed, days, snapDays, opts) {
     const k = Math.max(1, Math.round(r.rungs)), v = r.backing / k, key = Math.round(v * 1e9);
     if (!unitIdx.has(key)) { unitIdx.set(key, units.length); units.push({ v, hs: 0 }); }
     const s = r.share / shareSum;
-    R.push({ b: r.backing, k, v, u: unitIdx.get(key), s, p: r.backing * (1 + fees) + mintFee * k, tgt: Math.max(1, Math.ceil(P.minItems * s - 1e-9)),
+    R.push({ b: r.backing, k, v, u: unitIdx.get(key), s, p: r.backing * (1 + fees) + mintFee * k, tgt: 1,
       n: 0, queued: 0, missQ: [], missSum: 0, missN: 0 });
   }
   const nR = R.length;
+  const meanRowCost = R.reduce((a, r) => a + r.s * (r.b + mintFee * r.k), 0);
   const probe = R.findIndex(r => r.k === 1 && Math.abs(r.b - 0.1) < 1e-9);
 
-  const T = [
-    { ...P.minor, bucket: 0, backing: 0, notional: 0, since: 0, hits: 0, firstHitDay: -1, fee: stepFees(P.minor.step, mintFee), prizes: 0 },
-    { ...P.major, bucket: 0, backing: 0, notional: 0, since: 0, hits: 0, firstHitDay: -1, fee: stepFees(P.major.step, mintFee), prizes: 0 },
-  ];
+  // GRAIL: one fund and a list of listed items { b: backing, notional: list price, since: pulls since the last list or reprice, done }
+  const G = [];
+  const GR = { hitSizes: {}, pieceOut: 0, pieceProceeds: 0, fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0, maxDone: 0, stallDays: 0 };
+  const grail = P.grail;
+  const pieceSize = grail.pieceSize, RECIPES = recipesFor(pieceSize), maxPieces = Math.round(MAX_PIECE_ETH / pieceSize), openingPieces = Math.round(OPENING_ETH / pieceSize);
+  const feeDay = new Float64Array(days + 2); // booked ticket fees per day
 
   const S = {
     cash: 0, shares: 0, maint: 0, margin: 0, mintOwed: 0, lastRotateAt: -1e12, pauseUntil: 0,
@@ -348,7 +360,7 @@ function simulate(P, seed, days, snapDays, opts) {
     entryContribution: 0, withdrawn: 0, deposited: 0, mass: 0, mGe1: 0, mLtHalf: 0, mGe2: 0, mGe10: 0,
     hist: newHist(),
     surprises: 0, payIns: 0, payInValue: 0, heldUses: 0,
-    settleCalls: 0, settleListed: 0, settleRefund: 0, settleDecays: 0, setBatch: 0, setAge: 0, setThin: 0,
+    settleCalls: 0, settleListed: 0, settleRefund: 0, settleDecays: 0, setBatch: 0, setAge: 0, setThin: 0, setDeep: 0,
     rotRefund: 0, keeperCost: 0, refunds: 0, shortfall: 0, pauseSeconds: 0, waitSeconds: 0,
     boardSum: 0, boardTicks: 0, minListed: 1e9,
   };
@@ -369,23 +381,42 @@ function simulate(P, seed, days, snapDays, opts) {
     return v > 0 ? v : 0;
   }
   function spendable() { return S.cash - claimsTotal - nav() * P.reserveBps / 1e4; }
-  function entryContribution(nv) {
-    return Math.min(P.entryCap, P.entryBase + P.entrySlope * nv / P.entryRef) / 1e4;
+  // boardItems = max(minItems, (NAV - reserve) / meanRowCost); meanRowCost is the share-weighted backing plus the mint fee per rung; NAV is already net of claims. Row target = ceil(boardItems x share).
+  function boardItems() {
+    if (!P.boardByNav) return P.minItems;
+    const nv = nav();
+    return Math.max(P.minItems, Math.floor((nv - nv * P.reserveBps / 1e4) / meanRowCost + 1e-9));
   }
-  function addToBuckets(x) {
-    T[0].bucket += x * minorShare;
-    T[1].bucket += x * (1 - minorShare);
+  function refreshTargets() {
+    const bi = boardItems();
+    for (let i = 0; i < nR; i++) R[i].tgt = Math.max(1, Math.ceil(bi * R[i].s - 1e-9));
+    return bi;
+  }
+  function addToFund(x) { GR.fund += x; }
+  // SPEC 7: mean of booked ticket fees over the complete days before `d`, at most 7; zero before the first complete day.
+  function dailyVolume(d) {
+    const n = Math.min(VOLUME_DAYS, d);
+    if (n <= 0) return 0;
+    let t = 0;
+    for (let k = d - n; k < d; k++) t += feeDay[k];
+    return t / n;
+  }
+  function navCapAt(d) { return Math.max(P.navCapFloor, dailyVolume(d) * 1e4 / P.turnoverBps); }
+  // SPEC 7: clamp(paybackDays x premiumBps x dailyVolume / nav, floor, cap) in bps; the floor applies at zero NAV.
+  function entryFeeBps(nv, d) {
+    const y = nv > 0 ? P.paybackDays * P.premiumBps * dailyVolume(d) / nv : 0;
+    return Math.min(P.entryCapBps, Math.max(P.entryFloorBps, y));
   }
 
-  function deposit(amount) {
+  function deposit(amount, d) {
     const nv = nav();
     if (S.shares > 0 && nv <= 0) return false;
-    if (P.navCap > 0 && nv >= P.navCap) return false;
-    const c = amount * entryContribution(nv);
+    if (nv >= navCapAt(d)) return false;
+    const c = amount * entryFeeBps(nv, d) / 1e4;
     const net = amount - c;
     const minted = S.shares === 0 ? net : net * S.shares / nv;
     S.cash += net;
-    addToBuckets(c);
+    addToFund(c);
     S.shares += minted;
     depositors.push(minted);
     A.entryContribution += c; A.deposited += amount;
@@ -418,6 +449,7 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // ---------- replacement choice (SPEC 9)
   function chooseRow() {
+    refreshTargets();
     let sum = 0;
     const w = new Array(nR);
     for (let i = 0; i < nR; i++) {
@@ -447,29 +479,68 @@ function simulate(P, seed, days, snapDays, opts) {
     return { row, surprise };
   }
 
-  // ---------- GRAIL
-  function weightGrail(t) { return t.backing > 0 && t.notional > 0 ? 1 / t.notional : 0; }
-  function growable(t) { return t.backing < t.target - 1e-12 && t.bucket >= t.step + t.fee - 1e-12; }
-  function decayNext(t) { return Math.max(t.floor, t.notional - t.decay * t.since); }
-  function decayDue(t) {
-    if (!(t.backing > 0 && t.notional > 0 && t.since > 0)) return false;
-    const gap = t.notional - decayNext(t);
-    return gap > 1e-15 && gap >= t.notional * P.repriceMinBps / 1e4 - 1e-15;
+  // ---------- GRAIL (SPEC 11)
+  function grailWeight() { let w = 0; for (const it of G) w += 1 / it.notional; return w; }
+  function pieces() { let c = 0; for (const it of G) if (it.piece) c++; return c; }
+  // Items counted against MAX_GRAIL_ITEMS: every listed item, or only the unfinished ones when doneOutsideCap is set.
+  function capCount() { let c = 0; for (const it of G) if (!(grail.doneOutsideCap && it.done)) c++; return c; }
+  function doneCount() { let c = 0; for (const it of G) if (it.done) c++; return c; }
+  function canMint() { return GR.fund >= pieceSize + mintFee - 1e-12 && capCount() < MAX_GRAIL_ITEMS && pieces() < maxPieces; }
+  // Largest recipe whose output fits the target and whose inputs are listed and not done; returns the input positions or null.
+  function recipe() {
+    for (const [out, a, na, b, nb] of RECIPES) {
+      if (grail.target < out) continue;
+      const ia = [], ib = [];
+      for (let i = 0; i < G.length; i++) {
+        const it = G[i];
+        if (it.done) continue;
+        if (it.b === a && ia.length < na) ia.push(i); else if (b && it.b === b && ib.length < nb) ib.push(i);
+      }
+      if (ia.length === na && ib.length === nb) return { out, idx: ia.concat(ib).sort((x, y) => x - y) };
+    }
+    return null;
   }
-  function liftPrice(t, other) {
-    if (capProb >= 1 || !(t.backing > 0)) return t.notional;
-    const w = sumOrd() + weightGrail(other);
-    const wmax = capProb / (1 - capProb) * w;
-    if (wmax <= 0) return t.notional;
-    const minPrice = 1 / wmax, face = t.backing * t.listBps / 1e4;
-    return t.notional < minPrice ? Math.min(minPrice, face) : t.notional;
+  function publish(b, notional, piece) {
+    const done = !piece && b === grail.target;
+    G.push({ b, notional, since: 0, age: 0, cutAge: 0, done, piece: !!piece });
+    if (b > GR.largest) GR.largest = b;
+    if (done) { GR.cycles++; GR.maxDone = Math.max(GR.maxDone, doneCount()); if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
   }
-  function applyDecay(ti) {
-    const t = T[ti], o = T[1 - ti], old = t.notional;
-    t.notional = decayNext(t);
-    const tw = sumOrd() + weightGrail(t) + weightGrail(o);
-    if (weightGrail(t) / tw > capProb + 1e-12) { t.notional = old; return false; }
-    t.since = 0; return true;
+  function merge() {
+    const r = recipe();
+    if (!r) return false;
+    for (let k = r.idx.length - 1; k >= 0; k--) G.splice(r.idx[k], 1);
+    publish(r.out, r.out * grail.listBps / 1e4);
+    GR.merged++;
+    return true;
+  }
+  // pieceFloor is the floor of a 1 ETH piece and scales with the piece size
+    function decayOf(it) { return it.piece ? grail.pieceDecay : grail.decay; }
+  // Merged items (backing MERGED_FROM and up) floor at the price where their selection odds are 1 in floorPulls against the
+  // live board weight: p = (floorPulls - 1) / rest, rest = total weight minus the item's own weight, bounded below by
+  // MIN_MERGED_PRICE. floorPulls = 0 gives the fixed price floor.
+  function floorFor(it, tot) {
+    if (it.piece) return grail.pieceFloor * pieceSize;
+    if (!grail.floorPulls || it.b < MERGED_FROM) return grail.floor;
+    const rest = tot - 1 / it.notional;
+    return rest > 0 ? Math.max(MIN_MERGED_PRICE, (grail.floorPulls - 1) / rest) : MIN_MERGED_PRICE;
+  }
+  // Decay reprice of every listed item (PoolListing.grailReprice): price falls to max(floor, notional - decay x pulls) when at
+  // least repriceMinBps below the notional and the listed GRAIL weight at the new price stays within grailProbCapBps.
+  // commit = false only counts the items that would change.
+  function reprice(commit) {
+    if (!G.length) return 0;
+    let w = grailWeight(), tot = sumOrd() + w, n = 0;
+    for (const it of G) {
+      const old = it.notional, next = Math.max(floorFor(it, tot), old - decayOf(it) * it.since);
+      const gap = old - next;
+      if (!(gap > 1e-15) || gap < old * P.repriceMinBps / 1e4 - 1e-15) continue;
+      const dw = 1 / next - 1 / old, nw = w + dw, nt = tot + dw;
+      if (nw / nt > capProb + 1e-12) continue;
+      w = nw; tot = nt; n++;
+      if (commit) { it.notional = next; it.since = 0; it.cutAge = it.age; }
+    }
+    return n;
   }
 
   // ---------- keeper cost and refund (SPEC 10)
@@ -489,68 +560,74 @@ function simulate(P, seed, days, snapDays, opts) {
     const r = R[i], used = Math.min(r.k, units[r.u].hs);
     return { used, cost: (r.k - used) * (r.v + mintFee) };
   }
+  // Missing items of row i against its target depth, counting listed, held and queued items.
+  function missing(i) { return Math.max(0, R[i].tgt - count(i)); }
   function settleDue(now) {
-    if (!Q.length) return 0;
+    const bi = refreshTargets();
+    let held = 0; for (const u of units) held += u.hs;
+    const deep = P.boardByNav && bi - (listedOrd() + held + Q.length) >= P.batchMin;
+    let head = -1;
+    if (Q.length) head = Q[0].i; else if (deep) for (let i = 0; i < nR; i++) if (missing(i) > 0) { head = i; break; }
+    if (head < 0) return 0;
     let anyHeld = false;
     for (const u of units) if (u.hs > 0) { anyHeld = true; break; }
-    if (!anyHeld && spendable() < fillPlan(Q[0].i).cost - 1e-12) return 0;
+    if (!anyHeld && spendable() < fillPlan(head).cost - 1e-12) return 0;
     if (Q.length >= P.batchMin) return 1;
-    if (now - Q[0].t >= P.batchMaxAge) return 2;
-    if (listedOrd() < CONCURRENCY + THIN_MARGIN) return 3;
-    return 0;
+    if (Q.length && now - Q[0].t >= P.batchMaxAge) return 2;
+    if (Q.length && listedOrd() < CONCURRENCY + THIN_MARGIN) return 3;
+    return deep ? 4 : 0;
   }
-  function doSettle(now, trig) {
+  // Deep: queue each row's missing items against its target depth.
+  function topUp(now) {
+    for (let i = 0; i < nR; i++) for (let m = missing(i); m > 0; m--) { R[i].queued++; Q.push({ i, t: now }); }
+  }
+  // List queue entries in order, at most cap, each needing spendable cash for its mints.
+  function fill(now, cap, opening) {
     let listed = 0;
     const keep = [];
     for (const e of Q) {
-      if (listed >= MAX_LIST) { keep.push(e); continue; }
+      if (listed >= cap) { keep.push(e); continue; }
       const r = R[e.i], pl = fillPlan(e.i);
       if (pl.cost > 0 && spendable() < pl.cost - 1e-12) { keep.push(e); continue; }
       units[r.u].hs -= pl.used;
       S.cash -= pl.cost;
-      A.mintReplace += (r.k - pl.used) * mintFee; A.mintSaved += pl.used * mintFee; A.heldUses += pl.used;
+      if (opening) A.mintOpening += (r.k - pl.used) * mintFee; else A.mintReplace += (r.k - pl.used) * mintFee;
+      A.mintSaved += pl.used * mintFee; A.heldUses += pl.used;
       r.queued--; r.n++; listed++;
       if (r.missQ.length) { r.missSum += now - r.missQ.shift(); r.missN++; }
     }
     Q = keep;
-    if (listed === 0) return;
-    if (P.decayInSettle) {
-      for (let ti = 0; ti < 2; ti++) if (decayDue(T[ti]) && applyDecay(ti)) A.settleDecays++;
-      for (let ti = 0; ti < 2; ti++) { const t = T[ti]; if (t.backing > 0) { const nl = liftPrice(t, T[1 - ti]); if (nl !== t.notional) { t.notional = nl; t.since = 0; A.settleDecays++; } } }
-    }
+    return listed;
+  }
+  function doSettle(now, trig) {
+    if (trig === 4) topUp(now);
+    const listed = fill(now, MAX_LIST, false);
+    // SPEC 9, 10: a due settle reprices after its listing step and is refunded when it listed or repriced
+    const repriced = P.decayInSettle ? reprice(true) : 0;
+    if (listed === 0 && repriced === 0) return;
+    A.settleDecays += repriced;
     A.settleCalls++; A.settleListed += listed;
-    if (trig === 1) A.setBatch++; else if (trig === 2) A.setAge++; else A.setThin++;
+    if (trig === 1) A.setBatch++; else if (trig === 2) A.setAge++; else if (trig === 3) A.setThin++; else A.setDeep++;
     A.settleRefund += keeperRefund(listed);
-    startPause(now);
+    if (listed) startPause(now);
   }
 
   // ---------- rotate
   function rotateReason(now) {
     if (now - S.lastRotateAt < P.rotateInterval) return 0;
-    for (const t of T) if (growable(t)) return 2;
-    if (P.decayInSettle) return 0;
-    for (let ti = 0; ti < 2; ti++) {
-      const t = T[ti];
-      if (t.backing > 0 && (liftPrice(t, T[1 - ti]) !== t.notional || decayDue(t))) return 3;
-    }
+    if (canMint() || recipe()) return 2;
+    if (!P.decayInSettle && reprice(false)) return 3;
     return 0;
   }
   function doRotate(now, reason) {
     let changed = false, listedN = 0;
     payClaims();
-    for (let ti = 0; ti < 2; ti++) {
-      const t = T[ti];
-      if (growable(t)) {
-        t.bucket -= t.step + t.fee; A.mintGrail += t.fee;
-        t.backing += t.step; t.notional = t.backing * t.listBps / 1e4; t.since = 0; changed = true; listedN++;
-      } else if (!P.decayInSettle && decayDue(t)) {
-        if (applyDecay(ti)) changed = true;
-      }
+    for (let n = 0; n < MAX_GRAIL_MINTS && canMint(); n++) {
+      GR.fund -= pieceSize + mintFee; A.mintGrail += mintFee; GR.minted++;
+      publish(pieceSize, pieceSize, true); changed = true; listedN++;
     }
-    if (!P.decayInSettle) for (let ti = 0; ti < 2; ti++) {
-      const t = T[ti];
-      if (t.backing > 0) { const nl = liftPrice(t, T[1 - ti]); if (nl !== t.notional) { t.notional = nl; t.since = 0; changed = true; } }
-    }
+    for (let n = 0; n < MAX_GRAIL_MERGES && merge(); n++) { changed = true; listedN++; }
+    if (!P.decayInSettle && reprice(true)) changed = true;
     if (!changed) return;
     S.rotChanged++; S.lastRotateAt = now;
     if (reason === 2) S.rotGrail++; else S.rotDecay++;
@@ -588,26 +665,28 @@ function simulate(P, seed, days, snapDays, opts) {
         const tot = P.premiumBps + P.maintBps + P.feedBps;
         const prem = rest * P.premiumBps / tot, mnt = rest * P.maintBps / tot, fd = rest * P.feedBps / tot;
         A.premium += prem; A.maintIn += mnt; A.feedIn += fd;
-        S.cash -= mnt + fd; S.maint += mnt; addToBuckets(fd);
+        S.cash -= mnt + fd; S.maint += mnt; addToFund(fd);
       }
     }
   }
 
   const totalHours = days * 24;
-  const series = { navPerShare: [], cash: [], backing: [], grailBacking: [], nav: [], shares: [], tickets: [], entryPrice: [],
-    board: R.map(() => []), listed: [], maintBal: [], refundCum: [], shortCum: [], costCum: [] };
+  const series = { navPerShare: [], cash: [], backing: [], grailBacking: [], grailFund: [], grailMax: [], nav: [], shares: [], tickets: [], entryPrice: [], feeBps: [],
+    cap: [], gate: [], volume: [], board: R.map(() => []), tgt: R.map(() => []), items: [], listed: [], maintBal: [], refundCum: [], shortCum: [], costCum: [] };
   const hourly = opts.hourly ? { nav: [], listed: [], cash: [] } : null;
   const snaps = {};
   const events = [];
   let carry = 0;
 
-  // opening: every row is minted to its target depth and listed
+  // opening: each row's missing items are queued against its target depth and listed in row order while spendable cash covers the mints
   const open = P.openingEth / P.openingDepositors;
-  for (let i = 0; i < P.openingDepositors; i++) deposit(open);
-  for (let i = 0; i < nR; i++) {
-    const r = R[i];
-    S.cash -= r.tgt * (r.b + mintFee * r.k); A.mintOpening += r.tgt * mintFee * r.k; r.n = r.tgt;
-  }
+  for (let i = 0; i < P.openingDepositors; i++) deposit(open, 0);
+  refreshTargets();
+  topUp(0);
+  fill(0, Infinity, true);
+  // opening five (SPEC 11): 5 ETH of pieces (five of 1 ETH, ten of 0.5 ETH) composed into one 5 ETH item listed at face
+  const openingFive = GR.fund >= OPENING_ETH + openingPieces * mintFee - 1e-12;
+  if (openingFive) { GR.fund -= OPENING_ETH + openingPieces * mintFee; A.mintGrail += openingPieces * mintFee; publish(5, 5); }
   const cohortShares = S.shares, cohortEth = A.deposited;
   const cohortBreakEven = cohortEth / cohortShares;
   const navStart = nav() / S.shares;
@@ -616,12 +695,17 @@ function simulate(P, seed, days, snapDays, opts) {
     const nv = nav();
     series.navPerShare.push(S.shares > 0 ? nv / S.shares : 0);
     series.cash.push(S.cash); series.backing.push(backingOrd()); series.nav.push(nv); series.shares.push(S.shares);
-    series.grailBacking.push(T[0].backing + T[1].backing);
+    series.grailBacking.push(G.reduce((a, it) => a + it.b, 0));
+    series.grailFund.push(GR.fund); series.grailMax.push(G.reduce((a, it) => Math.max(a, it.b), 0));
     series.tickets.push(A.tickets);
-    series.entryPrice.push(S.shares > 0 ? (nv / S.shares) / (1 - entryContribution(nv)) : 0);
+    if (GR.fund > 5 && !canMint()) GR.stallDays++;
+    const fb = entryFeeBps(nv, day);
+    series.feeBps.push(fb); series.cap.push(navCapAt(day)); series.volume.push(dailyVolume(day));
+    series.entryPrice.push(S.shares > 0 ? (nv / S.shares) / (1 - fb / 1e4) : 0);
     let tot = 0;
     for (let i = 0; i < nR; i++) { const m = dayTicks ? dayBoard[i] / dayTicks : R[i].n; series.board[i].push(m); tot += m; dayBoard[i] = 0; }
     dayTicks = 0; series.listed.push(tot);
+    series.items.push(refreshTargets()); for (let i = 0; i < nR; i++) series.tgt[i].push(R[i].tgt);
     series.maintBal.push(S.maint); series.refundCum.push(A.refunds); series.shortCum.push(A.shortfall); series.costCum.push(A.keeperCost);
   }
   function snapshot(day) {
@@ -644,19 +728,21 @@ function simulate(P, seed, days, snapDays, opts) {
       navPerShare: nps, nav: nv, cash: S.cash, backing: backingOrd(), shares: S.shares,
       annualised: days > 0 && nps > 0 && navStart > 0 ? Math.pow(nps / navStart, 365 / day) - 1 : 0,
       breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
-      minorHits: T[0].hits, majorHits: T[1].hits, minorFirst: T[0].firstHitDay, majorFirst: T[1].firstHitDay,
-      minorPrizes: T[0].prizes, majorPrizes: T[1].prizes,
-      minorBucket: T[0].bucket, majorBucket: T[1].bucket, minorBacking: T[0].backing, majorBacking: T[1].backing,
+      grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles, grailFirstCycle: GR.firstCycleDay,
+      grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailHitSizes: GR.hitSizes, pieceOut: GR.pieceOut, pieceProceeds: GR.pieceProceeds, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
+      grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length, grailMaxDone: GR.maxDone, grailStallDays: GR.stallDays, grailStalled: GR.fund > 5 && !canMint(), weightExDone: sumOrd() + G.reduce((w, it) => w + (it.done ? 0 : 1 / it.notional), 0), grailDoneItems: G.filter(it => it.done).map(it => ({ price: it.notional, age: it.age, cutAge: it.cutAge })),
+      capClosedDays: series.gate.slice(0, day).filter(g => g === 1).length, windowDays: series.gate.slice(0, day).filter(g => g === 2).length,
+      cap: series.cap[day], dailyVolume: series.volume[day], entryFeeBps: series.feeBps[day],
       mintLineAccrued: A.mintLineAccrued, carry: S.margin - S.mintOwed, avgNav: series.nav.slice(0, day + 1).reduce((a, b) => a + b, 0) / (day + 1),
       rotates: S.rotChanged, rotGrail: S.rotGrail, rotDecay: S.rotDecay, maintBucket: S.maint,
       cohortValue: cohortShares * nps, depositors: depositors.length,
       surprises: A.surprises, payIns: A.payIns, payInValue: A.payInValue, heldUses: A.heldUses,
       settleCalls: A.settleCalls, settleListed: A.settleListed, settleRefund: A.settleRefund, settleDecays: A.settleDecays,
-      setBatch: A.setBatch, setAge: A.setAge, setThin: A.setThin, rotRefund: A.rotRefund,
+      setBatch: A.setBatch, setAge: A.setAge, setThin: A.setThin, setDeep: A.setDeep, rotRefund: A.rotRefund,
       keeperCost: A.keeperCost, refunds: A.refunds, shortfall: A.shortfall, shortShare: A.keeperCost ? A.shortfall / A.keeperCost : 0,
       pauseSeconds: A.pauseSeconds, waitSeconds: A.waitSeconds,
       missSec: probe >= 0 && R[probe].missN ? R[probe].missSum / R[probe].missN : NaN, missN: probe >= 0 ? R[probe].missN : 0,
-      avgListed: A.boardTicks ? A.boardSum / A.boardTicks : 0, minListed: A.minListed, queueLen: Q.length,
+      boardItems: refreshTargets(), listedNow: listedOrd(), avgListed: A.boardTicks ? A.boardSum / A.boardTicks : 0, minListed: A.minListed, queueLen: Q.length,
     };
   }
 
@@ -667,15 +753,14 @@ function simulate(P, seed, days, snapDays, opts) {
     let Sd = 0, Nd = 0, Eb = 0;
     for (let j = 0; j < nR; j++) { const r = R[j]; const w = r.n / r.p; Sd += w; Nd += r.n; Eb += w * r.b; }
     if (Nd < CONCURRENCY) { A.rejected++; return; }
-    let Sg = 0, Ng = 0, Ebg = 0;
-    for (let ti = 0; ti < 2; ti++) {
-      const g = T[ti];
-      if (g.backing > 0 && g.notional > 0) { const w = 1 / g.notional; Sg += w; Ng++; Ebg += w * g.backing; }
-    }
+    let Sg = 0, Ebg = 0;
+    const Ng = G.length;
+    for (const g of G) { const w = 1 / g.notional; Sg += w; Ebg += w * g.b; }
     const Sall = Sd + Sg, N = Nd + Ng;
     const hm = N / Sall, tk = hm * (1 + edge);
     const proceeds = tk - (tk - hm) / 2;
     A.tickets++; A.paid += tk; A.proceeds += proceeds; A.protocol += tk - proceeds;
+    feeDay[Math.min(feeDay.length - 1, Math.floor(t / DAY))] += tk;
     A.deliveredExp += (Eb + Ebg) / Sall;
     // part of the tickets is paid with a held-able Shape no larger than the ticket, drawn from the capture value distribution
     if (P.payInShapesBps > 0 && rngPay() < P.payInShapesBps / 1e4) {
@@ -694,37 +779,40 @@ function simulate(P, seed, days, snapDays, opts) {
       histAdd(A.hist, ratio, m);
       if (ratio >= 1) A.mGe1 += m; if (ratio < 0.5) A.mLtHalf += m; if (ratio >= 2) A.mGe2 += m; if (ratio >= 10) A.mGe10 += m;
     }
-    for (let ti = 0; ti < 2; ti++) {
-      const g = T[ti];
-      if (g.backing > 0 && g.notional > 0) {
-        const m = (1 / g.notional) / Sall, ratio = g.backing * redeem / tk;
-        histAdd(A.hist, ratio, m);
-        if (ratio >= 1) A.mGe1 += m; if (ratio < 0.5) A.mLtHalf += m; if (ratio >= 2) A.mGe2 += m; if (ratio >= 10) A.mGe10 += m;
-      }
+    for (const g of G) {
+      const m = (1 / g.notional) / Sall, ratio = g.b * redeem / tk;
+      histAdd(A.hist, ratio, m);
+      if (ratio >= 1) A.mGe1 += m; if (ratio < 0.5) A.mLtHalf += m; if (ratio >= 2) A.mGe2 += m; if (ratio >= 10) A.mGe10 += m;
     }
     let u = rngDraw() * Sall, pick = -1, pickT = -1;
     for (let j = 0; j < nR; j++) { const w = R[j].n / R[j].p; if (u < w) { pick = j; break; } u -= w; }
     if (pick < 0) {
-      for (let ti = 0; ti < 2; ti++) { const g = T[ti]; if (g.backing > 0 && g.notional > 0) { const w = 1 / g.notional; if (u < w) { pickT = ti; break; } u -= w; } }
+      for (let gi = 0; gi < G.length; gi++) { const w = 1 / G[gi].notional; if (u < w) { pickT = gi; break; } u -= w; }
       if (pickT < 0) { pick = nR - 1; while (pick > 0 && R[pick].n <= 0) pick--; }
     }
-    for (let ti = 0; ti < 2; ti++) if (T[ti].backing > 0) T[ti].since++;
+    for (const g of G) { g.since++; g.age++; }
     if (pickT >= 0) {
-      const g = T[pickT];
-      A.deliveredReal += g.backing; A.grailDelivered += g.backing; g.prizes += g.backing;
+      // capture of a GRAIL item: the pool is paid the ticket into the fund and the item leaves
+      const g = G.splice(pickT, 1)[0];
+      A.deliveredReal += g.b; A.grailDelivered += g.b; GR.prizes += g.b;
       A.grailPaidTicket += proceeds;
-      g.bucket += proceeds; g.hits++; if (g.firstHitDay < 0) g.firstHitDay = (t / 86400);
-      events.push({ t: t / 86400, track: pickT, prize: g.backing });
-      g.backing = 0; g.notional = 0; g.since = 0;
+      GR.fund += proceeds; GR.hits++; GR.hitSizes[g.b] = (GR.hitSizes[g.b] || 0) + 1;
+      if (g.piece) { GR.pieceOut += g.b; GR.pieceProceeds += proceeds; } if (GR.firstHitDay < 0) GR.firstHitDay = (t / DAY);
+      if (g.b > GR.largestHit) GR.largestHit = g.b;
+      events.push({ t: t / DAY, prize: g.b, done: g.done, price: g.notional, age: g.age, cutAge: g.cutAge });
     } else {
       const r = R[pick];
+      refreshTargets();
+      const above = P.boardByNav && count(pick) > r.tgt;
       r.n--; r.missQ.push(t);
       A.deliveredReal += r.b; A.ordinaryDelivered += r.b;
       S.cash += proceeds;
       settleMargin(proceeds, r.b, r.k);
-      const ch = chooseRow();
-      R[ch.row].queued++; Q.push({ i: ch.row, t });
-      if (ch.surprise) A.surprises++;
+      if (!above) {
+        const ch = chooseRow();
+        R[ch.row].queued++; Q.push({ i: ch.row, t });
+        if (ch.surprise) A.surprises++;
+      }
     }
     payClaims();
   }
@@ -733,7 +821,12 @@ function simulate(P, seed, days, snapDays, opts) {
     const day = Math.floor(h / 24), hod = h % 24;
     if (hod === 0) { depHour[day] = Math.floor(rngSched() * 24); wdHour[day] = Math.floor(rngSched() * 24); }
     const t0 = h * 3600;
-    if (hod === depHour[day] && P.depositPerDay > 0) deposit(P.depositPerDay);
+    if (hod === depHour[day]) {
+      // gate at the day's deposit hour: 2 founder window, 1 NAV at or above the cap, 0 open
+      const gate = t0 < P.founderWindowDays * DAY ? 2 : nav() >= navCapAt(day) ? 1 : 0;
+      series.gate.push(gate);
+      if (gate === 0 && P.depositPerDay > 0) deposit(P.depositPerDay, day);
+    }
     if (day % 2 === 1 && hod === wdHour[day] && P.withdrawBpsPerDay > 0) withdraw(P.withdrawBpsPerDay);
     payClaims();
 
@@ -758,36 +851,38 @@ function simulate(P, seed, days, snapDays, opts) {
     }
   }
   const labels = R.map(r => (r.k > 1 ? r.b + ' pack of ' + r.k : r.b + ' Shape'));
-  return { snaps, series, hourly, events, cohortBreakEven, navStart, cohortShares, cohortEth, params: P, labels, targets: R.map(r => r.tgt),
-    check: { deposits: A.deposited, proceeds: A.proceeds - A.grailPaidTicket, cash: S.cash, backing: backingOrd(), buckets: T[0].bucket + T[1].bucket + T[0].backing + T[1].backing,
-      grailTicket: A.grailPaidTicket, withdrawn: A.withdrawn, delivered: A.deliveredReal, mintFees: A.mintReplace + A.mintGrail + A.mintOpening, refunds: A.refunds, maint: S.maint, claims: claimsTotal, grailDelivered: A.grailDelivered,
-      grailBacking: T[0].backing + T[1].backing, feedIn: A.feedIn, entry: A.entryContribution, maintIn: A.maintIn } };
+  return { snaps, series, hourly, events, openingFive, cohortBreakEven, navStart, cohortShares, cohortEth, params: P, labels, meanRowCost,
+    check: { deposits: A.deposited, proceeds: A.proceeds, cash: S.cash, backing: backingOrd(), fund: GR.fund, grailBacking: G.reduce((a, it) => a + it.b, 0),
+      withdrawn: A.withdrawn, claims: claimsTotal, delivered: A.deliveredReal, mintFees: A.mintReplace + A.mintGrail + A.mintOpening, refunds: A.refunds, maint: S.maint,
+      grailTicket: A.grailPaidTicket, grailDelivered: A.grailDelivered, feedIn: A.feedIn, entry: A.entryContribution, maintIn: A.maintIn,
+      gap: A.deposited + A.proceeds - (S.cash + S.maint + A.refunds + GR.fund + backingOrd() + G.reduce((a, it) => a + it.b, 0) + A.withdrawn - claimsTotal + A.deliveredReal + A.mintReplace + A.mintGrail + A.mintOpening) } };
 }
 
 const SENS = [
   { id: 'premiumBps', label: 'Premium (bps)', lo: 100, hi: 300, get: P => P.premiumBps, set: (P, v) => { P.premiumBps = v; } },
   { id: 'maintBps', label: 'Maintenance (bps)', lo: 50, hi: 200, get: P => P.maintBps, set: (P, v) => { P.maintBps = v; } },
   { id: 'feedBps', label: 'GRAIL feed (bps)', lo: 200, hi: 600, get: P => P.feedBps, set: (P, v) => { P.feedBps = v; } },
-  { id: 'minorShareBps', label: 'Minor share of feed (bps)', lo: 1000, hi: 4000, get: P => P.minorShareBps, set: (P, v) => { P.minorShareBps = v; } },
-  { id: 'entryBase', label: 'Entry base (bps)', lo: 500, hi: 1500, get: P => P.entryBase, set: (P, v) => { P.entryBase = v; } },
-  { id: 'entryCap', label: 'Entry cap (bps)', lo: 1500, hi: 2500, get: P => P.entryCap, set: (P, v) => { P.entryCap = v; } },
+  { id: 'entryFloorBps', label: 'Entry fee floor (bps)', lo: 500, hi: 1500, get: P => P.entryFloorBps, set: (P, v) => { P.entryFloorBps = v; } },
+  { id: 'entryCapBps', label: 'Entry fee cap (bps)', lo: 1500, hi: 2500, get: P => P.entryCapBps, set: (P, v) => { P.entryCapBps = v; } },
+  { id: 'paybackDays', label: 'Entry fee payback (days)', lo: 10, hi: 40, get: P => P.paybackDays, set: (P, v) => { P.paybackDays = v; } },
+  { id: 'navCapFloor', label: 'NAV cap floor (ETH)', lo: 40, hi: 140, get: P => P.navCapFloor, set: (P, v) => { P.navCapFloor = v; } },
+  { id: 'turnoverBps', label: 'Cap turnover (bps of NAV a day)', lo: 625, hi: 2500, get: P => P.turnoverBps, set: (P, v) => { P.turnoverBps = v; } },
+  { id: 'founderWindowDays', label: 'Founder window (days)', lo: 0, hi: 60, get: P => P.founderWindowDays, set: (P, v) => { P.founderWindowDays = v; } },
   { id: 'mintFee', label: 'Mint fee per Shape (ETH)', lo: 0.0005, hi: 0.002, get: P => P.mintFee, set: (P, v) => { P.mintFee = v; } },
   { id: 'minItems', label: 'Minimum board depth (items)', lo: 50, hi: 200, get: P => P.minItems, set: (P, v) => { P.minItems = v; } },
   { id: 'edgePct', label: 'FWA edge (percent)', lo: 2, hi: 10, get: P => P.edgePct, set: (P, v) => { P.edgePct = v; } },
   { id: 'row0', label: 'Share of 0.01 Shape row (percent)', lo: 28, hi: 48, get: P => P.rows[0].share, set: (P, v) => { P.rows[0].share = v; } },
   { id: 'row5', label: 'Share of 0.5 Shape row (percent)', lo: 0, hi: 3, get: P => P.rows[5] ? P.rows[5].share : 0, set: (P, v) => { if (P.rows[5]) P.rows[5].share = v; } },
-  { id: 'minorTarget', label: 'Minor GRAIL target (ETH)', lo: 0.5, hi: 2, get: P => P.minor.target, set: (P, v) => { P.minor.target = v; } },
-  { id: 'majorTarget', label: 'Major GRAIL target (ETH)', lo: 10, hi: 50, get: P => P.major.target, set: (P, v) => { P.major.target = v; } },
-  { id: 'majorList', label: 'Major list price (bps of backing)', lo: 5000, hi: 9000, get: P => P.major.listBps, set: (P, v) => { P.major.listBps = v; } },
-  { id: 'majorDecay', label: 'Major decay (ETH per pull)', lo: 0.00005, hi: 0.001, get: P => P.major.decay, set: (P, v) => { P.major.decay = v; } },
-  { id: 'minorDecay', label: 'Minor decay (ETH per pull)', lo: 0.00005, hi: 0.001, get: P => P.minor.decay, set: (P, v) => { P.minor.decay = v; } },
-  { id: 'majorFloor', label: 'Major floor (ETH)', lo: 0.5, hi: 2, get: P => P.major.floor, set: (P, v) => { P.major.floor = v; } },
-  { id: 'minorFloor', label: 'Minor floor (ETH)', lo: 0.1, hi: 0.5, get: P => P.minor.floor, set: (P, v) => { P.minor.floor = v; } },
+  { id: 'grailTarget', label: 'GRAIL target (ETH)', lo: 10, hi: 100, get: P => P.grail.target, set: (P, v) => { P.grail.target = v; } },
+  { id: 'grailList', label: 'GRAIL list price (bps of backing)', lo: 5000, hi: 9000, get: P => P.grail.listBps, set: (P, v) => { P.grail.listBps = v; } },
+  { id: 'grailDecay', label: 'GRAIL decay (ETH per pull)', lo: 0.0005, hi: 0.002, get: P => P.grail.decay, set: (P, v) => setDecay(P, v) },
+  { id: 'grailPieceDecay', label: 'GRAIL piece decay (ETH per pull)', lo: 0.0005, hi: 0.002, get: P => P.grail.pieceDecay, set: (P, v) => { P.grail.pieceDecay = v; } },
+  { id: 'grailFloor', label: 'GRAIL floor (ETH)', lo: 0.5, hi: 2, get: P => P.grail.floor, set: (P, v) => { P.grail.floor = v; } },
+  { id: 'grailPieceFloor', label: 'GRAIL piece floor (ETH)', lo: 0.1, hi: 0.5, get: P => P.grail.pieceFloor, set: (P, v) => { P.grail.pieceFloor = v; } },
   { id: 'ticketsPerDay', label: 'Tickets per day', lo: 250, hi: 1000, get: P => P.ticketsPerDay, set: (P, v) => { P.ticketsPerDay = v; } },
   { id: 'openingEth', label: 'Opening cohort (ETH)', lo: 25, hi: 100, get: P => P.openingEth, set: (P, v) => { P.openingEth = v; } },
   { id: 'depositPerDay', label: 'Deposits per day (ETH)', lo: 0, hi: 5, get: P => P.depositPerDay, set: (P, v) => { P.depositPerDay = v; } },
   { id: 'withdrawBpsPerDay', label: 'Withdrawal on odd days (bps of a depositor)', lo: 0, hi: 1000, get: P => P.withdrawBpsPerDay, set: (P, v) => { P.withdrawBpsPerDay = v; } },
-  { id: 'navCap', label: 'NAV cap (ETH)', lo: 50, hi: 200, get: P => P.navCap, set: (P, v) => { P.navCap = v; } },
   { id: 'rotateInterval', label: 'Rotate interval (seconds)', lo: 300, hi: 3600, get: P => P.rotateInterval, set: (P, v) => { P.rotateInterval = v; } },
   { id: 'restoreK', label: 'Deficit weight restoreK', lo: 2, hi: 16, get: P => P.restoreK, set: (P, v) => { P.restoreK = v; } },
   { id: 'surpriseBps', label: 'Surprise chance (bps)', lo: 0, hi: 600, get: P => P.surpriseBps, set: (P, v) => { P.surpriseBps = v; } },
@@ -840,17 +935,19 @@ const GROUPS = [
     F('mintFee', 'Mint fee per Shape', 'ETH', 0.0001, 0, 0.1, 'Paid on every replacement and every GRAIL step.'),
     F('premiumBps', 'Premium', 'bps', 10, 0, 1000, 'Stays in ordinary NAV.'),
     F('maintBps', 'Maintenance', 'bps', 10, 0, 1000, 'Funds rotate refunds.'),
-    F('feedBps', 'GRAIL feed', 'bps', 10, 0, 1000, 'Split between the two tracks.'),
-    F('minorShareBps', 'Minor share', 'bps', 100, 0, 10000, 'Of the feed and of entry contributions.'),
-    F('entryBase', 'Entry base', 'bps', 50, 0, 10000, 'Entry contribution at zero NAV.'),
-    F('entrySlope', 'Entry slope', 'bps', 50, 0, 10000, 'Added per reference NAV.'),
-    F('entryCap', 'Entry cap', 'bps', 50, 0, 2500, 'Contract maximum 2,500.'),
-    F('entryRef', 'Entry reference NAV', 'ETH', 1, 1, 100000, ''),
-    F('minItems', 'Minimum board depth', 'items', 5, 1, 5000, 'Scaled by row share.'),
+    F('feedBps', 'GRAIL feed', 'bps', 10, 0, 1000, 'Share of the margin that funds GRAIL.'),
+    F('minItems', 'Minimum board depth', 'items', 5, 1, 5000, 'Floor of the board depth. Depth = max(minimum, (NAV - reserve) / mean row cost); a row targets ceil(depth x share).'),
     F('edgePct', 'FWA edge', 'percent', 0.5, 0, 50, 'Ticket = harmonic mean price x (1 + edge).'),
     F('grailProbCapBps', 'GRAIL probability cap', 'bps', 50, 1, 10000, 'Share of selection weight.'),
     F('rotateInterval', 'Rotate interval', 'seconds', 60, 60, 86400, 'Minimum spacing of rotate calls and of their refunds.'),
-    F('navCap', 'NAV cap', 'ETH', 10, 0, 100000, 'Deposits close at this NAV. 0 means no cap.'),
+  ] },
+  { id: 'admission', title: 'Deposits: entry fee, cap and window', fields: [
+    F('entryFloorBps', 'Entry fee floor', 'bps', 50, 0, 10000, 'Minimum share of a deposit that goes to the GRAIL fund.'),
+    F('entryCapBps', 'Entry fee cap', 'bps', 50, 0, 10000, 'Maximum share. Contract maximum 10,000.'),
+    F('paybackDays', 'Entry fee payback', 'days', 1, 1, 365, 'Fee = payback days x premium x daily volume / NAV, between floor and cap.'),
+    F('navCapFloor', 'NAV cap floor', 'ETH', 1, 0, 100000, 'Cap = max(floor, daily volume x 10,000 / turnover). Deposits are admitted while NAV is below the cap.'),
+    F('turnoverBps', 'Cap turnover', 'bps', 50, 1, 10000, 'Target daily volume over NAV.'),
+    F('founderWindowDays', 'Founder window', 'days', 1, 0, 365, 'No deposits for this many days after the board opens.'),
   ] },
   { id: 'board', title: 'Board', mix: true, fields: [] },
   { id: 'replace', title: 'Replacement and cash', fields: [
@@ -861,12 +958,12 @@ const GROUPS = [
     F('payInShapesBps', 'Tickets paid with a Shape', 'bps', 100, 0, 10000, 'Shape of at most the ticket value, kept and reused with no mint fee.'),
   ] },
   { id: 'keeper', title: 'Settle, rotate and refunds', fields: [
-    F('batchMin', 'Settle batch size', 'items', 1, 1, 10, 'Queued replacements that make a settle due.'),
+    F('batchMin', 'Settle batch size', 'items', 1, 1, 100, 'Queued replacements that make a settle due.'),
     F('batchMaxAge', 'Settle maximum age', 'seconds', 300, 300, 86400, 'Age of the oldest queued replacement that makes a settle due.'),
     F('cooldownSeconds', 'Purchase pause after a listing batch', 'seconds', 30, 0, 3600, 'FWA inventoryChangeCooldown. 0 at launch.'),
     F('gasPriceGwei', 'Gas price for keeper refunds', 'gwei', 0.5, 0, 500, 'Refund = (100k + 150k per item + 30k) gas x price + tip.'),
     F('tipWei', 'Keeper tip', 'wei', 1e13, 0, 1e17, 'Added to every settle and rotate refund. 2e14 wei is 0.0002 ETH.'),
-    { chk: true, path: ['decayInSettle'], label: 'Decay reprice inside settle instead of rotate', hint: 'Settle reprices GRAIL tracks and lifts them to the probability cap in its batch, and rotate keeps GRAIL growth. Off gives rotate the Decay reason.' },
+    { chk: true, path: ['decayInSettle'], label: 'Decay reprice inside settle instead of rotate', hint: 'Settle reprices listed GRAIL items in its batch, and rotate keeps GRAIL mints and merges. Off gives rotate the Decay reason.' },
   ] },
   { id: 'demand', title: 'Demand and depositors', fields: [
     F('openingEth', 'Opening cohort', 'ETH', 5, 1, 10000, 'Deposited before the board opens.'),
@@ -874,15 +971,16 @@ const GROUPS = [
     F('depositPerDay', 'Deposits per day', 'ETH', 0.5, 0, 1000, 'One new depositor a day.'),
     F('withdrawBpsPerDay', 'Withdrawal on odd days', 'bps', 50, 0, 10000, 'Share of one depositor\'s shares.'),
   ] },
-  { id: 'grail', title: 'GRAIL tracks', fields: [
-    { sub: 'Minor track' },
-    F('minor.target', 'Target', 'ETH', 0.5, 0.02, 1000, ''), F('minor.step', 'Step', 'ETH', 0.01, 0.02, 100, 'Multiple of 0.01, at least 0.02.'),
-    F('minor.listBps', 'List price', 'bps', 100, 1, 10000, 'Of track backing.'), F('minor.decay', 'Decay per pull', 'ETH', 0.00005, 0, 1, 'Repriced when 1 percent or more below the list price.'),
-    F('minor.floor', 'Floor', 'ETH', 0.05, 0.01, 1000, 'At most target x list price.'),
-    { sub: 'Major track' },
-    F('major.target', 'Target', 'ETH', 5, 0.02, 1000, ''), F('major.step', 'Step', 'ETH', 0.1, 0.02, 100, 'Multiple of 0.01, at least 0.02.'),
-    F('major.listBps', 'List price', 'bps', 100, 1, 10000, 'Of track backing.'), F('major.decay', 'Decay per pull', 'ETH', 0.00005, 0, 1, 'Repriced when 1 percent or more below the list price.'),
-    F('major.floor', 'Floor', 'ETH', 0.1, 0.01, 1000, 'At most target x list price.'),
+  { id: 'grail', title: 'GRAIL', fields: [
+    F('grail.target', 'Target', 'ETH', 5, 5, 100, 'One of 5, 10, 25, 50, 100. A cycle completes when a merge output equals the target.'),
+    F('grail.listBps', 'List price of a merge output', 'bps', 100, 1, 10000, 'Of backing. Pieces and the opening five list at face.'),
+    F('grail.pieceSize', 'Piece size', 'ETH', 0.5, 0.5, 1, 'Backing of a minted piece: 1 or 0.5. At 0.5 the first recipe is ten pieces to a 5, the piece limit is 12 and the opening 5 is ten pieces.'),
+    F('grail.decay', 'Decay per pull', 'ETH', 0.0005, 0, 1, 'Every listed GRAIL item except pieces, which follow the piece decay. Repriced when 1 percent or more below its price. Moves the piece decay too while the two are equal.'),
+    F('grail.pieceDecay', 'Piece decay per pull', 'ETH', 0.0005, 0, 1, 'Decay of a listed piece. Equal to the decay per pull at launch.'),
+    F('grail.pieceFloor', 'Piece floor', 'ETH', 0.05, 0.01, 1, 'Lowest price of a 1 ETH piece. A piece floors at this value x piece size.'),
+    F('grail.floor', 'Merged floor (floorWei)', 'ETH', 0.1, 0.01, 100, 'Lowest price of a merged item (5 ETH and up) while Floor pulls is 0; with Floor pulls on, the lowest price is fixed at 0.1 ETH.'),
+    F('grail.floorPulls', 'Floor pulls', 'pulls', 1000, 0, 1000000, 'Merged items (5 ETH and up) decay to the price where their selection odds are 1 in this many pulls against the live board weight, never below 0.1 ETH. 0 gives the fixed Floor.'),
+    { chk: true, path: ['grail', 'doneOutsideCap'], label: 'Finished GRAILs outside the item cap', hint: 'On: items that completed a cycle do not count toward the 16 item limit. The 6 ETH piece limit and the 16 limit on building items still apply.' },
   ] },
   { id: 'basis', title: 'Value received basis', fields: [
     F('shapesRedeemPct', 'Shapes redeem value', 'percent', 1, 1, 100, 'Share of backing a player receives.'),
@@ -917,7 +1015,7 @@ function buildForm() {
       const t = document.createElement('div'); t.style.gridColumn = '1/-1';
       let h = '<table class="mix"><tr><th>Backing (ETH)</th><th>Shapes minted</th><th>Share (%)</th></tr>';
       P.rows.forEach((r, i) => { h += '<tr><td><input type="number" step="0.01" min="0" id="m_b' + i + '" inputmode="decimal"></td><td><input type="number" step="1" min="1" max="20" id="m_k' + i + '" inputmode="numeric"></td><td><input type="number" step="1" min="0" max="100" id="m_s' + i + '" inputmode="decimal"></td></tr>'; });
-      h += '</table><p class="hint" style="font-size:11.5px;color:var(--ink3);margin-top:6px">Rows of two or more Shapes minted are Draw Packs. Listing price = backing x (1 + premium + maintenance + feed) + mint fee x Shapes minted. Shares normalise to 100. Target depth of a row = ceil(board depth x share).</p>';
+      h += '</table><p class="hint" style="font-size:11.5px;color:var(--ink3);margin-top:6px">Rows of two or more Shapes minted are Draw Packs. Listing price = backing x (1 + premium + maintenance + feed) + mint fee x Shapes minted. Shares normalise to 100. Board depth = max(minimum depth, (NAV - reserve) / mean row cost). Target depth of a row = ceil(board depth x share).</p>';
       t.innerHTML = h; box.appendChild(t);
     }
     det.appendChild(box); host.appendChild(det);
@@ -946,7 +1044,12 @@ function parse(el, min, max) {
   if (el.closest('td')) el.style.borderColor = ok ? '' : 'var(--bad)';
   return ok ? v : null;
 }
-function onField(f, el) { const v = parse(el, f.min, f.max); if (v === null) return; setv(P, f.path, v); changed(); }
+function setDecay(Q, v) { if (Q.grail.pieceDecay === Q.grail.decay) Q.grail.pieceDecay = v; Q.grail.decay = v; }
+function onField(f, el) {
+  const v = parse(el, f.min, f.max); if (v === null) return;
+  if (f.path.join('.') === 'grail.decay') { setDecay(P, v); $('p_grail_pieceDecay').value = P.grail.pieceDecay; } else setv(P, f.path, v);
+  changed();
+}
 function onMix(i, k, el) { const v = parse(el, k === 'rungs' ? 1 : 0, k === 'share' ? 100 : 100); if (v === null) return; P.rows[i][k] = v; changed(); }
 function markChanged() {
   let n = 0;
@@ -963,14 +1066,15 @@ function markChanged() {
 function warnings() {
   const w = [];
   if (P.premiumBps + P.maintBps + P.feedBps > 1000) w.push('Premium + maintenance + feed is above the contract maximum of 1,000 bps.');
-  if (P.entryCap > 2500) w.push('Entry cap is above the contract maximum of 2,500 bps.');
-  for (const [n, t] of [['Minor', P.minor], ['Major', P.major]]) {
-    if (t.floor > t.target * t.listBps / 1e4 + 1e-9) w.push(n + ' floor is above target x list price, which the pool rejects.');
-    const u = Math.round(t.step * 100);
-    if (Math.abs(t.step * 100 - u) > 1e-6 || u < 2) w.push(n + ' step has to be a multiple of 0.01 ETH and at least 0.02 ETH.');
-  }
+  if (P.entryFloorBps > P.entryCapBps) w.push('Entry fee floor is above the cap, which the pool rejects.');
+  if (P.navCapFloor <= 0) w.push('NAV cap floor of zero admits no deposit.');
+  const gr = P.grail;
+  if (![5, 10, 25, 50, 100].includes(gr.target)) w.push('GRAIL target has to be 5, 10, 25, 50 or 100 ETH. Other values leave every cycle open.');
+  if (gr.floor > 5 * gr.listBps / 1e4 + 1e-9) w.push('GRAIL floor is above 5 ETH x list price, which the pool rejects.');
+  if (gr.pieceFloor > 1 || gr.pieceFloor <= 0) w.push('GRAIL piece floor has to be above zero and at most 1 ETH.');
+  if (gr.pieceSize !== 1 && gr.pieceSize !== 0.5) w.push('GRAIL piece size has to be 1 or 0.5 ETH.');
   if (P.batchMin < 1) w.push('Settle batch size is at least 1.');
-  if (P.batchMin > 10) w.push('Settle lists at most 10 items per call, so with a batch size above 10 the queue holds at least ' + (P.batchMin - 10) + ' entries between calls and the board runs thinner by that amount.');
+  if (P.batchMin > MAX_LIST) w.push('Settle lists at most ' + MAX_LIST + ' items per call, so with a batch size above ' + MAX_LIST + ' the queue holds at least ' + (P.batchMin - MAX_LIST) + ' entries between calls and the board runs thinner by that amount.');
   if (P.cooldownSeconds > 0) w.push('A purchase pause above zero delays tickets after every listing batch, so tickets arrive later than the schedule.');
   const sh = P.rows.reduce((a, r) => a + r.share, 0);
   if (sh <= 0) w.push('Row shares sum to zero. Set at least one share above zero.');
@@ -1023,7 +1127,7 @@ function shapesVals(s) {
   return { ticket: s.ticketAvg, exp: s.expReturn, median: s.median, p5: s.p5, p95: s.p95, ge1: s.ge1, ltHalf: s.ltHalf, ge2: s.ge2, ge10: s.ge10, house: s.paid ? 1 - s.deliveredExp / s.paid : 0 };
 }
 function renderAll() {
-  renderStrip(); renderTable(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); basisText();
+  renderStrip(); renderTable(); renderDeps(); renderGrail(); renderKeeper(); renderRevenue(); renderExample(); basisText();
 }
 function chips(hostId, list, cur, onPick, label) {
   const h = $(hostId); h.innerHTML = '';
@@ -1041,7 +1145,8 @@ function renderStrip() {
     ['Median return, Shapes', fmt.x(sv.median), 'FWA V2 ' + fmt.x(FW.median)],
     ['NAV per share, day ' + horizon, fmt.eth(s.navPerShare, 3), fmt.sgn(s.annualised * 100, 0) + ' a year'],
     ['Cohort break-even', be, 'needs ' + fmt.eth(R.cohortBreakEven, 3)],
-    ['GRAIL hits', s.minorHits + ' / ' + s.majorHits, 'minor / major'],
+    ['GRAIL hits', String(s.grailHits), 'largest listed ' + fmt.n0(s.grailLargest) + ' ETH'],
+    ['Deposits closed', fmt.n0(s.capClosedDays + s.windowDays) + ' d', fmt.n0(s.windowDays) + ' window, ' + fmt.n0(s.capClosedDays) + ' cap'],
     ['Keeper cost not covered', fmt.pct(s.shortShare, 1), fmt.eth(s.shortfall, 2) + ' of ' + fmt.eth(s.keeperCost, 2) + ' ETH'],
   ];
   $('strip').innerHTML = items.map(i => '<div><div class="k">' + i[0] + '</div><div class="v">' + i[1] + ' <small>' + i[2] + '</small></div></div>').join('');
@@ -1077,11 +1182,20 @@ function renderTable() {
   $('cmp').innerHTML = h;
   $('cmpnote').innerHTML = '<b>Shaded cells are better for the player.</b> Shapes figures are the expected distribution of one ticket over all tickets up to the column\'s day, drawn from the simulated board at each ticket, so p5 and p95 are exact expectations over the draw. FWA V2 figures come from the board at block 26,088,128 (' + fmt.n0(FW.listings) + ' listings, ' + fmt.eth(FW.backing, 2) + ' ETH backing, ticket ' + fmt.eth(FW.ticket, 5) + ' ETH). That board is a snapshot, so changing tickets per day leaves the FWA V2 column as it is. House take is the share of the ticket that stays with the pool, the operator and FWA, and for FWA V2 it is the 5 percent edge.';
 }
-function lineHtmlLegend(items) { return items.map(i => '<span><i style="background:' + i.c + (i.dash ? ';background:repeating-linear-gradient(90deg,' + i.c + ' 0 4px,transparent 4px 7px)' : '') + '"></i>' + i.n + '</span>').join(''); }
+function lineHtmlLegend(items) { return items.map(i => '<span><i' + (i.sq ? ' class="sq"' : '') + ' style="background:' + i.c + (i.dash ? ';background:repeating-linear-gradient(90deg,' + i.c + ' 0 4px,transparent 4px 7px)' : '') + (i.op ? ';opacity:' + (i.op + .25) : '') + '"></i>' + i.n + '</span>').join(''); }
+// Runs of equal gate value (2 founder window, 1 cap closed) as day ranges for chart shading.
+function gateBands(gate) {
+  const out = [];
+  for (let d = 0; d < gate.length;) {
+    let e = d; while (e + 1 < gate.length && gate[e + 1] === gate[d]) e++;
+    if (gate[d]) out.push({ x0: d, x1: e + 1, c: gate[d] === 2 ? 'var(--c5)' : 'var(--bad)', op: gate[d] === 2 ? .2 : .13 });
+    d = e + 1;
+  }
+  return out;
+}
 function renderDeps() {
   const s = R.snaps[horizon];
   const be = s.breakEvenDay >= 0 ? 'Day ' + s.breakEvenDay : 'Not reached';
-  const first = (d, n) => n ? 'first at day ' + d.toFixed(1) : '0 hits in this run';
   const mintAll = s.mintReplace + s.mintGrail + s.mintOpening;
   const M = [
     ['NAV per share, start', fmt.eth(R.navStart, 4), 'after the opening board mints'],
@@ -1090,8 +1204,9 @@ function renderDeps() {
     ['Break-even day', be, 'NAV per share reaches break-even'],
     ['Opening cohort value', fmt.eth(s.cohortValue, 2) + ' ETH', 'against ' + fmt.eth(R.cohortEth, 0) + ' ETH deposited'],
     ['Premium to depositors', fmt.eth(s.premium, 2) + ' ETH', 'stays in ordinary NAV'],
-    ['Minor GRAIL hits', String(s.minorHits), first(s.minorFirst, s.minorHits)],
-    ['Major GRAIL hits', String(s.majorHits), first(s.majorFirst, s.majorHits)],
+    ['Entry fee, opening cohort', fmt.eth(R.series.feeBps[0] / 100, 1) + '%', 'paid into the GRAIL fund; a deposit on day ' + horizon + ' pays ' + fmt.eth(s.entryFeeBps / 100, 1) + '%'],
+    ['Deposits closed', fmt.n0(s.capClosedDays + s.windowDays) + ' days', fmt.n0(s.windowDays) + ' in the founder window, ' + fmt.n0(s.capClosedDays) + ' with NAV at or above the cap'],
+    ['Deposit cap, day ' + horizon, fmt.eth(s.cap, 1) + ' ETH', 'daily volume ' + fmt.eth(s.dailyVolume, 2) + ' ETH, floor ' + fmt.eth(P.navCapFloor, 0) + ' ETH'],
     ['Operator mint fees', fmt.eth(mintAll, 2) + ' ETH', fmt.eth(s.mintReplace, 2) + ' replacements, ' + fmt.eth(s.mintGrail + s.mintOpening, 2) + ' GRAIL and opening; ' + fmt.eth(s.mintSaved, 2) + ' saved by held Shapes'],
     ['FWA protocol fees', fmt.eth(s.protocol, 2) + ' ETH', 'half of the edge on every ticket'],
     ['Maintenance collected', fmt.eth(s.maintIn, 2) + ' ETH', fmt.eth(s.refunds, 2) + ' ETH paid out as keeper refunds'],
@@ -1100,14 +1215,22 @@ function renderDeps() {
   $('metrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
   const xs = R.series.navPerShare.map((_, i) => i);
   const be1 = xs.map(() => R.cohortBreakEven);
-  $('navlegend').innerHTML = lineHtmlLegend([{ n: 'NAV per share', c: 'var(--shapes)' }, { n: 'Cohort break-even', c: 'var(--c5)', dash: 1 }, { n: 'Entry price per share', c: 'var(--c7)', dash: 1 }, { n: 'Major GRAIL hit', c: 'var(--c6)' }]);
-  const ticks = R.events.filter(e => e.track === 1).map(e => ({ x: e.t, c: 'var(--c6)' }));
-  drawChart('navchart', { xs, xmax: 365, series: [
+  const bands = gateBands(R.series.gate), gtip = v => 'Day ' + v + ({ 2: ' (founder window)', 1: ' (deposits closed)' }[R.series.gate[v]] || '');
+  const bandLegend = [{ n: 'Founder window', c: 'var(--c5)', sq: 1, op: .3 }, { n: 'Deposits closed', c: 'var(--bad)', sq: 1, op: .22 }];
+  $('navlegend').innerHTML = lineHtmlLegend([{ n: 'NAV per share', c: 'var(--shapes)' }, { n: 'Cohort break-even', c: 'var(--c5)', dash: 1 }, { n: 'Entry price per share', c: 'var(--c7)', dash: 1 }].concat(bandLegend));
+  drawChart('navchart', { xs, xmax: 365, bands, series: [
     { n: 'NAV per share', ys: R.series.navPerShare, c: 'var(--shapes)', w: 2 },
     { n: 'Cohort break-even', ys: be1, c: 'var(--c5)', dash: '5 4' },
     { n: 'Entry price per share', ys: R.series.entryPrice, c: 'var(--c7)', dash: '2 4' }],
-    ticks, vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => v.toFixed(2), tipx: v => 'Day ' + v });
-  $('depnote').innerHTML = 'NAV per share is ordinary NAV (cash plus Shape backing) over shares. GRAIL buckets and GRAIL backing sit outside it. The entry price is NAV divided by one minus the entry contribution, which is what a new deposit pays per share. The cohort break-even is the 50 ETH the opening depositors put in divided by the shares they received after their entry contributions. The vertical line marks the chosen horizon.';
+    vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => v.toFixed(2), tipx: gtip });
+  $('capnavlegend').innerHTML = lineHtmlLegend([{ n: 'Pool NAV', c: 'var(--shapes)' }, { n: 'Deposit cap', c: 'var(--c6)', dash: 1 }, { n: 'Cap floor', c: 'var(--c7)', dash: 1 }].concat(bandLegend));
+  drawChart('capchart', { xs, xmax: 365, bands, series: [
+    { n: 'Pool NAV (ETH)', ys: R.series.nav, c: 'var(--shapes)', w: 2, dp: 1 },
+    { n: 'Deposit cap (ETH)', ys: R.series.cap, c: 'var(--c6)', w: 2, dash: '5 4', dp: 1 },
+    { n: 'Cap floor (ETH)', ys: xs.map(() => P.navCapFloor), c: 'var(--c7)', dash: '2 4', dp: 1 }],
+    vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: gtip });
+  $('depnote').innerHTML = 'NAV per share is ordinary NAV (cash plus Shape backing) over shares. The GRAIL fund and GRAIL items sit outside it. The entry price is NAV divided by one minus the entry fee, which is what a new deposit pays per share. The cohort break-even is the ' + fmt.eth(R.cohortEth, 0) + ' ETH the opening depositors put in divided by the shares they received after the entry fee. The entry fee is clamp(' + P.paybackDays + ' x premium x daily volume / NAV, ' + P.entryFloorBps + ', ' + P.entryCapBps + ') bps. The vertical line marks the chosen horizon.';
+  $('capnote').innerHTML = 'Daily volume is the mean of booked ticket fees over the last ' + VOLUME_DAYS + ' complete days, zero before the first complete day. The cap is max(' + fmt.eth(P.navCapFloor, 0) + ' ETH, daily volume x 10,000 / ' + fmt.n0(P.turnoverBps) + '). A day is shaded when the daily deposit finds the founder window open (no deposits for ' + P.founderWindowDays + ' days after the board opens) or NAV at or above the cap. Withdrawals stay open at any NAV. Over ' + horizon + ' days deposits were open on ' + fmt.n0(horizon - s.capClosedDays - s.windowDays) + '.';
   const tpd = P.ticketsPerDay, fwaPerDay = tpd * FW.ownerMargin;
   const avgNav = s.avgNav, shAnn = avgNav > 0 ? s.premium / avgNav * 365 / horizon : 0;
   $('owner').innerHTML =
@@ -1123,17 +1246,53 @@ function renderDeps() {
 }
 function kv(a, b) { return '<tr><td>' + a + '</td><td class="n">' + b + '</td></tr>'; }
 
+function renderGrail() {
+  const s = R.snaps[horizon], ser = R.series, g = P.grail;
+  const sizes = Object.keys(s.grailSizes).map(Number).sort((a, b) => b - a);
+  const sizeTxt = sizes.length ? sizes.map(k => s.grailSizes[k] + ' x ' + k + ' ETH').join(', ') : 'none listed';
+  const ev = R.events.filter(e => e.t < horizon);
+  const hitsBySize = {}; for (const e of ev) hitsBySize[e.prize] = (hitsBySize[e.prize] || 0) + 1;
+  const hitTxt = Object.keys(hitsBySize).map(Number).sort((a, b) => b - a).map(k => hitsBySize[k] + ' x ' + k + ' ETH').join(', ') || 'no hits';
+  const perMonth = s.grailHits / (horizon / 30);
+  const M = [
+    ['Fund', fmt.eth(s.grailFund, 2) + ' ETH', 'covers a piece at ' + fmt.eth(1 + P.mintFee, 3) + ' ETH; fed by entry fees, ' + P.feedBps + ' of ' + (P.premiumBps + P.maintBps + P.feedBps) + ' margin parts and captures'],
+    ['Cycle', 'cycle ' + (s.grailCycles + 1), s.grailCycles + ' completed' + (s.grailFirstCycle >= 0 ? ', first at day ' + s.grailFirstCycle.toFixed(1) : '') + '; target ' + g.target + ' ETH'],
+    ['Listed items', String(s.grailListed), sizeTxt + (s.grailDone ? '; ' + s.grailDone + ' completed' : '')],
+    ['Pieces and merges', fmt.n0(s.grailMinted) + ' / ' + fmt.n0(s.grailMerged), 'pieces minted / merges run' + (R.openingFive ? '; opening five listed' : '; opening five skipped, fund below five pieces at open')],
+    ['GRAIL hits', fmt.n0(s.grailHits), perMonth.toFixed(1) + ' per 30 days; ' + hitTxt],
+    ['Largest item reached', fmt.n0(s.grailLargest) + ' ETH', 'largest captured ' + fmt.n0(s.grailLargestHit) + ' ETH'],
+    ['GRAIL prizes', fmt.eth(s.grailPrizes, 1) + ' ETH', 'backing delivered, at face'],
+    ['Mint fees on GRAIL', fmt.eth(s.mintGrail, 3) + ' ETH', 'paid to the operator from the fund'],
+  ];
+  $('gmetrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
+  const xs = ser.nav.map((_, i) => i);
+  $('glegend').innerHTML = lineHtmlLegend([{ n: 'Fund', c: 'var(--c5)' }, { n: 'Largest listed item', c: 'var(--c6)', w: 2 }, { n: 'Listed GRAIL backing', c: 'var(--shapes)', dash: 1 }]);
+  drawChart('gchart', { xs, xmax: 365, series: [
+    { n: 'Fund (ETH)', ys: ser.grailFund, c: 'var(--c5)', dp: 2 },
+    { n: 'Largest listed item (ETH)', ys: ser.grailMax, c: 'var(--c6)', w: 2, dp: 0 },
+    { n: 'Listed GRAIL backing (ETH)', ys: ser.grailBacking, c: 'var(--shapes)', dash: '5 4', dp: 0 }],
+    vline: horizon, xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v * 10) / 10), tipx: v => 'Day ' + v });
+  const months = Math.ceil(horizon / 30), cnt = new Array(months).fill(0), big = new Array(months).fill(0);
+  for (const e of ev) { const m = Math.min(months - 1, Math.floor(e.t / 30)); cnt[m]++; if (e.prize > big[m]) big[m] = e.prize; }
+  let h = '<tr><th>Month</th>' + cnt.map((_, i) => '<th>' + (i + 1) + '</th>').join('') + '</tr>';
+  h += '<tr><td>Hits</td>' + cnt.map(c => '<td>' + c + '</td>').join('') + '</tr>';
+  h += '<tr><td>Largest hit (ETH)</td>' + big.map(c => '<td>' + (c || '') + '</td>').join('') + '</tr>';
+  $('gtbl').innerHTML = h;
+  $('gnote').innerHTML = 'While the fund covers a piece and its mint fee, a rotate pass mints up to ' + MAX_GRAIL_MINTS + ' pieces of ' + g.pieceSize + ' ETH, with at most ' + Math.round(MAX_PIECE_ETH / g.pieceSize) + ' pieces and ' + MAX_GRAIL_ITEMS + ' items listed, each listed at face. Merges run largest recipe first, at most ' + MAX_GRAIL_MERGES + ' per pass: 5 from ' + Math.round(5 / g.pieceSize) + ' pieces, 10 from two 5s, 25 from two 10s and a 5, 50 from two 25s, 100 from two 50s, listed at ' + g.listBps + ' bps of backing. The cycle completes when an output equals the ' + g.target + ' ETH target; that item stays listed and is never a recipe input. Every listed item loses ' + g.decay + ' ETH per pull (' + g.pieceDecay + ' for pieces) down to ' + (g.pieceFloor * g.pieceSize) + ' ETH (pieces) or, for merged items, ' + (g.floorPulls ? 'the price at which the item has 1 chance in ' + fmt.n0(g.floorPulls) + ' pulls against the live board weight (at least ' + MIN_MERGED_PRICE + ' ETH)' : g.floor + ' ETH') + ', repriced at a drop of ' + P.repriceMinBps + ' bps or more while the listed GRAIL weight stays within ' + P.grailProbCapBps + ' bps. A capture pays the ticket proceeds into the fund and the item leaves. Selection weight is 1 over list price, the ticket is the harmonic mean times ' + (1 + P.edgePct / 100).toFixed(2) + '.';
+}
+
 const COL = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c6)', 'var(--c7)', 'var(--c9)', 'var(--c8)'];
 function renderKeeper() {
   const s = R.snaps[horizon], ser = R.series;
   const perSettle = s.settleCalls ? s.settleListed / s.settleCalls : 0;
   const miss = isNaN(s.missSec) ? 'no 0.1 Shape row captured' : fmt.n0(s.missSec / 60) + ' minutes';
   const M = [
-    ['Settle calls', fmt.n0(s.settleCalls), fmt.n0(s.settleListed) + ' items, ' + perSettle.toFixed(1) + ' per call; Batch ' + fmt.n0(s.setBatch) + ', Age ' + fmt.n0(s.setAge) + ', Thin ' + fmt.n0(s.setThin)],
+    ['Settle calls', fmt.n0(s.settleCalls), fmt.n0(s.settleListed) + ' items, ' + perSettle.toFixed(1) + ' per call; Batch ' + fmt.n0(s.setBatch) + ', Age ' + fmt.n0(s.setAge) + ', Thin ' + fmt.n0(s.setThin) + ', Deep ' + fmt.n0(s.setDeep)],
     ['Rotate calls', fmt.n0(s.rotates), 'GrailStep ' + fmt.n0(s.rotGrail) + ', Decay ' + fmt.n0(s.rotDecay) + '; each one changed inventory'],
     ['Surprises', fmt.n0(s.surprises), fmt.pct(s.tickets ? s.surprises / s.tickets : 0, 2) + ' of replacements upgraded'],
     ['Mint fees saved', fmt.eth(s.mintSaved, 2) + ' ETH', fmt.n0(s.payIns) + ' tickets paid with a Shape, ' + fmt.n0(s.heldUses) + ' held Shapes reused'],
     ['A captured 0.1 row stays missing', miss, 'until a 0.1 Shape is listed again, ' + fmt.n0(s.missN) + ' matched'],
+    ['Board items', fmt.n0(s.boardItems), 'target depth at day ' + horizon + ' = max(' + P.minItems + ', (NAV - ' + P.reserveBps / 100 + ' percent reserve) / ' + fmt.eth(R.meanRowCost, 4) + ' mean row cost); ' + fmt.n0(s.listedNow) + ' listed ordinary items; Deep settles ' + fmt.n0(s.setDeep)],
     ['Listed ordinary items', s.avgListed.toFixed(1), 'mean at keeper ticks; lowest ' + fmt.n0(s.minListed)],
     ['Keeper cost', fmt.eth(s.keeperCost, 2) + ' ETH', 'settle refunds ' + fmt.eth(s.settleRefund, 2) + ', rotate refunds ' + fmt.eth(s.rotRefund, 2) + ' ETH, at ' + P.gasPriceGwei + ' gwei'],
     ['Cost the bucket could not cover', fmt.pct(s.shortShare, 2), fmt.eth(s.shortfall, 3) + ' ETH unpaid'],
@@ -1142,13 +1301,13 @@ function renderKeeper() {
   if (P.cooldownSeconds > 0) M.push(['Purchase pause', fmt.n0(s.pauseSeconds / 3600) + ' hours', 'tickets waited ' + fmt.n0(s.waitSeconds / 3600) + ' ticket-hours']);
   $('kmetrics').innerHTML = M.map(m => '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '<small>' + m[2] + '</small></dd></div>').join('');
   const xs = ser.listed.map((_, i) => i);
-  $('blegend').innerHTML = R.labels.map((n, i) => '<span><i class="sq" style="background:' + COL[i % COL.length] + '"></i>' + n + '</span>').join('');
-  drawStack('bchart', { xs, xmax: 365, layers: R.labels.map((n, i) => ({ n, ys: ser.board[i], c: COL[i % COL.length] })), xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: v => 'Day ' + v });
+  $('blegend').innerHTML = R.labels.map((n, i) => '<span><i class="sq" style="background:' + COL[i % COL.length] + '"></i>' + n + '</span>').join('') + '<span><i style="background:repeating-linear-gradient(90deg,var(--ink) 0 4px,transparent 4px 7px)"></i>Board items (target)</span>';
+  drawStack('bchart', { xs, xmax: 365, line: { n: 'Board items (target)', ys: ser.items, c: 'var(--ink)' }, layers: R.labels.map((n, i) => ({ n, ys: ser.board[i], c: COL[i % COL.length] })), xfmt: v => 'd' + Math.round(v), yfmt: v => String(Math.round(v)), tipx: v => 'Day ' + v });
   const mean = a => { let t = 0; for (let d = 1; d <= horizon; d++) t += a[d]; return t / horizon; };
-  let h = '<tr><th>Row</th><th>Target depth</th><th>Mean listed, ' + horizon + ' days</th><th>Mean over target</th></tr>';
-  R.labels.forEach((n, i) => { const m = mean(ser.board[i]); h += '<tr><td>' + n + '</td><td>' + R.targets[i] + '</td><td>' + m.toFixed(2) + '</td><td>' + fmt.sgn((m / R.targets[i] - 1) * 100, 0) + '</td></tr>'; });
+  let h = '<tr><th>Row</th><th>Mean target depth, ' + horizon + ' days</th><th>Mean listed</th><th>Mean over target</th></tr>';
+  R.labels.forEach((n, i) => { const m = mean(ser.board[i]), tg = mean(ser.tgt[i]); h += '<tr><td>' + n + '</td><td>' + tg.toFixed(1) + '</td><td>' + m.toFixed(2) + '</td><td>' + fmt.sgn((m / tg - 1) * 100, 0) + '</td></tr>'; });
   $('btbl').innerHTML = h;
-  $('bnote').innerHTML = 'Each captured item joins the replacement queue and is listed when the queue reaches ' + P.batchMin + ' entries, the oldest entry is ' + fmt.n0(P.batchMaxAge) + ' seconds old, or listed ordinary items fall below ' + (CONCURRENCY + THIN_MARGIN) + '. Between listings the board is thinner by the queue length. Rows above target come from surprise upgrades, which add single Shapes of 5 times the drawn backing or more, while the band cap and the deficit weight pull a full row back. Means come from the keeper ticks every 300 seconds.';
+  $('bnote').innerHTML = 'Board depth is max(' + P.minItems + ', (NAV - ' + P.reserveBps / 100 + ' percent reserve) / mean row cost), and a row targets ceil(depth x share). Each capture in a row at or below target queues a replacement, and a captured row above target queues none. A queued entry is listed when the queue reaches ' + P.batchMin + ' entries, the oldest entry is ' + fmt.n0(P.batchMaxAge) + ' seconds old, or listed ordinary items fall below ' + (CONCURRENCY + THIN_MARGIN) + '. Deep applies when listed, held and queued items are ' + P.batchMin + ' or more below the depth: the settle queues each row\'s missing items and lists at most ' + MAX_LIST + '. Nothing is delisted when NAV falls. Surprise upgrades add single Shapes of 5 times the drawn backing or more, and the band cap and the deficit weight pull a full row back. Means come from the keeper ticks every 300 seconds. The dashed line is the target depth at the end of each day.';
   const mx = xs;
   $('mlegend').innerHTML = lineHtmlLegend([{ n: 'Maintenance balance', c: 'var(--shapes)' }, { n: 'Cumulative keeper cost', c: 'var(--c5)', dash: 1 }, { n: 'Cumulative refunds paid', c: 'var(--c3)' }, { n: 'Cumulative cost not covered', c: 'var(--c6)' }]);
   drawChart('mchart', { xs: mx, xmax: 365, series: [
@@ -1164,15 +1323,15 @@ function renderKeeper() {
   $('dtbl').innerHTML = '<tr><th>Day ' + horizon + '</th><th>Decay in rotate</th><th>Decay inside settle</th><th>Change</th></tr>' +
     dr('Rotate calls', x => x.rotates, fmt.n0, true) + dr('Settle calls', x => x.settleCalls, fmt.n0, false) + dr('Keeper cost (ETH)', x => x.keeperCost, sg, true) +
     dr('Refunds paid (ETH)', x => x.refunds, sg, true) + dr('Cost not covered (ETH)', x => x.shortfall, sg, true) + dr('Maintenance balance (ETH)', x => x.maintBucket, sg, false) +
-    dr('NAV per share', x => x.navPerShare, sg, false) + dr('Minor GRAIL hits', x => x.minorHits, fmt.n0, false);
-  $('dnote').innerHTML = 'Both columns run the current parameters on the same seed, with the toggle off and on. Inside settle, the decay reprice happens in the batch of a settle call that lists items, so rotate calls remain for GRAIL growth. The probability cap lift moves into settle with the reprice. A reprice costs no gas in this model. The change column shows the saving in keeper cost, which depositors keep as maintenance balance.';
+    dr('NAV per share', x => x.navPerShare, sg, false) + dr('GRAIL hits', x => x.grailHits, fmt.n0, false);
+  $('dnote').innerHTML = 'Both columns run the current parameters on the same seed, with the toggle off and on. Inside settle, the decay reprice happens in the batch of a settle call that lists items, so rotate calls remain for GRAIL mints and merges. A reprice costs no gas in this model. The change column shows the saving in keeper cost, which depositors keep as maintenance balance.';
 }
 function renderRevenue() {
   const s = R.snaps[horizon], p = s.paid || 1;
   const redeem = P.shapesRedeemPct / 100;
   const sh = [
     ['Backing to the player', s.ordinaryDelivered / p, 'var(--c1)'],
-    ['GRAIL track receipts', s.grailPaidTicket / p, 'var(--c9)'],
+    ['GRAIL receipts', s.grailPaidTicket / p, 'var(--c9)'],
     ['Mint fees (operator)', s.mintLineAccrued / p, 'var(--c2)'],
     ['Premium (depositors)', s.premium / p, 'var(--c3)'],
     ['Maintenance', s.maintIn / p, 'var(--c4)'],
@@ -1194,13 +1353,13 @@ function renderRevenue() {
   };
   $('split').innerHTML = '<div class="two">' + bar('Draw Shapes', sh, 'day ' + horizon + ', all tickets served') + bar('FWA V2 main pool', fw, 'board snapshot') + '</div>';
   const prizes = s.grailDelivered / p;
-  $('revnote').innerHTML = 'Each bar sums to the ticket. Shapes receipts are settled proceeds after the FWA protocol share. GRAIL prizes of <b>' + prizes.toFixed(4) + ' ETH</b> per ETH of tickets are paid from the GRAIL buckets, which the feed, the entry contributions and the receipts from GRAIL tickets fund. Ordinary backing to the player is ' + (s.ordinaryDelivered / p * 100).toFixed(1) + '% and GRAIL prizes add ' + (prizes * 100).toFixed(1) + '%, at ' + P.shapesRedeemPct + '% redeem value. The cash-out discount of FWA V2 goes to a recipient this model leaves open.';
+  $('revnote').innerHTML = 'Each bar sums to the ticket. Shapes receipts are settled proceeds after the FWA protocol share. GRAIL prizes of <b>' + prizes.toFixed(4) + ' ETH</b> per ETH of tickets are paid from the GRAIL fund and the items it minted, which the feed, the entry fees and the receipts from GRAIL tickets fund. Ordinary backing to the player is ' + (s.ordinaryDelivered / p * 100).toFixed(1) + '% and GRAIL prizes add ' + (prizes * 100).toFixed(1) + '%, at ' + P.shapesRedeemPct + '% redeem value. The cash-out discount of FWA V2 goes to a recipient this model leaves open.';
 }
 
 function exampleOptions() {
   const o = [];
   P.rows.forEach((r, i) => { if (r.share > 0) o.push({ v: 'r' + i, l: (r.rungs > 1 ? r.backing + ' ETH pack of ' + r.rungs : r.backing + ' ETH Shape') }); });
-  o.push({ v: 't0', l: 'Minor GRAIL at target' }, { v: 't1', l: 'Major GRAIL at target' });
+  o.push({ v: 'g1', l: 'GRAIL piece (' + P.grail.pieceSize + ' ETH)' }, { v: 'gT', l: 'GRAIL at target (' + P.grail.target + ' ETH)' });
   return o;
 }
 function renderExample() {
@@ -1222,13 +1381,13 @@ function renderExample() {
     card1 = '<table class="kv">' + row('Ticket paid', fmt.eth(tk, 5), '100%') + row('FWA protocol', fmt.eth(prot, 5), pc(prot)) +
       row('Backing to the player', fmt.eth(r.backing, 5), pc(r.backing)) + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(r.backing * redeem, 5), (r.backing * redeem / tk).toFixed(3) + 'x') +
       row('Mint fee repaid to operator', fmt.eth(rep, 5), pc(rep)) + row('Premium to depositors', fmt.eth(prem, 5), pc(prem)) + row('Maintenance', fmt.eth(mnt, 5), pc(mnt)) +
-      row('GRAIL feed, minor', fmt.eth(fd * P.minorShareBps / 1e4, 5), pc(fd * P.minorShareBps / 1e4)) + row('GRAIL feed, major', fmt.eth(fd * (1 - P.minorShareBps / 1e4), 5), pc(fd * (1 - P.minorShareBps / 1e4))) +
+      row('GRAIL feed to the fund', fmt.eth(fd, 5), pc(fd)) +
       (margin < mf ? row('Mint fee carried as owed', fmt.eth(mf - rep, 5), pc(mf - rep)) : '') + '</table>';
   } else {
-    const t = P[v === 't0' ? 'minor' : 'major'];
+    const b = v === 'g1' ? P.grail.pieceSize : P.grail.target;
     card1 = '<table class="kv">' + row('Ticket paid', fmt.eth(tk, 5), '100%') + row('FWA protocol', fmt.eth(prot, 5), pc(prot)) +
-      row('Backing to the player', fmt.eth(t.target, 3), (t.target / tk).toFixed(1) + 'x') + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(t.target * redeem, 3), (t.target * redeem / tk).toFixed(1) + 'x') +
-      row('Receipt to the track bucket', fmt.eth(proceeds, 5), pc(proceeds)) + '</table>';
+      row('Backing to the player', fmt.eth(b, 3), (b / tk).toFixed(1) + 'x') + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(b * redeem, 3), (b * redeem / tk).toFixed(1) + 'x') +
+      row('Proceeds to the GRAIL fund', fmt.eth(proceeds, 5), pc(proceeds)) + '</table>';
   }
   const med = FW.median * FW.ticket / (P.fwaCashoutPct / 100);
   const fwCard = '<table class="kv">' + row('Ticket paid', fmt.eth(FW.ticket, 5), '100%') + row('FWA protocol', fmt.eth(FW.ticket - FW.hm * (1 + FWA_EDGE / 200), 5), (FW.protocolShare * 100).toFixed(1) + '%') +
@@ -1237,14 +1396,14 @@ function renderExample() {
     row('Owner proceeds', fmt.eth(FW.hm * (1 + FWA_EDGE / 200), 5), ((FW.hm * (1 + FWA_EDGE / 200)) / FW.ticket * 100).toFixed(1) + '%') + '</table>';
   $('excards').innerHTML = '<div class="card"><h3 style="color:var(--shapes)">Draw Shapes, ticket ' + fmt.eth(tk, 5) + ' ETH</h3>' + card1 + '</div>' +
     '<div class="card"><h3 style="color:var(--fwa)">FWA V2 main pool, ticket ' + fmt.eth(FW.ticket, 5) + ' ETH</h3>' + fwCard + '</div>';
-  $('exnote').textContent = 'The Draw Shapes ticket is the average over the first ' + horizon + ' days. Margin is proceeds minus backing; the mint fee is repaid first and the rest divides 200:100:400 between premium, maintenance and feed in the default split. A single ticket can leave a shortfall that later margin repays.';
+  $('exnote').textContent = 'The Draw Shapes ticket is the average over the first ' + horizon + ' days. Margin is proceeds minus backing; the mint fee is repaid first and the rest divides 200:100:400 between premium, maintenance and feed in the default split. A captured GRAIL item pays its proceeds into the fund. A single ticket can leave a shortfall that later margin repays.';
 }
 $('exsel').addEventListener('change', () => { if (R) renderExample(); });
 
 function basisText() {
   $('basisnote').innerHTML =
-    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split, entry contribution curve and share minting at NAV, deposits at the NAV cap, withdrawals from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 10 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL growth. The decay reprice (a decayed price at least 1 percent below the list price) and the probability cap lift ride on a settle call that lists items; with the toggle off they move to rotate. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL growth by step, decay by pull, capture and reset follow SPEC 11.</p>' +
-    '<p style="margin-top:8px"><b>Left out of the model.</b> VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs and refunds, claim liquidation of listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing (each ticket is priced alone), migration and exit, gas for GRAIL reprices and growth inside a refund, and the compose step when a GRAIL pack reaches a native rung. Captures are booked at the moment of the ticket.</p>' +
+    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split. Deposits: the entry fee is clamp(payback days x premium x daily volume / NAV, floor, cap) and goes to the GRAIL fund in full, the cap is max(floor, daily volume x 10,000 / turnover), the founder window closes deposits for its first days, and shares are minted at NAV. Daily volume is the mean of booked ticket fees over the last 7 complete days. Withdrawals are paid from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 25 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL mints and merges. GRAIL is one fund fed by the entry fee, the feed share of the margin and captures: while it covers a piece and its mint fee, rotate mints pieces of the piece size, 1 or 0.5 ETH (up to 3 per pass, 6 ETH of pieces, 16 items) and merges by recipe up to the target. Every listed GRAIL item decays by pull (pieces at their own decay; merged items floor at their odds floor, pieces at the piece floor), and a reprice needs a drop of 1 percent and the listed GRAIL weight within the probability cap; it rides on a settle call that lists items, or on rotate with the toggle off. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL follows SPEC 11 and deposits follow SPEC 7 and docs/VOLUME_CAP.md.</p>' +
+    '<p style="margin-top:8px"><b>Left out of the model.</b> VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs and refunds, claim liquidation of listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing (each ticket is priced alone), migration and exit, gas for GRAIL reprices, mints and merges inside a refund, the compose and pack steps of a merge (the output lists at once), the unlisted state of a GRAIL item after a refund, the unsettled-acquisition gate on mints and merges, and the imported NAV of a successor pool. Captures are booked at the moment of the ticket.</p>' +
     '<p style="margin-top:8px"><b>Basis of every figure.</b> Returns are backing delivered divided by the ticket. Draw Shapes redeems backing at the value set under Value received basis, and FWA V2 settles delivered items at its cash-out value. Gas for players, VRF, FWA token and epoch rewards and resale value are excluded on both sides. FWA V2 is the board snapshot at block 26,088,128 with its observed ticket of 1.05 times the harmonic mean backing. FWA V2 observed 2,848 tickets a day (week to 2026-09-30) and 3,646 (week before). A ticket paid with a Shape uses a Shape no larger than the ticket, drawn from the capture value distribution, and leaves NAV unchanged.</p>';
 }
 
@@ -1265,6 +1424,7 @@ function drawChart(hostId, o) {
   let g = '';
   for (const t of niceTicks(lo, hi, 5)) g += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(t) + '" y2="' + Y(t) + '" stroke="var(--line)"/><text x="' + (m.l - 5) + '" y="' + (Y(t) + 3.5) + '" text-anchor="end">' + o.yfmt(t) + '</text>';
   for (const t of niceTicks(0, xmax, 6)) g += '<text x="' + X(t) + '" y="' + (H - 8) + '" text-anchor="middle">' + o.xfmt(t) + '</text>';
+  for (const b of o.bands || []) g += '<rect x="' + X(b.x0).toFixed(1) + '" y="' + m.t + '" width="' + Math.max(0.5, X(b.x1) - X(b.x0)).toFixed(1) + '" height="' + (H - m.t - m.b) + '" fill="' + b.c + '" fill-opacity="' + b.op + '"/>';
   if (o.vline !== undefined) g += '<line x1="' + X(o.vline) + '" x2="' + X(o.vline) + '" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink3)" stroke-dasharray="3 3"/>';
   for (const t of o.ticks || []) g += '<path d="M' + X(t.x) + ' ' + (H - m.b) + 'l-3.5 -7h7z" fill="' + t.c + '"/>';
   for (const s of o.series) {
@@ -1279,7 +1439,7 @@ function drawChart(hostId, o) {
     const x = Math.min(xmax, Math.max(0, (px - m.l) / (W - m.l - m.r) * xmax));
     let idx = 0, best = Infinity; for (let i = 0; i < o.xs.length; i++) { const dd = Math.abs(o.xs[i] - x); if (dd < best) { best = dd; idx = i; } }
     cur.setAttribute('x1', X(o.xs[idx])); cur.setAttribute('x2', X(o.xs[idx])); cur.style.display = '';
-    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.series.map(s => '<span style="color:' + s.c + '">' + s.n + '</span> <b>' + s.ys[idx].toFixed(4) + '</b>').join('<br>');
+    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.series.map(s => '<span style="color:' + s.c + '">' + s.n + '</span> <b>' + s.ys[idx].toFixed(s.dp === undefined ? 4 : s.dp) + '</b>').join('<br>');
     tip.style.display = 'block';
     const tw = tip.offsetWidth, left = X(o.xs[idx]) / W * r.width + 10;
     tip.style.left = Math.min(left, r.width - tw - 4) + 'px'; tip.style.top = '8px';
@@ -1291,7 +1451,7 @@ function drawStack(hostId, o) {
   chartRefs[hostId] = Object.assign({ stack: true }, o);
   const host = $(hostId); const W = Math.max(280, host.clientWidth || 320), H = 250, m = { l: 40, r: 10, t: 10, b: 26 };
   const n = o.xs.length, tot = o.xs.map((_, i) => o.layers.reduce((a, l) => a + l.ys[i], 0));
-  const hi = (Math.max(...tot) || 1) * 1.05;
+  const hi = (Math.max(...tot, ...(o.line ? o.line.ys : [])) || 1) * 1.05;
   const X = x => m.l + x / o.xmax * (W - m.l - m.r), Y = y => H - m.b - y / hi * (H - m.t - m.b);
   let g = '';
   for (const t of niceTicks(0, hi, 5)) g += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(t) + '" y2="' + Y(t) + '" stroke="var(--line)"/><text x="' + (m.l - 5) + '" y="' + (Y(t) + 3.5) + '" text-anchor="end">' + o.yfmt(t) + '</text>';
@@ -1304,6 +1464,7 @@ function drawStack(hostId, o) {
     g += '<path d="' + top + bot + 'Z" fill="' + l.c + '" fill-opacity=".85" stroke="var(--surface)" stroke-width=".6"/>';
     for (let i = 0; i < n; i++) cum[i] += l.ys[i];
   }
+  if (o.line) { let d = ''; o.line.ys.forEach((y, i) => { d += (i ? 'L' : 'M') + X(o.xs[i]).toFixed(1) + ' ' + Y(y).toFixed(1); }); g += '<path d="' + d + '" fill="none" stroke="' + o.line.c + '" stroke-width="1.6" stroke-dasharray="5 4" stroke-linejoin="round"/>'; }
   g += '<line id="' + hostId + '_x" y1="' + m.t + '" y2="' + (H - m.b) + '" stroke="var(--ink2)" style="display:none"/>';
   host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Stacked area chart">' + g + '</svg><div class="tip" id="' + hostId + '_t"></div>';
   const svg = host.firstChild, tip = $(hostId + '_t'), cur = $(hostId + '_x');
@@ -1312,7 +1473,7 @@ function drawStack(hostId, o) {
     const x = Math.min(o.xmax, Math.max(0, (px - m.l) / (W - m.l - m.r) * o.xmax));
     let idx = 0, best = Infinity; for (let i = 0; i < n; i++) { const dd = Math.abs(o.xs[i] - x); if (dd < best) { best = dd; idx = i; } }
     cur.setAttribute('x1', X(o.xs[idx])); cur.setAttribute('x2', X(o.xs[idx])); cur.style.display = '';
-    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.layers.map(l => '<span style="color:' + l.c + '">' + l.n + '</span> <b>' + l.ys[idx].toFixed(1) + '</b>').join('<br>') + '<br>Total <b>' + tot[idx].toFixed(1) + '</b>';
+    tip.innerHTML = '<b>' + o.tipx(o.xs[idx]) + '</b><br>' + o.layers.map(l => '<span style="color:' + l.c + '">' + l.n + '</span> <b>' + l.ys[idx].toFixed(1) + '</b>').join('<br>') + '<br>Total <b>' + tot[idx].toFixed(1) + '</b>' + (o.line ? '<br><span style="color:' + o.line.c + '">' + o.line.n + '</span> <b>' + o.line.ys[idx].toFixed(0) + '</b>' : '');
     tip.style.display = 'block';
     const tw = tip.offsetWidth, left = X(o.xs[idx]) / W * r.width + 10;
     tip.style.left = Math.min(left, r.width - tw - 4) + 'px'; tip.style.top = '8px';
@@ -1366,13 +1527,14 @@ function showSens(out, base, H) {
 }
 
 // ---------- validation against the fork run
-const FORK_PRE = { tickets: 3413, ticket: 0.02085, exp: 0.838, median: 0.485, p5: 0.472, p95: 1.456, ge1: 0.153, lt: 0.621, navStart: 0.996, navEnd: 1.0345, minorHits: 2, majorHits: 0, first: 80, mint: 4.94, delivered: 59.67, paid: 71.18 };
+const FORK_PRE = { tickets: 3413, ticket: 0.02085, exp: 0.838, median: 0.485, p5: 0.472, p95: 1.456, ge1: 0.153, lt: 0.621, navStart: 0.996, navEnd: 1.0345, grailHits: 2, first: 80, mint: 4.94, delivered: 59.67, paid: 71.18 };
 // Fork run, decision 9: report.html and hourly.csv of evidence/play/test_play500PerDay. Mint fees are derived from the hourly NAV balance
 // (deposits, withdrawals, premium and the mint line owed on 3,409 captures), because the run records no mint events.
-const FORK9 = { tickets: 3413, ticket: 0.02233, exp: 0.859, median: 0.462, p5: 0.432, p95: 2.191, ge1: 0.190, lt: 0.568, navStart: 0.9960, navEnd: 1.0340, minorHits: 4, majorHits: 0, first: 18,
+const FORK9 = { tickets: 3413, ticket: 0.02233, exp: 0.859, median: 0.462, p5: 0.432, p95: 2.191, ge1: 0.190, lt: 0.568, navStart: 0.9960, navEnd: 1.0340, grailHits: 4, first: 18,
   mint: 5.15, delivered: 65.47, paid: 76.21, settleCalls: 505, settleListed: 3409, settleRefund: 0.2525, rotates: 609, rotDecay: 568, avgListed: 98.7 };
-// Inputs of the fork run that differ from the lab defaults: batch size 5, tip 0.0005 ETH, decay in rotate, minor list price 7500 bps, decay 0.001 ETH per pull, any decayed price reprices, no tickets paid with Shapes, basefee 0.
-function forkInputs() { const Q = defaultParams(); Q.minor.decay = 0.001; Q.major.decay = 0.001; Q.minor.listBps = 7500; Q.repriceMinBps = 0; Q.decayInSettle = false; Q.batchMin = 5; Q.tipWei = 5e14; Q.payInShapesBps = 0; Q.gasPriceGwei = 0; return Q; }
+// Inputs of the fork run that differ from the lab defaults: batch size 5, tip 0.0005 ETH, decay in rotate, any decayed price reprices, no tickets paid with Shapes, basefee 0.
+// The recording predates the single GRAIL fund and the indexed entry fee: it ran a minor and a major track, so the GRAIL rows compare different mechanisms.
+function forkInputs() { const Q = defaultParams(); Q.repriceMinBps = 0; Q.decayInSettle = false; Q.batchMin = 5; Q.tipWei = 5e14; Q.payInShapesBps = 0; Q.gasPriceGwei = 0; Q.boardByNav = false; Q.openingEth = 50; return Q; }
 function validationRun(Pv, N) {
   const acc = {}, add = (k, v) => { acc[k] = (acc[k] || 0) + v / N; };
   let path = null, firstHrs = [], s1 = null;
@@ -1380,11 +1542,11 @@ function validationRun(Pv, N) {
     const r = simulate(Pv, sd, 7, [7], { hourly: true }), s = r.snaps[7];
     if (sd === 1) s1 = { r, s };
     add('tickets', s.tickets); add('ticket', s.ticketAvg); add('exp', s.expReturn); add('median', s.median); add('p5', s.p5); add('p95', s.p95);
-    add('ge1', s.ge1); add('lt', s.ltHalf); add('navStart', r.navStart); add('navEnd', s.navPerShare); add('minorHits', s.minorHits); add('majorHits', s.majorHits);
+    add('ge1', s.ge1); add('lt', s.ltHalf); add('navStart', r.navStart); add('navEnd', s.navPerShare); add('grailHits', s.grailHits);
     add('mint', s.mintReplace); add('delivered', s.deliveredReal); add('paid', s.paid);
     add('settleCalls', s.settleCalls); add('settleListed', s.settleListed); add('settleRefund', s.settleRefund); add('rotates', s.rotates); add('rotDecay', s.rotDecay);
     add('avgListed', r.hourly.listed.reduce((a, b) => a + b, 0) / r.hourly.listed.length);
-    const ev = r.events.filter(e => e.track === 0); if (ev.length) firstHrs.push(ev[0].t * 24);
+    if (r.events.length) firstHrs.push(r.events[0].t * 24);
     if (!path) path = r.hourly.nav.map(() => 0); r.hourly.nav.forEach((v, i) => path[i] += v / N);
   }
   acc.first = firstHrs.length ? firstHrs.reduce((a, b) => a + b, 0) / firstHrs.length : NaN;
@@ -1403,9 +1565,8 @@ function runValidation() {
     ['Below half the ticket', 'lt', 'p', 0],
     ['NAV per share, start', 'navStart', 'e4', 0],
     ['NAV per share, day 7', 'navEnd', 'e4', 1],
-    ['Minor GRAIL hits', 'minorHits', 'd1', 0],
-    ['Major GRAIL hits', 'majorHits', 'd1', 0],
-    ['First minor hit, hour', 'first', 'd0', 0, 'Mean over seeds that hit.'],
+    ['GRAIL hits', 'grailHits', 'd1', 0, 'The fork recorded 4 minor track hits.'],
+    ['First GRAIL hit, hour', 'first', 'd0', 0, 'Mean over seeds that hit.'],
     ['Operator mint fees (ETH)', 'mint', 'e2', 1, 'Fork value derived from the hourly NAV balance.'],
     ['Backing delivered (ETH)', 'delivered', 'e2', 0],
     ['ETH paid by players', 'paid', 'e2', 0],
@@ -1426,7 +1587,7 @@ function runValidation() {
       '</td><td class="' + (gate ? (ok ? 'ok' : 'off') : '') + '">' + (gate ? (ok ? 'yes' : 'no') : '') + '</td><td>' + ff(r[2], L.acc[r[1]]) + '</td></tr>';
   }
   $('vtbl').innerHTML = h;
-  $('vnote').innerHTML = 'Rows tagged gate carry the 5 percent rule. <b>Model, fork inputs</b> uses the lab defaults except the values the fork run used: settle batch size 5, a tip of 0.0005 ETH, the decay reprice in rotate, a minor list price of 7500 bps, decay 0.001 ETH per pull on both tracks, a reprice on any decayed price, no tickets paid with Shapes, and a gas price of 0 (the fork basefee, so each refund is the tip). Keeper ticks, arrival groups of 1 to 5 tickets and the weekly schedule follow the runner. <b>Model, lab defaults</b> shows the same week at the values set under Reset to launch values. The pre-sampling column is the earlier recording and has no settle or rotate counts. The model uses expected values for the distribution rows, so p5, p95 and the shares are exact expectations over the draw, and the fork shows one realised draw of 3,413 tickets, which is ' + fmt.sgn((FORK9.tickets / acc.tickets - 1) * 100, 1) + ' against the model mean. Hit counts are small integers: the fork rolled ' + FORK9.minorHits + ' minor hits where the model expects about ' + acc.minorHits.toFixed(1) + '.';
+  $('vnote').innerHTML = 'Rows tagged gate carry the 5 percent rule. <b>Model, fork inputs</b> uses the lab defaults except the values the fork run used: settle batch size 5, a tip of 0.0005 ETH, the decay reprice in rotate, a reprice on any decayed price, no tickets paid with Shapes, and a gas price of 0 (the fork basefee, so each refund is the tip). Keeper ticks, arrival groups of 1 to 5 tickets and the weekly schedule follow the runner. <b>Model, lab defaults</b> shows the same week at the values set under Reset to launch values. The pre-sampling column is the earlier recording and has no settle or rotate counts. The model uses expected values for the distribution rows, so p5, p95 and the shares are exact expectations over the draw, and the fork shows one realised draw of 3,413 tickets, which is ' + fmt.sgn((FORK9.tickets / acc.tickets - 1) * 100, 1) + ' against the model mean. <b>The recording predates the current GRAIL and entry fee.</b> The fork ran a minor and a major track with step growth and the earlier entry curve, and the model runs the single fund of SPEC 11, so the ticket and expected return gates carry that difference until a fork run is recorded under the current rules. The fork rolled ' + FORK9.grailHits + ' minor track hits where the model expects about ' + acc.grailHits.toFixed(1) + ' GRAIL hits.';
   const xs = V.path.map((_, i) => i + 1);
   $('vlegend').innerHTML = lineHtmlLegend([{ n: 'Fork run, decision 9', c: 'var(--fwa)', w: 2 }, { n: 'Fork run, pre-sampling design', c: 'var(--c7)', dash: 1 }, { n: 'Model, fork inputs, mean of 20 seeds', c: 'var(--shapes)' }]);
   drawChart('vchart', { xs, xmax: 168, series: [
@@ -1437,8 +1598,8 @@ function runValidation() {
 
 // ---------- wiring
 function init() {
-  chips('hz', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
-  chips('hz2', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
+  chips('hz', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderGrail(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
+  chips('hz2', HZ, horizon, v => { horizon = v; syncHz(); if (R) { renderStrip(); renderDeps(); renderGrail(); renderKeeper(); renderRevenue(); renderExample(); sensStale = true; updateSensNote(); } }, v => v + ' d');
   chips('tpdchips', [500, FWA_OBS[0], FWA_OBS[1]], null, v => { P.ticketsPerDay = v; $('tpd').value = v; changed(); }, v => v === 500 ? '500 launch' : fmt.n0(v) + ' FWA V2');
   buildForm(); renderWarns();
   $('tpd').addEventListener('input', e => { const v = parse(e.target, 0, 20000); if (v === null) return; P.ticketsPerDay = v; changed(); });

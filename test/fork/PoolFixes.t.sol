@@ -11,10 +11,9 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 /// @notice Rotation, refund, GRAIL decay and liquidation rules against deployed Shapes, a Draw Packs
 ///         deployment and a FWA clone created by the pool.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
-///      2 x 0.01 ETH (3,000 bps). `_openLarge` builds a board of 42 + 18 items. Both GRAIL steps
-///      are 500 ETH, so `rotate` never grows a track. `_enableMinor` sets the minor track to step
-///      0.05 ETH, target 0.05 ETH (one growth), list 80 percent (first price 0.04 ETH), decay
-///      0.001 ETH per pull and floor 0.02 ETH.
+///      2 x 0.01 ETH (3,000 bps). `_openLarge` builds a board of 42 + 18 items and empties the GRAIL
+///      fund, so `rotate` has no GRAIL work. The opening five (5 ETH, listed at face) is GRAIL item 0:
+///      decay 0.001 ETH per pull, floor 1 ETH.
 contract PoolFixesForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -47,31 +46,20 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor = IPoolTypes.GrailParams({
-            targetWei: 1_000 ether,
-            stepWei: 500 ether,
-            listBps: 8_000,
-            decayWeiPerPull: 0.001 ether,
-            floorWei: 0.02 ether
-        });
-        p.major = IPoolTypes.GrailParams({
-            targetWei: 1_000 ether,
-            stepWei: 500 ether,
-            listBps: 9_000,
-            decayWeiPerPull: 0.002 ether,
-            floorWei: 0.3 ether
-        });
     }
 
     // ---------------------------------------------------------------- helpers
 
     function _openLarge() internal {
-        vm.prank(alice);
-        pool.deposit{value: 100 ether}();
-        vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.sizeBoard(60);
+        vm.prank(alice);
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
+        vm.warp(IPool(address(pool)).openingDeadlineAt());
         while (pool.lifecycle() == IPoolTypes.Lifecycle.Opening) pool.open();
         assertEq(pool.listedCount(), 60);
+        _spareCash(pool, 0.8 ether);
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
         warpPastCooldown(clone);
     }
 
@@ -97,31 +85,12 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         if (at > block.timestamp) vm.warp(at);
     }
 
-    function _enableMinor() internal {
-        vm.prank(admin);
-        IPool(address(pool)).setGrail(0, 0.05 ether, 0.05 ether, 8_000, 0.001 ether, 0.02 ether);
+    function _pullsSinceList() internal view returns (uint256) {
+        return IPool(address(pool)).grail().pulls - _item().listedAtPull;
     }
 
-    function _grow(uint256 t) internal {
-        _warpPastRotateGate(pool);
-        vm.prank(keeper);
-        pool.growTrack(uint8(t));
-    }
-
-    function _notional(uint256 t) internal view returns (uint256 v) {
-        (,,, v,,,,,,,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _pulls(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,, v,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _packId(uint256 t) internal view returns (uint256 v) {
-        (, v,,,,,,,,,,) = IPool(address(pool)).grail(t);
-    }
-
-    function _listing(uint256 t) internal view returns (uint256 v) {
-        (,,,,,,,,,,, v) = IPool(address(pool)).grail(t);
+    function _item() internal view returns (IPoolTypes.GrailItem memory) {
+        return IPool(address(pool)).grailItems()[0];
     }
 
     function _price(uint256 listingId) internal view returns (uint256 price, IFWAClone.ListingStatus status) {
@@ -179,63 +148,35 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- A1: GRAIL parameters
 
-    function test_revert_constructorGrailFloorZero() public {
-        IPoolTypes.Params memory p = _fixtureParams();
-        p.minor.floorWei = 0;
-        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
-        new PoolHarness(p);
-    }
-
-    function test_revert_constructorGrailFloorAboveTheListPriceAtFullBacking() public {
-        IPoolTypes.Params memory p = _fixtureParams();
-        p.major.targetWei = 10 ether;
-        p.major.floorWei = 9 ether + 1;
-        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
-        new PoolHarness(p);
-
-        p.major.floorWei = 9 ether;
-        new PoolHarness(p);
-    }
-
-    function test_revert_constructorGrailStepBelowTwoUnits() public {
-        IPoolTypes.Params memory p = _fixtureParams();
-        p.minor.stepWei = 0.01 ether;
-        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
-        new PoolHarness(p);
-    }
-
     function test_settleActivatesAStagedGrailListingAndRepricesIt() public {
         _openLarge();
-        _enableMinor();
-        _grow(0);
-        uint256 pack = _packId(0);
-        uint256 notional = _notional(0);
-        assertEq(notional, 0.04 ether);
+        uint256 tokenId = _item().tokenId;
+        uint256 notional = _item().notional;
+        assertEq(notional, 5 ether);
 
-        // List the pack while an acquisition is unsettled: FWA stages the listing.
+        // List the item while an acquisition is unsettled: FWA stages the listing.
         pool.unlistGrail(0);
         warpPastCooldown(clone);
         uint256[] memory ids = _acquire(player, 1);
         vm.prank(address(pool));
-        uint256 stagedId = clone.listNFT(address(drawPacks), pack, notional);
+        uint256 stagedId = clone.listNFT(SHAPES_ADDR, tokenId, notional);
         (, IFWAClone.ListingStatus status) = _price(stagedId);
         assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Staged), "staged behind the unsettled acquisition");
-        pool.setGrailListing(0, pack, stagedId, notional);
-        pool.recordPulls(10);
+        pool.setGrailListing(0, stagedId);
+        pool.recordPulls(100);
         vm.prank(admin);
         IPool(address(pool)).setBatch(1, 1 hours);
 
         uint256[] memory listed = pool.listedIds(0);
         fulfill(clone, ids[0], wordFor(clone, listed[listed.length - 1]));
         _settle();
-        (, status) = _price(stagedId);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by settle");
 
         uint256 price;
         (price, status) = _price(stagedId);
-        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active));
-        assertEq(price, 0.029 ether, "11 pulls at 0.001 ETH: 10 recorded and the booked pull");
-        assertEq(_notional(0), 0.029 ether);
+        assertEq(uint8(status), uint8(IFWAClone.ListingStatus.Active), "activated by settle");
+        assertEq(price, 4.899 ether, "101 pulls at 0.001 ETH: 100 recorded and the booked pull");
+        assertEq(_item().notional, 4.899 ether);
+        assertEq(_pullsSinceList(), 0, "the reprice restarts the pull count");
     }
 
     // ---------------------------------------------------------------- A2: refund gate
@@ -276,26 +217,22 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
 
     function test_decayThatWouldCrossTheProbabilityCapIsSkippedAndPullsKeepWorking() public {
         _openLarge();
-        _enableMinor();
-        _grow(0);
-        uint256 listingId = _listing(0);
+        uint256 listingId = _item().listingId;
         _pastCooldown();
-        uint256 weight = 1e36 / _notional(0);
-        uint256 capBps = weight * 10_000 / clone.totalWeight() + 1;
         vm.prank(admin);
-        IPool(address(pool)).setGrailProbCap(capBps);
+        IPool(address(pool)).setGrailProbCap(1);
 
         pool.recordPulls(100);
-        assertEq(_pulls(0), 100);
+        assertEq(_pullsSinceList(), 100);
         vm.prank(admin);
         IPool(address(pool)).setBatch(1, 1 hours);
         pool.pushReplacement(0);
         assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None);
         _settle();
         (uint256 price,) = _price(listingId);
-        assertEq(price, 0.04 ether, "the reprice to the 0.02 ETH floor would exceed the cap");
-        assertEq(_notional(0), 0.04 ether);
-        assertEq(_pulls(0), 100, "pulls keep counting");
+        assertEq(price, 5 ether, "the lower price would put the GRAIL weight above the cap");
+        assertEq(_item().notional, 5 ether);
+        assertEq(_pullsSinceList(), 100, "pulls keep counting");
 
         vm.prank(admin);
         IPool(address(pool)).setGrailProbCap(10_000);
@@ -303,7 +240,7 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
         assertTrue(pool.settleDue() != IPoolTypes.SettleTrigger.None, "the first settle listed the queue");
         _settle();
         (price,) = _price(listingId);
-        assertEq(price, 0.02 ether, "reprices once the cap allows it");
+        assertEq(price, 4.9 ether, "reprices once the cap allows it");
     }
 
     // ---------------------------------------------------------------- A4: claim age gate
@@ -311,14 +248,14 @@ contract PoolFixesForkTest is ForkBase, PoolFixture {
     function test_rotatePaysAFreshClaimFromCashButLiquidatesOnlyOnceItIsOldEnough() public {
         _openLarge();
         _warpToRotation();
-        uint256 queued = _queueClaim(8 ether, 0);
+        uint256 queued = _queueClaim(0.5 ether, 0);
         assertGt(queued, 0.05 ether);
         vm.deal(saver, 1 ether);
         vm.prank(saver);
         pool.deposit{value: 0.05 ether}();
         uint256 listedBefore = pool.listedCount();
         // A funded GRAIL step makes the rotation due while the claim is fresh.
-        _enableMinor();
+        pool.addGrailFund{value: 5 ether}();
         assertEq(uint8(pool.rotateDue()), uint8(IPoolTypes.RotateTrigger.GrailStep));
 
         Summary memory fresh = _rotate();

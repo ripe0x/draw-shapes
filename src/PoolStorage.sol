@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
+import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {Denominations} from "shapes/lib/Denominations.sol";
@@ -18,10 +19,15 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant BPS = 10_000;
-    uint256 internal constant MINOR = 0;
-    uint256 internal constant MAJOR = 1;
+    /// @dev Backing of one GRAIL piece, 100 ladder units.
+    uint256 internal constant GRAIL_PIECE = 100 * Denominations.UNIT;
+    /// @dev Smallest GRAIL target, 500 ladder units. Bounds `floorWei` with `listBps`.
+    uint256 internal constant GRAIL_MIN_TARGET = 500 * Denominations.UNIT;
+    uint256 internal constant MAX_BUILDING_ITEMS = 16;
+    uint256 internal constant MAX_DONE_ITEMS = 32;
+    uint256 internal constant MAX_PIECES = 6;
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
-    uint256 internal constant MAX_CURVE_CAP_BPS = 2_500;
+    uint256 internal constant VOLUME_DAYS = 7;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
     uint256 internal constant MAX_OPEN_MINTS = 20;
     uint256 internal constant MAX_TIP = 0.01 ether;
@@ -49,7 +55,11 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 public maintenance;
     /// @dev Maintenance share of booked margin, still held as FWA owner proceeds.
     uint256 internal _maintenanceReceivable;
-    Grail[2] internal _grail;
+    Grail internal _grail;
+    /// @dev GRAIL items owned by the pool, listed or not. At most `MAX_BUILDING_ITEMS` not done and `MAX_DONE_ITEMS` done.
+    GrailItem[] internal _grailItems;
+    /// @dev Position plus one of each listed GRAIL item inside `_grailItems`, by FWA listing id.
+    mapping(uint256 listingId => uint256) internal _grailAt;
 
     uint256 public totalShares;
     mapping(address => uint256) public sharesOf;
@@ -59,8 +69,9 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     PricingLib.MixRow[] internal _mix;
     FeeSplit public feeSplit;
-    EntryCurve public curve;
-    uint256 public navCap;
+    EntryFee public entryFee;
+    /// @notice Lower bound of `navCap()`: deposits are admitted while ordinary NAV is below it.
+    uint256 public navCapFloor;
     uint256 public rotateInterval;
     /// @dev Duration in seconds from FWA pool creation to the earliest `open()`.
     uint256 internal _openingDeadline;
@@ -147,12 +158,36 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal _importedFromShares;
     /// @dev Successor side: holders whose `oldPool` shares were converted by `migrateHolder`.
     mapping(address holder => bool) internal _migrated;
-    /// @dev True while the token is a held or listed ordinary item of this pool.
+    /// @dev True while the token is a held or listed ordinary item or a GRAIL item of this pool.
     mapping(address collection => mapping(uint256 tokenId => bool)) internal _registered;
+
+    /// @dev FWA acquisition fees of booked captures, per UTC day in slot `day % 8`. A slot holds
+    ///      the day in `_dailyFeesDay` and reads as zero for any other day.
+    uint128[8] internal _dailyFees;
+    uint32[8] internal _dailyFeesDay;
+    /// @dev Target daily fee volume over NAV, in bps. Sets the volume term of `navCap()`.
+    uint16 internal _turnoverBps;
+    /// @dev UTC day index of the Opening to Live transition.
+    uint32 internal _liveDay;
+    /// @dev Seconds after the Opening to Live transition during which deposits revert.
+    uint32 internal _founderWindowSeconds;
+    /// @dev Timestamp from which `deposit` is admitted while Live.
+    uint64 internal _depositsOpenAt;
+    /// @dev Sums over the mix rows, set by `_setMix`: `shareBps * rowBacking`, `shareBps * rungs`
+    ///      and `shareBps`. The mean cost of a row is `(_mixBacking + mintFee * _mixRungs) / _mixShares`.
+    uint256 internal _mixBacking;
+    uint256 internal _mixRungs;
+    uint256 internal _mixShares;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
         _;
+    }
+
+    /// @dev Reverts `NotAdmin` for any other caller and logs the setter selector.
+    function _admin() internal {
+        if (msg.sender != admin) revert NotAdmin();
+        emit ParamSet(msg.sig);
     }
 
     // ------------------------------------------------------------------ views
@@ -166,6 +201,33 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     // ------------------------------------------------------------------ internal
 
+    /// @dev Mean booked fee volume per day over the complete UTC days before today since
+    ///      `_liveDay`, at most `VOLUME_DAYS` of them. Today's partial day is excluded.
+    function _dailyVolume() internal view returns (uint256 sum) {
+        uint256 today = block.timestamp / 1 days;
+        uint256 live = _liveDay;
+        if (today <= live) return 0;
+        uint256 n = today - live;
+        if (n > VOLUME_DAYS) n = VOLUME_DAYS;
+        for (uint256 i = 1; i <= n; ++i) {
+            uint256 day = today - i;
+            if (_dailyFeesDay[day % 8] == day) sum += _dailyFees[day % 8];
+        }
+        sum /= n;
+    }
+
+    /// @dev Adds `fees` to today's slot, resetting the slot first when it holds an older day. Each
+    ///      amount is an ETH sum below 2^128.
+    function _recordFees(uint256 fees) internal {
+        uint256 day = block.timestamp / 1 days;
+        uint256 slot = day % 8;
+        if (_dailyFeesDay[slot] != day) {
+            _dailyFeesDay[slot] = uint32(day);
+            _dailyFees[slot] = 0;
+        }
+        _dailyFees[slot] += SafeCastLib.toUint128(fees);
+    }
+
     /// @dev Reverts `PoolExiting` from `Exiting` on.
     function _notExiting() internal view {
         if (lifecycle >= Lifecycle.Exiting) revert PoolExiting();
@@ -173,7 +235,7 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
 
     /// @dev I1 with `incoming` wei of the balance still outside the buckets.
     function _covered(uint256 incoming) internal view returns (bool) {
-        return address(this).balance >= incoming + cash + maintenance + _grail[MINOR].bucket + _grail[MAJOR].bucket;
+        return address(this).balance >= incoming + cash + maintenance + _grail.fund;
     }
 
     /// @dev Last listing id of `row`.
@@ -200,22 +262,37 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         _callFull(collection, 0, IERC721.transferFrom.selector, uint160(from), uint160(to), tokenId);
     }
 
-    /// @dev Clears the pack fields of a track whose pack left the pool.
-    function _resetGrail(Grail storage g) internal {
-        g.packId = 0;
-        g.backing = 0;
-        g.notional = 0;
-        g.listingId = 0;
-        g.pullsSinceList = 0;
+    /// @dev Appends GRAIL item `it` to `_grailItems` and registers its token. A nonzero
+    ///      `it.listingId` is indexed in `_grailAt`. The caller checks
+    ///      `_grailFull(it.done)`.
+    function _addGrailItem(GrailItem memory it) internal {
+        _grailItems.push(it);
+        if (it.listingId != 0) _grailAt[it.listingId] = _grailItems.length;
+        _registered[it.collection][it.tokenId] = true;
     }
 
-    /// @dev Withdraws the track's FWA listing to this contract when it is listed.
-    function _unlistGrail(Grail storage g) internal {
-        uint256 id = g.listingId;
-        if (id != 0) {
-            _withdrawListing(id, address(this));
-            g.listingId = 0;
+    /// @dev True when the number of GRAIL items whose `done` flag equals `done` has reached the
+    ///      cap of that kind.
+    function _grailFull(bool done) internal view returns (bool) {
+        uint256 n;
+        for (uint256 i; i < _grailItems.length; ++i) {
+            if (_grailItems[i].done == done) ++n;
         }
+        return n >= (done ? MAX_DONE_ITEMS : MAX_BUILDING_ITEMS);
+    }
+
+    /// @dev Removes the GRAIL item at `index` from `_grailItems`, `_grailAt` and `_registered`.
+    function _removeGrailItem(uint256 index) internal returns (GrailItem memory it) {
+        uint256 last = _grailItems.length - 1;
+        it = _grailItems[index];
+        if (index != last) {
+            GrailItem memory moved = _grailItems[last];
+            _grailItems[index] = moved;
+            if (moved.listingId != 0) _grailAt[moved.listingId] = index + 1;
+        }
+        _grailItems.pop();
+        delete _grailAt[it.listingId];
+        delete _registered[it.collection][it.tokenId];
     }
 
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through
@@ -326,6 +403,26 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
     }
 
+    /// @dev `_call` that returns the failure instead of reverting. On failure `r` is zero, `ok` is false
+    ///      and `sel` holds the first four bytes of the revert data (zero when empty). The callee's
+    ///      state changes are rolled back.
+    function _tryCall(address target, bytes4 selector) internal returns (bool ok, uint256 r, bytes4 sel) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(0, 0)
+            ok := call(gas(), target, 0, m, 0x04, 0, 0x20)
+            switch ok
+            case 0 {
+                if gt(returndatasize(), 3) {
+                    returndatacopy(m, 0, 0x04)
+                    sel := mload(m)
+                }
+            }
+            default { r := mload(0) }
+        }
+    }
+
     /// @dev `_call` with `value` wei and a third word argument `c`. The calldata is 100 bytes.
     function _callFull(address target, uint256 value, bytes4 selector, uint256 a, uint256 b, uint256 c)
         internal
@@ -347,31 +444,53 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
     }
 
-    /// @dev Stores the parameters of track `track`. `stepWei` is a multiple of `Denominations.UNIT`
-    ///      and at least two units. `floorWei` is nonzero and at most the list price at full
-    ///      backing, `targetWei * listBps / 10_000`.
-    function _initGrail(uint256 track, GrailParams memory g) internal {
-        if (g.listBps == 0 || g.listBps > BPS) revert ListBpsOutOfRange();
-        if (g.stepWei < 2 * Denominations.UNIT || g.stepWei % Denominations.UNIT != 0) revert GrailStepInvalid();
-        if (g.floorWei == 0 || g.floorWei > g.targetWei * g.listBps / BPS) revert GrailFloorInvalid();
-        Grail storage t = _grail[track];
-        t.targetWei = g.targetWei;
-        t.stepWei = g.stepWei;
-        t.listBps = g.listBps;
-        t.decayWeiPerPull = g.decayWeiPerPull;
-        t.floorWei = g.floorWei;
+    /// @dev Stores the GRAIL parameters. `listBps` is 1 to 10,000. `pieceFloorWei` is nonzero and
+    ///      at most one piece. `floorWei` is nonzero and at most the list price of the smallest
+    ///      target, `GRAIL_MIN_TARGET * listBps / 10_000`.
+    function _setGrail(uint256 decayWeiPerPull, uint256 pieceFloorWei, uint256 floorWei, uint256 listBps) internal {
+        if (listBps == 0 || listBps > BPS) revert ListBpsOutOfRange();
+        if (
+            pieceFloorWei == 0 || pieceFloorWei > GRAIL_PIECE || floorWei == 0
+                || floorWei > GRAIL_MIN_TARGET * listBps / BPS
+        ) revert GrailFloorInvalid();
+        Grail storage g = _grail;
+        g.listBps = listBps;
+        g.decayWeiPerPull = decayWeiPerPull;
+        g.pieceFloorWei = pieceFloorWei;
+        g.floorWei = floorWei;
+    }
+
+    /// @dev Stores the ladder step thresholds. `stepUpSeconds` is below `stepDownSeconds`.
+    function _setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) internal {
+        if (stepUpSeconds >= stepDownSeconds) revert GrailStepInvalid();
+        _grail.stepUpSeconds = stepUpSeconds;
+        _grail.stepDownSeconds = stepDownSeconds;
+    }
+
+    /// @dev Sets the target of the next cycle. It is 500, 1,000, 2,500, 5,000 or 10,000 ladder
+    ///      units.
+    function _setGrailTarget(uint256 targetWei) internal {
+        uint256 units = targetWei / Denominations.UNIT;
+        if (
+            targetWei != units * Denominations.UNIT
+                || (units != 500 && units != 1_000 && units != 2_500 && units != 5_000 && units != 10_000)
+        ) revert GrailTargetInvalid();
+        _grail.nextTargetWei = targetWei;
     }
 
     function _setFeeSplit(FeeSplit memory s) internal {
         if (uint256(s.premiumBps) + s.maintenanceBps + s.feedBps > MAX_FEE_SPLIT_BPS) revert FeeSplitTooHigh();
-        if (s.minorShareBps > BPS) revert MinorShareTooHigh();
         feeSplit = s;
     }
 
-    function _setCurve(EntryCurve memory c) internal {
-        if (c.capBps > MAX_CURVE_CAP_BPS) revert CurveCapTooHigh();
-        if (c.referenceWei == 0) revert CurveReferenceZero();
-        curve = c;
+    function _setEntryFee(EntryFee memory f) internal {
+        if (f.floorBps > f.capBps || f.capBps > BPS || f.paybackDays == 0) revert EntryFeeOutOfRange();
+        entryFee = f;
+    }
+
+    function _setTurnover(uint16 bps) internal {
+        if (bps == 0 || bps > BPS) revert TurnoverOutOfRange();
+        _turnoverBps = bps;
     }
 
     function _setProbCap(uint256 bps) internal {
@@ -421,8 +540,14 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         }
         delete _mix;
         delete _rowBackingWei;
+        uint256 weighted;
+        uint256 rungs;
+        uint256 shares;
         for (uint256 i; i < n; ++i) {
             _rowBackingWei.push(PricingLib.rowBacking(rows[i]));
+            weighted += uint256(rows[i].shareBps) * _rowBackingWei[i];
+            rungs += uint256(rows[i].shareBps) * rows[i].rungs.length;
+            shares += rows[i].shareBps;
             if (_rowCount.length < n) {
                 _rowCount.push();
                 _queuedByRow.push();
@@ -435,5 +560,6 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
                 row.rungs.push(rows[i].rungs[j]);
             }
         }
+        (_mixBacking, _mixRungs, _mixShares) = (weighted, rungs, shares);
     }
 }

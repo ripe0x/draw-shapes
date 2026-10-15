@@ -20,10 +20,8 @@ the named place; none of them is load bearing for the others unless the entry sa
    FWA's purchase ABI (`acquire`, `acquireBatch`, `quoteAcquisitionPrice`) so the FWA site can
    target the pool unchanged; `purchaser` must equal `msg.sender`; the caller's slippage, minimum
    weighted value, inventory version and deadline are forwarded; `canPurchase` is true only inside
-   the pool's own forwarding call for the recorded purchaser. `PoolAdmin.setPurchaseGate(bool)`
-   toggles the operator. External dependency: the FWA site update that routes buys through the
-   pool. Until it ships the gate stays off at launch unless the owner says otherwise, which is why
-   settlement keeps counting booked acquisitions for demand sizing and decay. Entry 9 superseded.
+   the pool's own forwarding call for the recorded purchaser. The operator toggle was removed
+   (entry 40). Entry 9 superseded.
 3. GRAIL probability cap decided: enforced by price only. The `GrailProbTooHigh` revert leaves the
    purchase path; `rotate` lifts a track's notional back toward `backing * listBps / 10_000` when
    its listed weight exceeds `grailProbCapBps`; growth and decay keep their cap checks.
@@ -212,7 +210,7 @@ No entry is open.
    acquire from the pool directly; the pool books those captures at the next `settle` with zero
    proceeds and the harvest surplus repays them (entry 1). Setting the operator to the pool would
    close direct buys and make harvest equality exact again. Superseded by owner decision 2: `createFwaPool` sets the pool as
-   the operator and `setPurchaseGate(bool)` toggles it (entry 34). Place: `Pool.createFwaPool`, `PoolAdmin.setPurchaseGate`.
+   the operator (entries 34 and 40). Place: `Pool.createFwaPool`.
 
 14. **Launch values in `script/env/*.env`.** (decided, in SPEC) The launch profile (old repo,
    `project/launch-profile.json`) gives premium 200, maintenance 100, feed 400, entry base 1,100, slope 2,000, cap 2,500,
@@ -326,13 +324,11 @@ No entry is open.
    GRAIL weight exceeds `grailProbCapBps`, the mirror of decay. Decay keeps its cap check. Place: `Pool._rotateGrail`,
    `Pool._liftedNotional`. SPEC 9 and 11.
 
-34. **FWA-shaped purchase ABI and the purchase gate.** (decided, in SPEC) Owner decision 2. The pool exposes `acquire`,
+34. **FWA-shaped purchase ABI.** (decided, in SPEC) Owner decision 2. The pool exposes `acquire`,
    `acquireBatch` and `quoteAcquisitionPrice`; `purchaser` must equal the caller; the caller's slippage, minimum weighted
    value, inventory version and deadline are forwarded; `pullWithShapes` uses the pool defaults. `createFwaPool` sets the
-   pool as `purchaseOperator`; `canPurchase` is true only inside the pool's forwarding call; `setPurchaseGate(bool)`
-   toggles the operator. External dependency: the FWA site update that routes buys through the pool. The gate is off at
-   launch until it ships, and settlement books direct FWA buys and counts them for demand sizing and decay. Place:
-   `Pool.acquire`, `Pool.acquireBatch`, `Pool.canPurchase`, `PoolAdmin.setPurchaseGate`. SPEC 8 and 12.
+   pool as `purchaseOperator`; `canPurchase` is true only inside the pool's forwarding call. Entry 40 fixes the operator.
+   Place: `Pool.acquire`, `Pool.acquireBatch`, `Pool.canPurchase`. SPEC 8.
 
 35. **Relisting an unlisted GRAIL pack whose decayed price breaks the cap.** (deferred) In `_rotateGrail`
    an unlisted pack whose decayed price would exceed `grailProbCapBps` stays unlisted until the board
@@ -366,3 +362,45 @@ No entry is open.
    `liquidate()` was the only function that paid queued claims to an Exiting or Exported pool, because `rotate` requires
    Live. `payClaims()` pays from `cash` in FIFO order, at most 20 entries per call, and leaves items alone. Place:
    `Pool.payClaims`. SPEC 7 and 13.
+
+39. **Admission rules.** (decided, in SPEC) Owner decisions of 2026-10-14 for `deposit()`. Cap: `navCap()` is
+   `max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`, with `navCapFloor` 69 ETH and `turnoverBps` 1,250
+   (`docs/VOLUME_CAP.md`). Entry fee: floor 10 percent, cap 25 percent, payback 20 days of depositor yield; entries 5 and
+   14 record the values of 2026-10-12 and 2026-10-13. Founder window: 30 days (2,592,000 s) from the transition to
+   Live, during which `deposit()` reverts `DepositsClosed`. Place: `Pool._deposit`, `Pool.navCap`, `Pool.dailyVolume`, `PoolBooks._walk`,
+   `PoolAdmin.setEntryFee`, `setNavCapFloor`, `setTurnover`, `setFounderWindow`, `Lens.admission`,
+   `script/env/*.env` (`NAV_CAP_FLOOR_WEI`, `TURNOVER_BPS`, `ENTRY_FLOOR_BPS`, `ENTRY_CAP_BPS`, `ENTRY_PAYBACK_DAYS`,
+   `FOUNDER_WINDOW_SECONDS`). SPEC 5 and 7.
+
+40. **Purchase operator is fixed.** (decided, in SPEC) Owner decision of 2026-10-14. The pool is the FWA
+   `purchaseOperator` from `createFwaPool` and every ticket is bought through `acquire`, `acquireBatch` or
+   `pullWithShapes` on the pool. `setPurchaseGate(bool)` is removed. The FWA site calls the pool's purchase ABI.
+   Place: `PoolAdmin.createFwaPool`, `Pool.canPurchase`. SPEC 8.
+
+41. **GRAIL merge mode.** (decided, in SPEC) Owner decision of 2026-10-14. One fund and one ladder replace the minor and
+   major tracks. The fund mints 1 ETH pieces, at most 6 pieces and 16 items at once and 3 mints per rotate. Merges
+   build 5 ETH (five pieces), 10 ETH (two 5 ETH), 25 ETH (two 10 ETH and one 5 ETH, a Draw Pack), 50 ETH (two 25 ETH)
+   and 100 ETH (two 50 ETH) up to the cycle target; the output backing equal to the target completes the cycle. Launch
+   values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 0.1 ETH
+   (floor lowered from 1 ETH on 2026-10-15: on a NAV-deep board a finished GRAIL at 1 ETH was one draw in
+   80,000 and sat unclaimed; at 0.1 ETH the lab year shows a 25 ETH win about every 61 days at 500 tickets a day)
+   (`GRAIL_TARGET_WEI`, `GRAIL_LIST_BPS`, `GRAIL_DECAY_WEI_PER_PULL`, `GRAIL_PIECE_FLOOR_WEI`, `GRAIL_FLOOR_WEI`).
+   `minorShareBps` is removed: the whole entry contribution and the feed share go to the fund. Two chosen behaviours:
+   a sixth piece may stay listed after the 5 ETH merge (the recipe takes any five pieces), and a completed GRAIL stays
+   listed while the next cycle builds. The completed item carries a `done` flag so it is not a merge input. Place:
+   `PoolListing.grailStep`, `grailReprice`, `PoolBooks._capture`, `PoolAdmin.setGrail`-family. SPEC 5, 11 and 13.
+   2026-10-15 floor decision: `pieceFloorWei` and `floorWei` are both 1 ETH, so a piece lists at face and a merged item decays to 1 ETH.
+   Done items are capped apart from building items (`MAX_DONE_ITEMS` 32, `MAX_BUILDING_ITEMS` 16) so finished GRAILs do not stall the fund.
+   Ladder step: a cycle under `stepUpSeconds` (14 days) moves `nextTargetWei` one rung up, one over `stepDownSeconds` (60 days) one rung down (`setGrailStep`).
+
+42. **Board depth follows NAV.** (decided, in SPEC) Owner decision of 2026-10-14. `boardItems() = max(minItems, (nav -
+   nav * reserveBps / 10_000) / meanRowCost)`, with `nav` the ordinary NAV (already net of `claims`) and `meanRowCost`
+   the share-weighted cost of a mix row at the current Shapes mint fee: its backing plus the mint fee of each rung. The
+   target depth of a row is `ceil(boardItems() * shareBps / 10_000)` in `open`, the replacement draw and `Lens.board`.
+   A row at or past its band cap is redirected to the row of largest deficit, so a row above target gets no replacement
+   until it is below it; nothing is delisted when NAV falls. A surprise upgrade only lands on a single rung row below
+   its target. New settle trigger `Deep`: the listed, held and queued ordinary items are fewer than `boardItems()` by at
+   least `batchMin`. `settle` on `Deep` queues each row's missing items (at most `MAX_LIST_PER_SETTLE` queued per call)
+   and lists at most 25. `open()` goes Live as before, on the first call that lists fewer than `MAX_OPEN_MINTS` items.
+   No new parameter. Place: `PoolBooks._boardItems`, `PoolStorage._setMix`, `PoolListing._queueMissing`,
+   `Pool.settleDue`, `Pool.settle`, `PricingLib.chooseRow`, `PoolAdmin.boardItems`, `Lens.parameters`. SPEC 9.

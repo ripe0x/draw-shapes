@@ -14,8 +14,7 @@ import {IPool, IPoolTypes} from "../../src/interfaces/IPool.sol";
 ///         and a FWA clone created by the pool.
 /// @dev Mix: row 0 is a one rung Shape of 0.1 ETH (7,000 bps), row 1 is a two rung pack of
 ///      2 x 0.01 ETH (3,000 bps). A 100 ETH deposit builds a board of 7 + 3 items, or 42 + 18
-///      items after `recordPulls(60)`. The GRAIL steps are 500 ETH, so `rotate` does not grow a
-///      track until `setGrail` lowers the step.
+///      items after `recordPulls(60)`. `open` forms the opening five from the GRAIL fund.
 contract PoolAdminForkTest is ForkBase, PoolFixture {
     PoolHarness internal pool;
     IFWAClone internal clone;
@@ -34,10 +33,6 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         p.fwaFactory = FACTORY_ADDR;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor.stepWei = 500 ether;
-        p.minor.targetWei = 1_000 ether;
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
         pool = new PoolHarness(p);
         vm.prank(admin);
         IPool(address(pool)).createFwaPool(0);
@@ -50,9 +45,11 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
 
     function _openReady() internal {
         vm.prank(alice);
-        pool.deposit{value: 100 ether}();
+        pool.deposit{value: _openingDeposit(address(pool))}();
+        _topUpGrailFund(pool);
         vm.warp(IPool(address(pool)).openingDeadlineAt());
         pool.open();
+        pool.loseGrailFund(IPool(address(pool)).grail().fund);
         warpPastCooldown(clone);
     }
 
@@ -94,15 +91,21 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
     function test_revert_everySetterRequiresTheAdmin() public {
         vm.startPrank(stranger);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setFeeSplit(1, 1, 1, 1);
+        IPool(address(pool)).setFeeSplit(1, 1, 1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setEntryCurve(1, 1, 1, 1);
+        IPool(address(pool)).setEntryFee(1, 1, 1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setTurnover(1);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setFounderWindow(1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setMix(_currentRows());
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0, 0.1 ether);
+        IPool(address(pool)).setGrail(0, 0.25 ether, 1 ether, 7_500);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        IPool(address(pool)).setGrailTarget(5 ether);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
         IPool(address(pool)).setMaxBatch(1);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
@@ -134,58 +137,58 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
     }
 
-    // ---------------------------------------------------------------- fee split and curve
+    // ---------------------------------------------------------------- fee split and entry fee
 
     function test_setFeeSplitStoresTheSplitAndLogsTheSelector() public {
         _expectParamSet(IPool.setFeeSplit.selector);
         vm.prank(admin);
-        IPool(address(pool)).setFeeSplit(300, 200, 500, 2_500);
-        (uint16 premium, uint16 maintenance, uint16 feed, uint16 minorShare) = pool.feeSplit();
+        IPool(address(pool)).setFeeSplit(300, 200, 500);
+        (uint16 premium, uint16 maintenance, uint16 feed) = pool.feeSplit();
         assertEq(premium, 300);
         assertEq(maintenance, 200);
         assertEq(feed, 500);
-        assertEq(minorShare, 2_500);
     }
 
     function test_setFeeSplitBounds() public {
         vm.startPrank(admin);
-        IPool(address(pool)).setFeeSplit(400, 300, 300, 10_000);
+        IPool(address(pool)).setFeeSplit(400, 300, 300);
         vm.expectRevert(IPoolTypes.FeeSplitTooHigh.selector);
-        IPool(address(pool)).setFeeSplit(400, 300, 301, 0);
-        vm.expectRevert(IPoolTypes.MinorShareTooHigh.selector);
-        IPool(address(pool)).setFeeSplit(1, 1, 1, 10_001);
+        IPool(address(pool)).setFeeSplit(400, 300, 301);
         vm.stopPrank();
     }
 
-    function test_setEntryCurveStoresTheCurveAndBoundsIt() public {
+    function test_setEntryFeeStoresTheFeeAndBoundsIt() public {
         vm.startPrank(admin);
-        _expectParamSet(IPool.setEntryCurve.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_500, 10 ether);
-        (uint32 base, uint32 slope, uint32 cap, uint128 ref_) = pool.curve();
-        assertEq(base, 500);
-        assertEq(slope, 1_000);
-        assertEq(cap, 2_500);
-        assertEq(ref_, 10 ether);
+        _expectParamSet(IPool.setEntryFee.selector);
+        IPool(address(pool)).setEntryFee(500, 3_000, 10);
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        assertEq(floorBps, 500);
+        assertEq(capBps, 3_000);
+        assertEq(paybackDays, 10);
 
-        vm.expectRevert(IPoolTypes.CurveCapTooHigh.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_501, 10 ether);
-        vm.expectRevert(IPoolTypes.CurveReferenceZero.selector);
-        IPool(address(pool)).setEntryCurve(500, 1_000, 2_500, 0);
+        IPool(address(pool)).setEntryFee(0, 10_000, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(0, 10_001, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(2_501, 2_500, 1);
+        vm.expectRevert(IPoolTypes.EntryFeeOutOfRange.selector);
+        IPool(address(pool)).setEntryFee(500, 2_500, 0);
         vm.stopPrank();
     }
 
-    function test_setEntryCurveChangesTheNextDeposit() public {
+    function test_setEntryFeeChangesTheNextDeposit() public {
         vm.prank(admin);
-        IPool(address(pool)).setEntryCurve(0, 0, 0, 1 ether);
+        IPool(address(pool)).setEntryFee(0, 0, 1);
         vm.prank(alice);
         pool.deposit{value: 10 ether}();
-        assertEq(pool.sharesOf(alice), 10 ether, "no entry contribution at a zero curve");
+        assertEq(pool.sharesOf(alice), 10 ether, "no entry contribution at a zero fee");
     }
 
-    function test_setNavCapStoresTheCap() public {
-        _expectParamSet(IPool.setNavCap.selector);
+    function test_setNavCapFloorStoresTheFloor() public {
+        _expectParamSet(IPool.setNavCapFloor.selector);
         vm.prank(admin);
-        IPool(address(pool)).setNavCap(5 ether);
+        IPool(address(pool)).setNavCapFloor(5 ether);
+        assertEq(pool.navCapFloor(), 5 ether);
         assertEq(pool.navCap(), 5 ether);
 
         vm.prank(alice);
@@ -193,6 +196,28 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         vm.prank(alice);
         vm.expectRevert(IPoolTypes.NavCapReached.selector);
         pool.deposit{value: 1 ether}();
+    }
+
+    function test_setTurnoverStoresTheTurnoverAndBoundsIt() public {
+        vm.startPrank(admin);
+        _expectParamSet(IPool.setTurnover.selector);
+        IPool(address(pool)).setTurnover(2_500);
+        assertEq(pool.turnoverBps(), 2_500);
+        IPool(address(pool)).setTurnover(10_000);
+        IPool(address(pool)).setTurnover(1);
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
+        IPool(address(pool)).setTurnover(0);
+        vm.expectRevert(IPoolTypes.TurnoverOutOfRange.selector);
+        IPool(address(pool)).setTurnover(10_001);
+        vm.stopPrank();
+    }
+
+    function test_setFounderWindowAppliesToTheNextOpenOnly() public {
+        _expectParamSet(IPool.setFounderWindow.selector);
+        vm.prank(admin);
+        IPool(address(pool)).setFounderWindow(7 days);
+        assertEq(pool.founderWindowSeconds(), 7 days);
+        assertEq(pool.depositsOpenAt(), 0, "unset before open");
     }
 
     // ---------------------------------------------------------------- mix
@@ -291,52 +316,71 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
 
     function test_setGrailValidations() public {
         vm.startPrank(admin);
-        vm.expectRevert(IPoolTypes.InvalidTrack.selector);
-        IPool(address(pool)).setGrail(2, 1 ether, 0.1 ether, 8_000, 0, 0.1 ether);
         vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 0, 0, 0.1 ether);
+        IPool(address(pool)).setGrail(0, 0.25 ether, 1 ether, 0);
         vm.expectRevert(IPoolTypes.ListBpsOutOfRange.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 10_001, 0, 0.1 ether);
-        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.01 ether, 8_000, 0, 0.1 ether);
-        vm.expectRevert(IPoolTypes.GrailStepInvalid.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.025 ether, 8_000, 0, 0.1 ether);
+        IPool(address(pool)).setGrail(0, 0.25 ether, 1 ether, 10_001);
         vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0, 0);
+        IPool(address(pool)).setGrail(0, 0, 1 ether, 7_500);
         vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0, 0.8 ether + 1);
-        IPool(address(pool)).setGrail(0, 1 ether, 0.1 ether, 8_000, 0, 0.8 ether);
+        IPool(address(pool)).setGrail(0, 1 ether + 1, 1 ether, 7_500);
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
+        IPool(address(pool)).setGrail(0, 0.25 ether, 0, 7_500);
+        vm.expectRevert(IPoolTypes.GrailFloorInvalid.selector);
+        IPool(address(pool)).setGrail(0, 0.25 ether, 3.75 ether + 1, 7_500);
+        IPool(address(pool)).setGrail(0, 1 ether, 3.75 ether, 7_500);
         vm.stopPrank();
     }
 
-    function _grailWords(uint256 t) internal view returns (uint256[12] memory g) {
-        (g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11]) = IPool(address(pool)).grail(t);
-    }
-
-    function test_setGrailStoresTheParametersAndLeavesTheTrackState() public {
+    function test_setGrailStoresTheParametersAndLeavesTheState() public {
         _openReady();
-        vm.prank(admin);
-        IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
+        pool.addGrailFund{value: 5 ether}();
         _warpPastRotateGate(pool);
-        pool.growTrack(0);
+        assertTrue(pool.stepGrail());
         pool.recordPulls(3);
-        uint256[12] memory before_ = _grailWords(0);
-        assertGt(before_[1], 0, "pack");
-        assertGt(before_[11], 0, "listing");
+        IPoolTypes.Grail memory before_ = IPool(address(pool)).grail();
+        IPoolTypes.GrailItem[] memory itemsBefore = IPool(address(pool)).grailItems();
+        assertEq(itemsBefore.length, 4);
+        assertEq(before_.pulls, 3);
 
         _expectParamSet(IPool.setGrail.selector);
         vm.prank(admin);
-        IPool(address(pool)).setGrail(0, 2 ether, 0.1 ether, 9_000, 0.002 ether, 0.2 ether);
-        uint256[12] memory after_ = _grailWords(0);
+        IPool(address(pool)).setGrail(0.002 ether, 0.5 ether, 2 ether, 9_000);
+        IPoolTypes.Grail memory after_ = IPool(address(pool)).grail();
 
-        assertEq(after_[4], 2 ether, "target");
-        assertEq(after_[5], 0.1 ether, "step");
-        assertEq(after_[6], 9_000, "listBps");
-        assertEq(after_[7], 0.002 ether, "decay");
-        assertEq(after_[8], 0.2 ether, "floor");
-        uint256[7] memory untouched = [uint256(0), 1, 2, 3, 9, 10, 11];
-        for (uint256 k; k < untouched.length; ++k) {
-            assertEq(after_[untouched[k]], before_[untouched[k]], "track state untouched");
+        assertEq(after_.decayWeiPerPull, 0.002 ether);
+        assertEq(after_.pieceFloorWei, 0.5 ether);
+        assertEq(after_.floorWei, 2 ether);
+        assertEq(after_.listBps, 9_000);
+        assertEq(after_.fund, before_.fund);
+        assertEq(after_.receivable, before_.receivable);
+        assertEq(after_.targetWei, before_.targetWei);
+        assertEq(after_.nextTargetWei, before_.nextTargetWei);
+        assertEq(after_.cycleId, before_.cycleId);
+        assertEq(keccak256(abi.encode(IPool(address(pool)).grailItems())), keccak256(abi.encode(itemsBefore)));
+    }
+
+    function test_setGrailTargetWritesTheNextTargetOnly() public {
+        _expectParamSet(IPool.setGrailTarget.selector);
+        vm.prank(admin);
+        IPool(address(pool)).setGrailTarget(50 ether);
+        IPoolTypes.Grail memory g = IPool(address(pool)).grail();
+        assertEq(g.nextTargetWei, 50 ether);
+        assertEq(g.targetWei, 25 ether, "the running cycle keeps its target");
+    }
+
+    function test_revert_setGrailTargetOffTheLadder() public {
+        uint256[4] memory bad = [uint256(0), 1 ether, 20 ether, 25 ether + 1];
+        for (uint256 i; i < bad.length; ++i) {
+            vm.prank(admin);
+            vm.expectRevert(IPoolTypes.GrailTargetInvalid.selector);
+            IPool(address(pool)).setGrailTarget(bad[i]);
+        }
+        uint256[5] memory good = [uint256(5 ether), 10 ether, 25 ether, 50 ether, 100 ether];
+        for (uint256 i; i < good.length; ++i) {
+            vm.prank(admin);
+            IPool(address(pool)).setGrailTarget(good[i]);
+            assertEq(IPool(address(pool)).grail().nextTargetWei, good[i]);
         }
     }
 
@@ -543,11 +587,11 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         _expectParamSet(IPool.setAdmin.selector);
         IPool(address(pool)).setAdmin(stranger);
         vm.expectRevert(IPoolTypes.NotAdmin.selector);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
         vm.stopPrank();
         assertEq(pool.admin(), stranger);
         vm.prank(stranger);
-        IPool(address(pool)).setNavCap(1);
+        IPool(address(pool)).setNavCapFloor(1);
     }
 
     // ---------------------------------------------------------------- sweep
@@ -575,17 +619,12 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         IPool(address(pool)).sweep(SHAPES_ADDR, 9_999_999, recipient);
     }
 
-    function test_revert_sweepOfAGrailPack() public {
+    function test_revert_sweepOfAGrailItem() public {
         _openReady();
-        vm.prank(admin);
-        IPool(address(pool)).setGrail(0, 0.5 ether, 0.05 ether, 8_000, 0.001 ether, 0.1 ether);
-        _warpPastRotateGate(pool);
-        pool.growTrack(0);
-        (, uint256 packId,,,,,,,,,,) = IPool(address(pool)).grail(0);
-        assertGt(packId, 0);
+        IPoolTypes.GrailItem memory it = IPool(address(pool)).grailItems()[0];
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.Accounted.selector);
-        IPool(address(pool)).sweep(address(drawPacks), packId, recipient);
+        IPool(address(pool)).sweep(it.collection, it.tokenId, recipient);
     }
 
     // ---------------------------------------------------------------- adminCall
@@ -638,9 +677,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
     function test_revert_adminCallThatDropsTrackedEthBelowTheBuckets() public {
         _openReady();
         uint256 spare = address(pool).balance - pool.cash() - pool.maintenance();
-        (uint256 minorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(0);
-        (uint256 majorBucket,,,,,,,,,,,) = IPool(address(pool)).grail(1);
-        spare -= minorBucket + majorBucket;
+        spare -= IPool(address(pool)).grail().fund;
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.InvariantBroken.selector);
         IPool(address(pool)).adminCall(address(pool), abi.encodeCall(PoolHarness.leak, (spare + 1)), 0);
@@ -698,10 +735,6 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
         p.oldPool = old;
         p.mix[1].rungs[0] = 0;
         p.mix[1].rungs[1] = 0;
-        p.minor.stepWei = 500 ether;
-        p.minor.targetWei = 1_000 ether;
-        p.major.stepWei = 500 ether;
-        p.major.targetWei = 1_000 ether;
         PoolHarness successor = new PoolHarness(p);
 
         vm.deal(old, 2 ether);

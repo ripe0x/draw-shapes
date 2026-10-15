@@ -15,8 +15,6 @@ import {IPool, IPoolTypes} from "./interfaces/IPool.sol";
 contract Lens {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant WAD = 1e18;
-    uint256 internal constant MINOR = 0;
-    uint256 internal constant MAJOR = 1;
 
     /// @dev First failing pull guard, in the order `Pool.acquireBatch` applies them.
     enum Reason {
@@ -54,20 +52,33 @@ contract Lens {
         uint256 target;
     }
 
-    struct GrailView {
-        uint256 bucket;
-        uint256 packId;
+    /// @dev A GRAIL item with its share of the FWA selection weight in bps, zero while it is unlisted.
+    struct GrailItemView {
+        address collection;
+        bool done;
+        uint256 tokenId;
         uint256 backing;
         uint256 notional;
+        uint256 listingId;
+        uint256 listedAtPull;
+        uint256 weightBps;
+    }
+
+    struct GrailView {
+        uint256 fund;
+        uint256 receivable;
         uint256 targetWei;
-        uint256 stepWei;
+        uint256 nextTargetWei;
+        uint256 cycleId;
         uint256 listBps;
         uint256 decayWeiPerPull;
+        uint256 pieceFloorWei;
         uint256 floorWei;
-        uint256 pullsSinceList;
-        uint256 receivable;
-        uint256 listingId;
-        uint256 weightBps;
+        uint256 pulls;
+        uint256 cycleStartedAt;
+        uint256 stepUpSeconds;
+        uint256 stepDownSeconds;
+        GrailItemView[] items;
     }
 
     struct QueuedClaim {
@@ -99,6 +110,19 @@ contract Lens {
         uint256 concurrency;
     }
 
+    /// @dev Deposit admission state. `contributionBps` is the entry fee a deposit pays now.
+    ///      `open` holds when the pool is Live, deposits are not paused, `depositsOpenAt` has
+    ///      passed and ordinary NAV is below `navCap`.
+    struct Admission {
+        uint256 navCap;
+        uint256 navCapFloor;
+        uint256 dailyVolume;
+        uint256 headroom;
+        uint256 depositsOpenAt;
+        uint256 contributionBps;
+        bool open;
+    }
+
     struct Parameters {
         address shapes;
         address drawPacks;
@@ -111,12 +135,17 @@ contract Lens {
         bool pullsPaused;
         bool depositsPaused;
         IPoolTypes.FeeSplit feeSplit;
-        IPoolTypes.EntryCurve curve;
-        uint256 navCap;
+        uint256 floorBps;
+        uint256 capBps;
+        uint256 paybackDays;
+        uint256 navCapFloor;
+        uint256 turnoverBps;
+        uint256 founderWindowSeconds;
         uint256 rotateInterval;
         uint256 openingDeadline;
         uint256 openingDeadlineAt;
         uint256 minItems;
+        uint256 boardItems;
         uint256 grailProbCapBps;
         uint256 batchMin;
         uint256 batchMaxAge;
@@ -201,9 +230,9 @@ contract Lens {
     function board() external view returns (Row[] memory rows) {
         uint256 n = _ip().mixLength();
         rows = new Row[](n);
-        (uint16 premium, uint16 maintenance, uint16 feed,) = pool.feeSplit();
+        (uint16 premium, uint16 maintenance, uint16 feed) = pool.feeSplit();
         uint256 fee = IShapes(pool.shapes()).mintFee();
-        uint256 items = pool.minItems();
+        uint256 items = _ip().boardItems();
         for (uint256 i; i < n; ++i) {
             Row memory r = rows[i];
             (r.rungs, r.shareBps) = _ip().mixRow(i);
@@ -221,26 +250,25 @@ contract Lens {
 
     // ------------------------------------------------------------------ GRAIL
 
-    /// @notice Track `t` with its share of the FWA selection weight in bps. The share is zero while
-    ///         the pack is unlisted.
-    function grail(uint8 t) external view returns (GrailView memory g) {
-        (
-            g.bucket,
-            g.packId,
-            g.backing,
-            g.notional,
-            g.targetWei,
-            g.stepWei,
-            g.listBps,
-            g.decayWeiPerPull,
-            g.floorWei,
-            g.pullsSinceList,
-            g.receivable,
-            g.listingId
-        ) = _ip().grail(t);
-        if (g.listingId != 0) {
-            uint256 total = pool.fwaPool().totalWeight();
-            if (total != 0) g.weightBps = PricingLib.weightOf(g.notional) * BPS / total;
+    /// @notice The GRAIL fund, parameters and cycle, and every GRAIL item with its share of the FWA
+    ///         selection weight. The share is zero while the item is unlisted.
+    function grail() external view returns (GrailView memory g) {
+        IPoolTypes.Grail memory s = _ip().grail();
+        (g.fund, g.receivable, g.targetWei, g.nextTargetWei, g.cycleId) =
+            (s.fund, s.receivable, s.targetWei, s.nextTargetWei, s.cycleId);
+        (g.listBps, g.decayWeiPerPull, g.pieceFloorWei, g.floorWei) =
+            (s.listBps, s.decayWeiPerPull, s.pieceFloorWei, s.floorWei);
+        (g.pulls, g.cycleStartedAt, g.stepUpSeconds, g.stepDownSeconds) =
+            (s.pulls, s.cycleStartedAt, s.stepUpSeconds, s.stepDownSeconds);
+        IPoolTypes.GrailItem[] memory items = _ip().grailItems();
+        g.items = new GrailItemView[](items.length);
+        uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
+        for (uint256 i; i < items.length; ++i) {
+            IPoolTypes.GrailItem memory it = items[i];
+            uint256 weightBps = it.listingId != 0 && total != 0 ? PricingLib.weightOf(it.notional) * BPS / total : 0;
+            g.items[i] = GrailItemView(
+                it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.listedAtPull, weightBps
+            );
         }
     }
 
@@ -303,16 +331,31 @@ contract Lens {
         r.balance = address(pool).balance;
         r.required = pool.cash() + pool.maintenance();
         IFWAClone fwa = pool.fwaPool();
-        for (uint256 t; t <= MAJOR; ++t) {
-            (uint256 bucket,,,,,,,,,,,) = _ip().grail(t);
-            r.required += bucket;
-        }
+        r.required += _ip().grail().fund;
         r.solvent = r.balance >= r.required;
         if (address(fwa) == address(0)) return r;
         r.purchasesResumeAt = fwa.purchasesResumeAt();
         r.cooldownPassed = block.timestamp >= r.purchasesResumeAt;
         r.unsettled = fwa.unsettledAcquisitionCount();
         r.boardDeep = r.listedCount >= r.unsettled + r.concurrency;
+    }
+
+    // ------------------------------------------------------------------ admission
+
+    /// @notice The deposit cap, the volume it follows, the room left under it and the entry fee a
+    ///         deposit pays now.
+    function admission() external view returns (Admission memory a) {
+        uint256 currentNav = pool.nav();
+        a.navCap = pool.navCap();
+        a.navCapFloor = pool.navCapFloor();
+        a.dailyVolume = pool.dailyVolume();
+        a.headroom = a.navCap > currentNav ? a.navCap - currentNav : 0;
+        a.depositsOpenAt = pool.depositsOpenAt();
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        (uint16 premiumBps,,) = pool.feeSplit();
+        a.contributionBps = PricingLib.entryFeeBps(premiumBps, a.dailyVolume, currentNav, floorBps, capBps, paybackDays);
+        a.open = pool.lifecycle() == IPoolTypes.Lifecycle.Live && !pool.depositsPaused()
+            && block.timestamp >= a.depositsOpenAt && a.headroom != 0;
     }
 
     // ------------------------------------------------------------------ rotation
@@ -342,14 +385,19 @@ contract Lens {
         p.lifecycle = pool.lifecycle();
         p.pullsPaused = pool.pullsPaused();
         p.depositsPaused = pool.depositsPaused();
-        (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps, p.feeSplit.minorShareBps) =
-            pool.feeSplit();
-        (p.curve.baseBps, p.curve.slopeBps, p.curve.capBps, p.curve.referenceWei) = pool.curve();
-        p.navCap = pool.navCap();
+        (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps) = pool.feeSplit();
+        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
+        p.floorBps = floorBps;
+        p.capBps = capBps;
+        p.paybackDays = paybackDays;
+        p.navCapFloor = pool.navCapFloor();
+        p.turnoverBps = pool.turnoverBps();
+        p.founderWindowSeconds = pool.founderWindowSeconds();
         p.rotateInterval = pool.rotateInterval();
         p.openingDeadline = _ip().openingDeadline();
         p.openingDeadlineAt = _ip().openingDeadlineAt();
         p.minItems = pool.minItems();
+        p.boardItems = _ip().boardItems();
         p.grailProbCapBps = _ip().grailProbCapBps();
         p.batchMin = _ip().batchMin();
         p.batchMaxAge = _ip().batchMaxAge();

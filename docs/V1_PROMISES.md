@@ -26,7 +26,7 @@ from every path at once. Ordered by payoff.
 | X5 | Deferred everything. Pending deposit escrow, opening cohort, finalizeLaunch, launch seed, activation at next rotation, withdrawal cohorts, 12-hour windows, navLow freeze, in-kind exit plans, claim ledgers. | LaunchAdmin, ShareOps, WithdrawalWindowLib (1,239 LOC), MergeDepositOps, parts of RotateOps and SettleOps. | Immediate at NAV. Deposit mints shares now. Pre-open NAV is pure cash so the opening round is 1:1 for everyone until admin opens pulls. Withdraw burns shares at NAV into a FIFO ETH claim paid from cash. `liquidate()` raises cash when short. ETH exits only. |
 | X6 | Admin surface. Staged versus immediate parameters, 20-plus setters, allowlists, raw calls with post-call proofs, typed board scans. | CustodyAdminOps, ControllerAdminOps, PrizeAdmin, RawBoardOps, ParamsLens. | Constructor parameters plus a handful of immediate setters (fee split, pause flags, GRAIL target, max batch). One `adminCall` escape hatch, disclosed. Scans cut. |
 | X7 | Four-contract split with mirrored stores and two lenses. | Custody, Controller, PoolStore, ControllerStore, Lens, ParamsLens, LensQuote, 15 interfaces. 172 external functions. | One `Pool` contract plus one `Lens`. Target under 30 external functions. Falls out of X1 to X6 once the body is under 24KB. |
-| X8 | Progressive entry curve. 11% base contribution, slope 0.2, cap 0.25, 55 ETH reference. | PricingLib entry branch, staged evaluation at windows (UpdateStages), pending-queue admission, Lens quote. | Once deposits are immediate (X5), the curve is a pure function of current NAV evaluated inside `deposit()`: about 15 lines and three parameters. Keeping it costs almost nothing. The expense today is the deferred evaluation around it, which X5 removes. A hard `navCap` can sit under or alongside it. Owner's choice; recommend the curve plus the cap. |
+| X8 | Entry fee. Floor 10%, cap 25%, 20 payback days of depositor yield (owner decision 2026-10-14, OWNER_QUESTIONS 39). | `PricingLib.entryFeeBps`, evaluated inside `deposit()`, Lens `admission()`. | Once deposits are immediate (X5), the fee is a pure function of the trailing fee volume and current NAV. A volume-responsive `navCap()` with a `navCapFloor` and a founder window sit beside it. |
 | X9 | Generated surface in web and tooling. ABI files scale with contract surface. | 20k of 34k web lib LOC, 17k of 18.5k runtime LOC. | Falls out of X7. A 30-function ABI is about 2k LOC. |
 
 ## The v1 loop, promise by promise
@@ -35,7 +35,7 @@ Owner marks the last column KEEP, CUT or SIMPLIFY. Director column is the recomm
 
 | # | Promise | v1 mechanism | Director | Owner |
 | --- | --- | --- | --- | --- |
-| 1 | Deposit ETH, get pro-rata nontransferable shares at NAV, while NAV is under the cap. | `deposit()` computes the contribution from the entry curve on current NAV, sends it to the GRAIL bucket, mints the remainder at NAV, reverts at or above `navCap`. | KEEP | |
+| 1 | Deposit ETH, get pro-rata nontransferable shares at NAV, while NAV is under the cap. | `deposit()` computes the contribution from the entry fee on current NAV and the trailing fee volume, sends it to the GRAIL bucket, mints the remainder at NAV, reverts at or above `navCap()`. | KEEP | |
 | 2 | Opening round prices everyone the same. | Pulls paused until admin `open()`. Pre-open NAV is cash, so 1:1. Admin builds the board, then opens. | SIMPLIFY | |
 | 3 | Depositor NAV excludes GRAIL and counts pulls in flight. | Buckets: ordinary cash, backing, in-flight, maintenance, operator, GRAIL. Invariant: every wei in one bucket. | KEEP | |
 | 4 | Depositor earns a flat premium per ticket. | 200 bps to ordinary cash at settle. | KEEP | |
@@ -99,6 +99,6 @@ listed for the comparison and is the director's second choice.
    and `migrateHolder`, as in X4. Owner asked for full migration without redeposit, 2026-10-12.
 6. Rebuild from the promise list rather than prune. Owner decided 2026-10-12.
 9. Day-one capital: public depositors. Owner decided 2026-10-12.
-7. Entry curve kept as a pure function inside `deposit()`, plus a hard NAV cap; no operator line,
+7. Entry fee kept as a pure function inside `deposit()`, plus a volume-responsive NAV cap; no operator line,
    mint fees are the operator's revenue. Owner confirmed contribution is required, 2026-10-12.
 8. The exiting depositor bears the mint fees burned by liquidating for their claim.

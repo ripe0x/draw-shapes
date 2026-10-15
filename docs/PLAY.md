@@ -21,14 +21,14 @@ Later runs read it from disk.
 The runner reads `script/env/anvil.env` (`PLAY_ENV_FILE` to change it) through the same `Deploy._params`
 the deploy script uses. Every key `K` of that file is overridden by `PLAY_K`:
 
-- Board: `PLAY_MIX_ROWS`, `PLAY_MIN_ITEMS`, `PLAY_NAV_CAP_WEI`, `PLAY_GRAIL_PROB_CAP_BPS`
+- Board: `PLAY_MIX_ROWS`, `PLAY_MIN_ITEMS`, `PLAY_NAV_CAP_FLOOR_WEI`, `PLAY_TURNOVER_BPS`, `PLAY_FOUNDER_WINDOW_SECONDS`, `PLAY_GRAIL_PROB_CAP_BPS`
 - Rotation and listing: `PLAY_ROTATE_INTERVAL_SECONDS`, `PLAY_OPENING_DEADLINE_SECONDS`, `PLAY_BATCH_MIN`,
   `PLAY_BATCH_MAX_AGE_SECONDS`
 - Replacement: `PLAY_SURPRISE_BPS`, `PLAY_RESTORE_K`, `PLAY_BAND_BPS`, `PLAY_RESERVE_BPS`
-- Fee split: `PLAY_PREMIUM_BPS`, `PLAY_MAINTENANCE_BPS`, `PLAY_FEED_BPS`, `PLAY_MINOR_SHARE_BPS`
-- Entry curve: `PLAY_ENTRY_BASE_BPS`, `PLAY_ENTRY_SLOPE_BPS`, `PLAY_ENTRY_CAP_BPS`, `PLAY_ENTRY_REFERENCE_WEI`
-- GRAIL, for `MINOR` and `MAJOR`: `PLAY_GRAIL_<T>_TARGET_WEI`, `_STEP_WEI`, `_LIST_BPS`,
-  `_DECAY_WEI_PER_PULL`, `_FLOOR_WEI`
+- Fee split: `PLAY_PREMIUM_BPS`, `PLAY_MAINTENANCE_BPS`, `PLAY_FEED_BPS`
+- Entry fee: `PLAY_ENTRY_FLOOR_BPS`, `PLAY_ENTRY_CAP_BPS`, `PLAY_ENTRY_PAYBACK_DAYS`
+- GRAIL: `PLAY_GRAIL_TARGET_WEI`, `PLAY_GRAIL_LIST_BPS`, `PLAY_GRAIL_DECAY_WEI_PER_PULL`,
+  `PLAY_GRAIL_PIECE_FLOOR_WEI`, `PLAY_GRAIL_FLOOR_WEI`
 
 Run settings (defaults in brackets):
 
@@ -44,7 +44,7 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
 ## Reading the report
 
 - Player: return is backing received over the ticket paid (the FWA acquisition fee; the VRF fee is zero at the fork block). The share at or above 1x is
-  the share of pulls that return at least their ticket. GRAIL rows give hits per track and the hour of the first hit.
+  the share of pulls that return at least their ticket. GRAIL rows give hits per group (pieces as minor, larger items as major) and the hour of the first hit.
 - Depositor: NAV per share at hour 0 (board built) and at the last hour, with the annualised rate. Exit wait runs
   from `withdraw` until the claim queue head passes its entry. Payouts from cash count as 0 h.
 - Board: purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.

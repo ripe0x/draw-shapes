@@ -74,12 +74,11 @@ contract PlayMonthTest is ForkBase, Deploy {
     mapping(uint256 => bool) internal logged;
     OpenClaim[] internal openClaims;
     uint256[] internal pauseSec;
-    uint256[2] internal grailBacking;
     uint256 internal queued;
 
     // per-hour accumulators
     uint256[3] internal rotTrig;
-    uint256[3] internal setTrig;
+    uint256[4] internal setTrig;
     uint256 internal settleListedHour;
     uint256 internal settleRefundHour;
     uint256 internal rotates;
@@ -468,10 +467,12 @@ contract PlayMonthTest is ForkBase, Deploy {
                 _pullRow(p, value, rowIsPack[row] ? "Pack" : "Shape", "");
                 logged[p.id] = true;
             } else if (t == IPoolTypes.GrailCaptured.selector) {
-                uint256 track = uint256(l.topics[1]);
-                uint256 proceeds = abi.decode(l.data, (uint256));
-                Pending memory p = info[uint256(l.topics[2])];
-                _pullRow(p, grailBacking[track], proceeds == 0 ? "GrailPending" : "Grail", track == 0 ? "minor" : "major");
+                (uint256 backing_, uint256 proceeds) = abi.decode(l.data, (uint256, uint256));
+                Pending memory p = info[uint256(l.topics[1])];
+                // The report's "minor" rows are pieces (1 ETH), its "major" rows are larger items.
+                _pullRow(
+                    p, backing_, proceeds == 0 ? "GrailPending" : "Grail", backing_ == 1 ether ? "minor" : "major"
+                );
                 logged[p.id] = true;
             } else if (t == IPoolTypes.WrittenOff.selector) {
                 Pending memory p = info[uint256(l.topics[1])];
@@ -493,10 +494,6 @@ contract PlayMonthTest is ForkBase, Deploy {
             }
         }
         _closePaidClaims();
-        for (uint256 tr; tr < 2; ++tr) {
-            (,, uint256 b,,,,,,,,,) = IPool(address(pool)).grail(tr);
-            grailBacking[tr] = b;
-        }
     }
 
     function _onWithdrawn(address from, bytes memory data) internal {
@@ -538,9 +535,9 @@ contract PlayMonthTest is ForkBase, Deploy {
         _truncate(
             "hourly.csv",
             "hour,navPerShare,cash,backing,receivable,claims,listedCount,grailBacking0,grailNotional0,grailOddsBps0,"
-            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotHeld,"
+            "grailBacking1,grailNotional1,grailOddsBps1,grailFund,grailTarget,rotates,rotClaim,rotGrailStep,rotHeld,"
             "inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds,"
-            "settles,setBatch,setAge,setThin,settleListed,settleRefund"
+            "settles,setBatch,setAge,setThin,setDeep,settleListed,settleRefund"
         );
         _truncate("claims.csv", "hour,depositor,shares,paidNow,enqueued,waitSeconds,open");
     }
@@ -582,11 +579,15 @@ contract PlayMonthTest is ForkBase, Deploy {
             (uint256 b, uint256 notional, uint256 odds) = _grailStats(t);
             line = string.concat(_c(_c(line, b), notional), ",", _fixed4(odds));
         }
+        {
+            IPoolTypes.Grail memory g = IPool(address(pool)).grail();
+            line = _c(_c(line, g.fund), g.targetWei);
+        }
         line = _c(_c(line, rotates), rotTrig[0]);
         line = _c(_c(line, rotTrig[1]), rotTrig[2]);
         line = _c(_c(line, inventoryChanged), h < pauseSec.length ? pauseSec[h] : 0);
         line = _c(_c(_c(line, pullsHour), rejectedHour), waitHour);
-        line = _c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]);
+        line = _c(_c(_c(_c(_c(line, settles), setTrig[0]), setTrig[1]), setTrig[2]), setTrig[3]);
         line = _c(_c(line, settleListedHour), settleRefundHour);
         vm.writeLine(string.concat(dir, "hourly.csv"), line);
 
@@ -602,15 +603,20 @@ contract PlayMonthTest is ForkBase, Deploy {
         waitHour = 0;
     }
 
-    /// @dev Backing and list price of a track's pack, and its selection probability at FWA in bps of
-    ///      the total weight times 10^4 (zero while unlisted).
+    /// @dev Summed backing and list price of the GRAIL items in group `t`, and their selection
+    ///      probability at FWA in bps of the total weight times 10^4 (zero while unlisted). Group 0 is
+    ///      the pieces (1 ETH), group 1 the larger items.
     function _grailStats(uint256 t) internal view returns (uint256 b, uint256 notional, uint256 oddsBps) {
-        uint256 listingId;
-        (,, b, notional,,,,,,,, listingId) = IPool(address(pool)).grail(t);
-        if (listingId == 0) return (b, notional, 0);
-        (,,,, uint256 weight,,, IFWAClone.ListingStatus status) = fwa.listings(listingId);
+        IPoolTypes.GrailItem[] memory items = IPool(address(pool)).grailItems();
         uint256 totalWeight = fwa.totalWeight();
-        if (status == IFWAClone.ListingStatus.Active && totalWeight != 0) oddsBps = weight * 1e8 / totalWeight;
+        for (uint256 i; i < items.length; ++i) {
+            if ((items[i].backing == 1 ether ? 0 : 1) != t) continue;
+            b += items[i].backing;
+            notional += items[i].notional;
+            if (items[i].listingId == 0) continue;
+            (,,,, uint256 weight,,, IFWAClone.ListingStatus status) = fwa.listings(items[i].listingId);
+            if (status == IFWAClone.ListingStatus.Active && totalWeight != 0) oddsBps += weight * 1e8 / totalWeight;
+        }
     }
 
     /// @dev Decimal string of `v / 10^4` with four fractional digits.
