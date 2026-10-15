@@ -271,6 +271,7 @@ interface IPoolTypes {
     event ForeignRegistered(
         address indexed collection, uint256 indexed tokenId, address indexed controller, uint256 listingId, uint256 price
     );
+    event RegistrarSet(address indexed registrar);
     event ForeignRepriced(uint256 indexed listingId, uint256 price);
     /// @dev `to` is the recipient of the token. `exportStep` withdraws to the entry's controller.
     event ForeignWithdrawn(uint256 indexed listingId, address indexed collection, uint256 tokenId, address to);
@@ -307,6 +308,7 @@ interface IPool is IPoolTypes {
     function adminModule() external view returns (address);
     function listingModule() external view returns (address);
     function admin() external view returns (address);
+    function registrar() external view returns (address);
     function lifecycle() external view returns (Lifecycle);
     function pullsPaused() external view returns (bool);
     function depositsPaused() external view returns (bool);
@@ -439,11 +441,12 @@ interface IPool is IPoolTypes {
     /// @notice Sets the ladder step thresholds. `stepUpSeconds` is below `stepDownSeconds`.
     function setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) external;
     function setGrailTarget(uint256 targetWei) external;
-    /// @dev `PoolListing` entrypoints for foreign listings. `registerForeign` is the admin's, the
+    /// @dev `PoolListing` entrypoints for foreign listings. `registerForeign` is the admin's or the registrar's, the
     ///      other two are the entry's controller's.
     function registerForeign(address collection, uint256 tokenId, address controller, uint256 priceWei) external;
     function repriceForeign(uint256 listingId, uint256 priceWei) external;
     function withdrawForeign(uint256 listingId, address to) external;
+    function setRegistrar(address registrar_) external;
     function setMaxBatch(uint256 n) external;
     function setConcurrency(uint256 n) external;
     function setRotateInterval(uint256 seconds_) external;

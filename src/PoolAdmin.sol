@@ -81,6 +81,13 @@ contract PoolAdmin is PoolBooks {
         _setMix(rows);
     }
 
+    /// @notice Sets the address besides the admin that may call `registerForeign`. Zero clears it.
+    function setRegistrar(address registrar_) external onlyDelegated {
+        _admin();
+        registrar = registrar_;
+        emit RegistrarSet(registrar_);
+    }
+
     /// @dev `n` is at most the FWA factory's `maxAcquisitionsPerTx` and at least one.
     function setMaxBatch(uint256 n) external onlyDelegated {
         _admin();

@@ -139,6 +139,7 @@ contract Lens {
         address fwaFactory;
         address fwaPool;
         address admin;
+        address registrar;
         address oldPool;
         address exitDest;
         IPoolTypes.Lifecycle lifecycle;
@@ -412,6 +413,7 @@ contract Lens {
         p.fwaFactory = pool.fwaFactory();
         p.fwaPool = address(pool.fwaPool());
         p.admin = pool.admin();
+        p.registrar = pool.registrar();
         p.oldPool = pool.oldPool();
         p.exitDest = pool.exitDest();
         p.lifecycle = pool.lifecycle();

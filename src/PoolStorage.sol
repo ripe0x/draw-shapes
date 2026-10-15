@@ -195,6 +195,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     /// @dev Controller of a foreign token whose release in `exportStep` failed, by collection and token id.
     ///      `sweep` sends such a token to that controller.
     mapping(address collection => mapping(uint256 tokenId => address)) internal _heldFor;
+    /// @notice Address besides `admin` that may call `registerForeign`. Zero when unset.
+    address public registrar;
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();

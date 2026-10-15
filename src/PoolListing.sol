@@ -94,9 +94,9 @@ contract PoolListing is PoolBooks {
         return _foreign;
     }
 
-    /// @notice Takes `tokenId` of `collection` from the admin, lists it on the FWA pool at `priceWei`
+    /// @notice Takes `tokenId` of `collection` from the caller, the admin or the registrar, lists it on the FWA pool at `priceWei`
     ///         and records it as a foreign listing of `controller`, keyed by the FWA listing id.
-    ///         The admin approves this contract for the token first. Live only. Reverts `ForeignFull`
+    ///         The caller approves this contract for the token first, and any other caller reverts `NotAdmin`. Live only. Reverts `ForeignFull`
     ///         at `MAX_FOREIGN` entries, `AlreadyRegistered` for a token the pool accounts for,
     ///         `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` for a price
     ///         with no selection weight and `ProbCapExceeded` when the Active and Staged GRAIL and foreign weight
@@ -104,9 +104,9 @@ contract PoolListing is PoolBooks {
     function registerForeign(address collection, uint256 tokenId, address controller, uint256 priceWei)
         external
         onlyDelegated
-        onlyAdmin
         nonReentrant
     {
+        if (msg.sender != admin && msg.sender != registrar) revert NotAdmin();
         if (lifecycle != Lifecycle.Live) revert NotLive();
         if (collection == address(0) || controller == address(0)) revert ZeroAddress();
         if (_registered[collection][tokenId]) revert AlreadyRegistered();

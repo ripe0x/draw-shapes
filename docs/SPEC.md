@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 23,692 B, `PoolAdmin` 23,731 B, `PoolListing` 24,286 B, `Lens` 17,677 B (limit 24,576 B).
+Runtime sizes: `Pool` 23,743 B, `PoolAdmin` 23,943 B, `PoolListing` 24,365 B, `Lens` 17,848 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 
@@ -92,6 +92,7 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
 | `setBatch(batchMin, batchMaxAge)`, `setReplacement(surpriseBps, restoreK, bandBps)` | Both above zero. At most 10,000, 100 and 100,000. |
 | `setTip(tipWei)` | At most 0.01 ether. |
+| `setRegistrar(registrar)` | Any address. Zero clears it (section 11). |
 | `setMaxBatch(n)`, `setConcurrency(n)`, `setRotateInterval(seconds)`, `setAdmin(address)` | At most FWA's live values (`n` above zero for `setMaxBatch`). At least FWA's `inventoryChangeCooldown`. Nonzero. |
 
 Launch values: premium 200, maintenance 100, feed 400; entry fee floor 1,000,
@@ -398,11 +399,11 @@ lists at face and never decays; a merged item decays to 1 ETH and stays.
 
 ## 12. Admin
 
-`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`; `setGrail` and `setGrailTarget`
+`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip` and `setRegistrar`; `setGrail` and `setGrailTarget`
 live in `PoolListing` with `grail()` and `grailItems()`), `startExit`, `exportStep`,
 `transferGrailEstate(to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and `canImport`.
 `PoolListing` implements `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, which only `Pool` calls on itself,
-`registerForeign` (admin) and `repriceForeign` and `withdrawForeign` (the entry's controller),
+`registerForeign` (admin or `registrar`) and `repriceForeign` and `withdrawForeign` (the entry's controller),
 and the read-only getters of the replacement, batch and reserve parameters, row counts, mix rows, held Shapes by
 denomination, queue and claim entries and the GRAIL fund and items. `chooseRow(requestId, capturedRow)` returns the
 replacement row for a fulfilled request.

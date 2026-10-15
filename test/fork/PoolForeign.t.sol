@@ -289,6 +289,74 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         _ip().registerForeign(WPUNKS, id, address(controller), PRICE);
     }
 
+    function _punkTo(uint256 index, address to) internal returns (uint256 id) {
+        id = IERC721Enumerable(WPUNKS).tokenByIndex(index);
+        address holder = IERC721(WPUNKS).ownerOf(id);
+        vm.prank(holder);
+        IERC721(WPUNKS).transferFrom(holder, to, id);
+        vm.prank(to);
+        IERC721(WPUNKS).approve(address(pool), id);
+    }
+
+    function test_registrarRegistersAPunkItHolds() public {
+        address registrar_ = makeAddr("registrar");
+        vm.prank(admin);
+        _ip().setRegistrar(registrar_);
+        uint256 id = _punkTo(0, registrar_);
+        vm.prank(registrar_);
+        _ip().registerForeign(WPUNKS, id, address(controller), PRICE);
+
+        assertEq(IERC721(WPUNKS).ownerOf(id), address(clone), "the clone holds the token");
+        assertTrue(_ip().registered(WPUNKS, id));
+        assertEq(_ip().foreignListings().length, 1);
+    }
+
+    function test_revert_registerByANonRegistrarNonAdmin() public {
+        vm.prank(admin);
+        _ip().setRegistrar(makeAddr("registrar"));
+        uint256 id = _punkTo(0, stranger);
+        vm.prank(stranger);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), PRICE);
+    }
+
+    function test_clearingTheRegistrarRevokesIt() public {
+        address registrar_ = makeAddr("registrar");
+        vm.startPrank(admin);
+        _ip().setRegistrar(registrar_);
+        _ip().setRegistrar(address(0));
+        vm.stopPrank();
+        uint256 id = _punkTo(0, registrar_);
+        vm.prank(registrar_);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), PRICE);
+    }
+
+    function test_theAdminStillRegistersWithARegistrarSet() public {
+        vm.prank(admin);
+        _ip().setRegistrar(makeAddr("registrar"));
+        _register(0, address(controller), PRICE);
+        assertEq(_ip().foreignListings().length, 1);
+    }
+
+    function test_revert_setRegistrarByAnyoneElse() public {
+        vm.prank(stranger);
+        vm.expectRevert(IPoolTypes.NotAdmin.selector);
+        _ip().setRegistrar(stranger);
+    }
+
+    function test_setRegistrarEmitsAndLensParametersReadItBack() public {
+        address registrar_ = makeAddr("registrar");
+        Lens lens = new Lens(Pool(payable(address(pool))));
+        assertEq(lens.parameters().registrar, address(0));
+        vm.expectEmit(true, false, false, false, address(pool));
+        emit IPoolTypes.RegistrarSet(registrar_);
+        vm.prank(admin);
+        _ip().setRegistrar(registrar_);
+        assertEq(_ip().registrar(), registrar_);
+        assertEq(lens.parameters().registrar, registrar_);
+    }
+
     function test_revert_registerWhenNotLive() public {
         PoolHarness opening = new PoolHarness(_openingParams());
         vm.prank(admin);
