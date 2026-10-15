@@ -4,15 +4,17 @@ pragma solidity 0.8.28;
 import {Script} from "forge-std/Script.sol";
 import {VmSafe} from "forge-std/Vm.sol";
 import {console2} from "forge-std/console2.sol";
+import {IPool} from "../src/interfaces/IPool.sol";
 import {FeeSplit} from "../src/sponsor/FeeSplit.sol";
 import {SponsoredPrize} from "../src/sponsor/SponsoredPrize.sol";
 
 /// @notice Deploys the contracts of one sponsored prize deal (docs/SPONSOR.md) and reads every value back.
 /// @dev Inputs are the `SPONSOR_*` variables of `script/env/sponsor.example.env`. The broadcaster must be
 ///      `SPONSOR_OWNER`, which owns the new `FeeSplit` (or the existing one named by `SPONSOR_FEE_SPLIT`)
-///      and calls `setSponsor` and `setPrize`. `reclaimAfter` is the deploy time plus
-///      `SPONSOR_RECLAIM_DELAY`. `Shapes.setFeeRecipient`, `Pool.registerForeign` and `SponsoredPrize.start`
-///      are separate steps by other callers. A broadcast run writes the deal record the web app reads
+///      and calls `setSponsor` and `setPrize`. When the broadcaster is also the pool admin the script
+///      calls `Pool.setRegistrar(prize)`, otherwise it logs the `cast send` line for the admin.
+///      `SPONSOR_RECLAIM_DELAY` is the delay from `SponsoredPrize.stake` to `reclaimAfter`.
+///      `Shapes.setFeeRecipient` and `SponsoredPrize.stake` are separate steps by other callers. A broadcast run writes the deal record the web app reads
 ///      (`{feeSplit, prize, collection, tokenId}`) to `SPONSOR_RECORD`, default
 ///      `deployments/<chainId>-sponsor.json`.
 contract DeploySponsor is Script {
@@ -52,15 +54,17 @@ contract DeploySponsor is Script {
             t.parkedPriceWei,
             t.floorWei,
             t.decayWeiPerPull,
-            block.timestamp + t.reclaimDelay
+            t.reclaimDelay
         );
         feeSplit.setSponsor(t.sponsor, t.capWei);
         feeSplit.setPrize(address(prize));
+        bool registrarSet = IPool(t.pool).admin() == broadcaster;
+        if (registrarSet) IPool(t.pool).setRegistrar(address(prize));
         vm.stopBroadcast();
 
-        _postflight(feeSplit, prize, t);
+        _postflight(feeSplit, prize, t, registrarSet);
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)) _writeRecord(feeSplit, prize, t);
-        _log(feeSplit, prize, t);
+        _log(feeSplit, prize, t, registrarSet);
     }
 
     function _terms() internal view returns (Terms memory t) {
@@ -77,7 +81,7 @@ contract DeploySponsor is Script {
         t.existingFeeSplit = vm.envOr("SPONSOR_FEE_SPLIT", address(0));
     }
 
-    function _postflight(FeeSplit f, SponsoredPrize p, Terms memory t) internal view {
+    function _postflight(FeeSplit f, SponsoredPrize p, Terms memory t, bool registrarSet) internal view {
         _eq(f.owner() == t.owner, "feeSplit.owner");
         _eq(f.sponsor() == t.sponsor, "feeSplit.sponsor");
         _eq(f.capWei() == t.capWei, "feeSplit.capWei");
@@ -92,8 +96,9 @@ contract DeploySponsor is Script {
         _eq(p.parkedPriceWei() == t.parkedPriceWei, "prize.parkedPriceWei");
         _eq(p.floorWei() == t.floorWei, "prize.floorWei");
         _eq(p.decayWeiPerPull() == t.decayWeiPerPull, "prize.decayWeiPerPull");
-        _eq(p.reclaimAfter() > block.timestamp, "prize.reclaimAfter");
-        _eq(p.listingId() == 0 && !p.active(), "prize is not started");
+        _eq(p.reclaimDelay() == t.reclaimDelay, "prize.reclaimDelay");
+        _eq(!p.staked() && !p.active(), "prize is not staked");
+        if (registrarSet) _eq(IPool(t.pool).registrar() == address(p), "pool.registrar");
         _eq(uint8(p.phase()) == 0, "prize.phase is Parked");
     }
 
@@ -112,10 +117,17 @@ contract DeploySponsor is Script {
         if (!ok) revert GuardFailed(what);
     }
 
-    function _log(FeeSplit f, SponsoredPrize p, Terms memory t) internal pure {
+    function _log(FeeSplit f, SponsoredPrize p, Terms memory t, bool registrarSet) internal view {
         console2.log("FeeSplit", address(f));
         console2.log("SponsoredPrize", address(p));
         console2.log("capWei", t.capWei);
         console2.log("next: Shapes.setFeeRecipient(address) with the FeeSplit above, as the Shapes admin");
+        if (!registrarSet) {
+            console2.log("next: as the pool admin");
+            console2.log(
+                string.concat("cast send ", vm.toString(t.pool), " \"setRegistrar(address)\" ", vm.toString(address(p)))
+            );
+        }
+        console2.log("next: the sponsor approves the prize on the collection, then calls stake()");
     }
 }

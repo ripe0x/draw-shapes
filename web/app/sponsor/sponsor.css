@@ -329,3 +329,14 @@ a.sponsor-pill {
     text-align: left;
   }
 }
+
+.sponsor-stake {
+  margin-top: 18px;
+}
+.sponsor-stake .sponsor-band-line {
+  margin-top: 12px;
+}
+.sponsor-stake .tx-line a,
+.sponsor-stake .error-line {
+  color: var(--rule);
+}

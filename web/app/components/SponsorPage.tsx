@@ -12,7 +12,7 @@ import { drawOdds, usePool } from "../lib/pool";
 import { type DealState, type SponsorDeal, useSponsorDeal } from "../lib/sponsor";
 import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
-import { CyclingPunk, SponsorCtaBand, SponsorTakenBand } from "./SponsorBands";
+import { CyclingPunk, SponsorCtaBand, SponsorStakePanel, SponsorTakenBand } from "./SponsorBands";
 import { TokenArt } from "./TokenArt";
 import { type Tx, TxButton, TxLine, useTx } from "./Tx";
 
@@ -25,7 +25,7 @@ function badgeText(deal: SponsorDeal | undefined, loading: boolean, listPrice?: 
   if (!deal) return loading ? "Reading" : "Unavailable";
   const paid = `${eth(deal.paidWei, 4)} of ${eth(deal.capWei, 4)} ETH`;
   const text: Record<DealState, string> = {
-    unstarted: "Agreed, not started",
+    awaiting: "Awaiting the sponsor",
     parked: `Parked, paid ${paid}`,
     hot: `Hot, price ${eth(listPrice ?? deal.parkedPriceWei, 4)} ETH`,
     captured: "Captured",
@@ -39,7 +39,7 @@ function badgeText(deal: SponsorDeal | undefined, loading: boolean, listPrice?: 
 }
 
 const STATE_WORD: Record<DealState, string> = {
-  unstarted: "Agreed, not started",
+  awaiting: "Awaiting the sponsor",
   parked: "Parked",
   hot: "Hot",
   captured: "Captured",
@@ -61,7 +61,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
   const listPrice = item && item.notional !== 0n ? item.notional : undefined;
   const odds = pool ? drawOdds(pool.board, pool.grail, pool.foreign) : undefined;
   const weight = odds?.rows.find((r) => item && r.key === `foreign-${item.listingId}`)?.weight ?? 0n;
-  const badge = record ? badgeText(deal, query.isLoading, listPrice) : "No deal";
+  const badge = record ? badgeText(deal, query.isLoading, listPrice) : "Slot open";
   const oneIn = listPrice !== undefined ? oneInOf(weight, odds?.total ?? 0n) : undefined;
 
   return (
@@ -76,7 +76,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
           <span className="sponsor-kicker">One prize, one sponsor</span>
           <h1>Sponsor Draw Shapes</h1>
           <p>
-            Lend a prize to the board. The pool lists your token, and you earn from the operator&apos;s Shapes mint fees up to the cap. Once the
+            Stake a prize on the board. The pool lists your token, and you earn from the operator&apos;s Shapes mint fees up to the cap. Once the
             cap is paid, the prize goes hot on the board and its price falls with every settled pull.
           </p>
           <span className="sponsor-badge">{badge}</span>
@@ -90,10 +90,11 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
           <>
             <SponsorTakenBand collection={record.collection} tokenId={BigInt(record.tokenId)} sponsor={deal.sponsor} state={STATE_WORD[deal.state]}>
               <dl className="sponsor-facts">
-                <div><dt>List price</dt><dd>{listPrice !== undefined ? `${eth(listPrice, 4)} ETH` : deal.state === "unstarted" ? `${eth(deal.parkedPriceWei, 4)} ETH at start` : "-"}</dd></div>
+                <div><dt>List price</dt><dd>{listPrice !== undefined ? `${eth(listPrice, 4)} ETH` : deal.state === "awaiting" ? `${eth(deal.parkedPriceWei, 4)} ETH once staked` : "-"}</dd></div>
                 <div><dt>Odds per pull</dt><dd>{oneIn ?? "-"}</dd></div>
                 <div><dt>Phase</dt><dd>{phaseText(deal)}</dd></div>
               </dl>
+              {deal.state === "awaiting" && <SponsorStakePanel prize={record.prize} collection={record.collection} tokenId={BigInt(record.tokenId)} deal={deal} />}
             </SponsorTakenBand>
 
             <section className="sponsor-section">
@@ -104,7 +105,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
                 <Row label="Decay per pull" value={`${eth(deal.decayWeiPerPull, 6)} ETH per settled pull once hot`} />
                 <Row label="Cap" value={`${eth(deal.capWei, 4)} ETH of mint fees`} />
                 <Row label="Paid so far" value={`${eth(deal.paidWei, 4)} ETH`} strong />
-                <Row label="Reclaim from" value={utc(deal.reclaimAfter)} />
+                <Row label="Reclaim from" value={deal.staked ? utc(deal.reclaimAfter) : `${+(Number(deal.reclaimDelay) / 86400).toFixed(2)} days after staking`} />
                 <Row label="Sponsor" value={<Addr address={deal.sponsor} chainId={dep.chainId} />} />
                 <Row label="Operator" value={<Addr address={deal.owner} chainId={dep.chainId} />} />
                 <Row label="Controller" value={<Addr address={record.prize} chainId={dep.chainId} />} />
@@ -119,15 +120,15 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
           </>
         )}
 
-        <section className="sponsor-section" id="lend">
-          <div className="sponsor-label">Lend your prize</div>
+        <section className="sponsor-section" id="stake">
+          <div className="sponsor-label">Stake your prize</div>
           <div className="sponsor-steps">
-            <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim date.</Step>
-            <Step n="02">Hand the token to the pool admin.</Step>
-            <Step n="03">The admin registers the token in the pool as a foreign listing.</Step>
-            <Step n="04">The operator starts the deal. The fee split locks and payments begin.</Step>
+            <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim delay.</Step>
+            <Step n="02">The operator publishes the deal for your wallet and token.</Step>
+            <Step n="03">Approve and stake from this page. The token moves to the pool and the fee split locks.</Step>
+            <Step n="04">Payments begin at the next mint fee.</Step>
           </div>
-          <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the admin, is planned.</p>
+          <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the operator, is planned.</p>
           <p className="sponsor-note">Contact: {CONTACT}</p>
         </section>
 
@@ -155,7 +156,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
               </div>
             </section>
 
-            <Actions record={record} deal={deal} account={address} />
+            {deal.state !== "awaiting" && <Actions record={record} deal={deal} account={address} />}
           </>
         )}
 
@@ -251,7 +252,7 @@ function GameSection() {
 function phaseText(d: SponsorDeal): string {
   if (d.state === "parked") return "Parked";
   if (d.state === "hot") return "Hot";
-  if (d.state === "unstarted") return "Not started";
+  if (d.state === "awaiting") return "Awaiting stake";
   return d.hot ? "Hot at the end" : "Parked at the end";
 }
 

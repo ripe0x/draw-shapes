@@ -8,10 +8,12 @@ import {IPool, IPoolTypes} from "../interfaces/IPool.sol";
 import {FeeSplit} from "./FeeSplit.sol";
 
 /// @notice Controller of one foreign listing lent by a sponsor.
-/// @dev The pool lists the token at `parkedPriceWei` and holds it until it is captured, reclaimed or
-///      rescued. The phase is Parked while the sponsor is owed mint fees (`feeSplit.paidWei() <
-///      capWei`) and Hot after. `capWei` and `sponsor` are fixed at construction, and `start` requires
-///      `feeSplit` to hold the same values and locks it until the deal ends. A Hot listing decays
+/// @dev The sponsor stakes the token: `stake` pulls it from the sponsor and registers it on the pool,
+///      which requires this contract to be the pool's registrar. The pool lists the token at
+///      `parkedPriceWei` and holds it until it is captured, reclaimed or rescued. The phase is Parked
+///      while the sponsor is owed mint fees (`feeSplit.paidWei() < capWei`) and Hot after. `capWei` and
+///      `sponsor` are fixed at construction, and `stake` requires `feeSplit` to hold the same values and
+///      locks it until the deal ends. A Hot listing decays
 ///      toward `floorWei` by `decayWeiPerPull` per settled pull, applied by `tick`. The owner is
 ///      `feeSplit.owner()`. A token the pool exports to this contract is sent on by `releaseHeld`.
 contract SponsoredPrize is IForeignController {
@@ -25,8 +27,9 @@ contract SponsoredPrize is IForeignController {
     error NotPool();
     error ZeroAddress();
     error BadTerms();
-    error AlreadyStarted();
-    error NotStarted();
+    error AlreadyStaked();
+    error NotStaked();
+    error NotRegistrar();
     error UnknownEntry();
     error WrongPhase();
     error TooEarly(uint256 reclaimAfter);
@@ -36,7 +39,7 @@ contract SponsoredPrize is IForeignController {
     error WrongToken();
     error NotParty();
 
-    event Started(uint256 indexed listingId, uint256 pull);
+    event Staked(uint256 indexed listingId);
     event Repriced(uint256 priceWei);
     event Captured(uint256 proceeds);
     event HeldReleased(address indexed to);
@@ -50,8 +53,9 @@ contract SponsoredPrize is IForeignController {
     uint256 public immutable parkedPriceWei;
     uint256 public immutable floorWei;
     uint256 public immutable decayWeiPerPull;
-    uint256 public immutable reclaimAfter;
+    uint256 public immutable reclaimDelay;
 
+    uint256 public reclaimAfter;
     uint256 public listingId;
     uint256 public startedAt;
     uint64 public listedAtPull;
@@ -70,7 +74,7 @@ contract SponsoredPrize is IForeignController {
         uint256 parkedPriceWei_,
         uint256 floorWei_,
         uint256 decayWeiPerPull_,
-        uint256 reclaimAfter_
+        uint256 reclaimDelay_
     ) {
         if (pool_ == address(0) || feeSplit_ == address(0) || sponsor_ == address(0) || collection_ == address(0)) {
             revert ZeroAddress();
@@ -85,30 +89,56 @@ contract SponsoredPrize is IForeignController {
         parkedPriceWei = parkedPriceWei_;
         floorWei = floorWei_;
         decayWeiPerPull = decayWeiPerPull_;
-        reclaimAfter = reclaimAfter_;
+        reclaimDelay = reclaimDelay_;
     }
 
-    /// @notice Records the pool listing of this deal and locks `feeSplit`. Owner only, once, after
-    ///         `Pool.registerForeign` named this contract as the controller and `feeSplit` named it as
-    ///         its prize with this contract's `sponsor` and `capWei` (`TermsMismatch`).
-    function start(uint256 listingId_) external {
-        _requireOwner();
-        if (listingId != 0) revert AlreadyStarted();
+    /// @notice Pulls the token from the sponsor, registers it on the pool at `parkedPriceWei` with this
+    ///         contract as controller, records the listing and locks `feeSplit`. Sponsor only, once.
+    ///         Requires this contract to be the pool's registrar (`NotRegistrar`), the sponsor's
+    ///         approval of this contract for the token, and `feeSplit` to name this contract as its
+    ///         prize with this contract's `sponsor` and `capWei` (`TermsMismatch`). Sets
+    ///         `reclaimAfter` to `block.timestamp + reclaimDelay`.
+    function stake() external {
+        if (msg.sender != sponsor) revert NotSponsor();
+        if (listingId != 0) revert AlreadyStaked();
+        if (pool.registrar() != address(this)) revert NotRegistrar();
         if (feeSplit.sponsor() != sponsor || feeSplit.capWei() != capWei) revert TermsMismatch();
+        IERC721(collection).transferFrom(sponsor, address(this), tokenId);
+        IERC721(collection).approve(address(pool), tokenId);
+        pool.registerForeign(collection, tokenId, address(this), parkedPriceWei);
         IPoolTypes.ForeignListing[] memory all = pool.foreignListings();
-        bool found;
+        uint256 id;
         for (uint256 i; i < all.length; ++i) {
-            if (
-                all[i].listingId == listingId_ && all[i].controller == address(this) && all[i].collection == collection
-                    && all[i].tokenId == tokenId
-            ) found = true;
+            if (all[i].controller == address(this) && all[i].collection == collection && all[i].tokenId == tokenId) {
+                id = all[i].listingId;
+            }
         }
-        if (!found) revert UnknownEntry();
-        listingId = listingId_;
+        if (id == 0) revert UnknownEntry();
+        listingId = id;
         feeSplit.lock();
         listedAtPull = pool.grail().pulls;
         startedAt = block.timestamp;
-        emit Started(listingId_, listedAtPull);
+        reclaimAfter = block.timestamp + reclaimDelay;
+        emit Staked(id);
+    }
+
+    /// @notice True when `stake` can succeed for the current state: not staked, this contract is the
+    ///         pool's registrar, and the sponsor owns the token and has approved this contract for it
+    ///         (single approval or approval for all).
+    function canStake() external view returns (bool) {
+        if (listingId != 0 || pool.registrar() != address(this)) return false;
+        IERC721 nft = IERC721(collection);
+        try nft.ownerOf(tokenId) returns (address holder) {
+            if (holder != sponsor) return false;
+        } catch {
+            return false;
+        }
+        return nft.getApproved(tokenId) == address(this) || nft.isApprovedForAll(sponsor, address(this));
+    }
+
+    /// @notice True once `stake` has recorded the pool listing.
+    function staked() external view returns (bool) {
+        return listingId != 0;
     }
 
     /// @notice True while the pool lists the token for this deal: started, not captured, and the pool
@@ -165,7 +195,7 @@ contract SponsoredPrize is IForeignController {
     ///         token is unwon.
     function reclaim() external {
         if (msg.sender != sponsor) revert NotSponsor();
-        if (listingId == 0) revert NotStarted();
+        if (listingId == 0) revert NotStaked();
         if (captured || phase() != Phase.Parked) revert WrongPhase();
         if (block.timestamp < reclaimAfter) revert TooEarly(reclaimAfter);
         pool.withdrawForeign(listingId, sponsor);
@@ -187,7 +217,7 @@ contract SponsoredPrize is IForeignController {
     ///         Owner only. In Parked the token belongs to the sponsor, so `to` must be the sponsor.
     function rescue(address to) external {
         _requireOwner();
-        if (listingId == 0) revert NotStarted();
+        if (listingId == 0) revert NotStaked();
         (bool found, uint256 notional) = _entry();
         if (!found || notional != 0) revert NotUnlisted();
         if (phase() == Phase.Parked && to != sponsor) revert WrongDestination();
@@ -197,7 +227,8 @@ contract SponsoredPrize is IForeignController {
 
     /// @notice Sends the token to `sponsor` in Parked or to the owner in Hot when this contract holds
     ///         it, which is the case after the pool exported it here. Sponsor or owner only. Unlocks
-    ///         `feeSplit`.
+    ///         `feeSplit`. `stake` moves the token to the pool in the same transaction, so this
+    ///         contract never holds the token between a transfer from the sponsor and a registration.
     function releaseHeld() external {
         address owner = feeSplit.owner();
         if (msg.sender != sponsor && msg.sender != owner) revert NotParty();

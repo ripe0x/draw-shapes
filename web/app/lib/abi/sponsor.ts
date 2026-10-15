@@ -1,7 +1,12 @@
 // Hand-written from the public functions of src/sponsor/SponsoredPrize.sol, src/sponsor/FeeSplit.sol and Shapes.
-/** `SponsoredPrize.phase()` returns 0 while Parked and 1 while Hot. */
+/** `reclaimAfter()` reads 0 until `stake()`. `SponsoredPrize.phase()` returns 0 while Parked and 1 while Hot. */
 export const sponsoredPrizeAbi = [
   {"type":"function","name":"phase","inputs":[],"outputs":[{"name":"","type":"uint8"}],"stateMutability":"view"},
+  {"type":"function","name":"stake","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"staked","inputs":[],"outputs":[{"name":"","type":"bool"}],"stateMutability":"view"},
+  {"type":"function","name":"canStake","inputs":[],"outputs":[{"name":"","type":"bool"}],"stateMutability":"view"},
+  {"type":"function","name":"reclaimDelay","inputs":[],"outputs":[{"name":"","type":"uint256"}],"stateMutability":"view"},
+  {"type":"event","name":"Staked","inputs":[{"name":"listingId","type":"uint256","indexed":true}],"anonymous":false},
   {"type":"function","name":"reclaimAfter","inputs":[],"outputs":[{"name":"","type":"uint256"}],"stateMutability":"view"},
   {"type":"function","name":"feeSplit","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
   {"type":"function","name":"sponsor","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
