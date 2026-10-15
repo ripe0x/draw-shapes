@@ -382,3 +382,25 @@ a.sponsor-pill {
 .sponsor-tile-pick.is-selected .sponsor-tile-label {
   color: var(--ink);
 }
+
+.sponsor-deal {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 36px;
+}
+.sponsor-deal .sponsor-label {
+  margin-bottom: 8px;
+}
+.sponsor-deal .sponsor-actions {
+  margin-top: 20px;
+  gap: 28px;
+}
+@media (max-width: 640px) {
+  .sponsor-deal {
+    grid-template-columns: 1fr;
+  }
+  .sponsor-deal-art {
+    width: 108px;
+  }
+}

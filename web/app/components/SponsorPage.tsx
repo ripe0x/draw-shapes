@@ -3,16 +3,17 @@
 import Link from "next/link";
 import { type ReactNode, useState } from "react";
 import { useAccount } from "wagmi";
-import { feeSplitAbi, sponsoredPrizeAbi } from "../lib/abi/sponsor";
+import { feeSplitAbi, sponsorOfferAbi, sponsoredPrizeAbi } from "../lib/abi/sponsor";
 import { evmNowAddressUrl } from "../lib/errors";
 import { useListedItems } from "../lib/art";
 import { oneInOf } from "../lib/foreign";
 import { eth, short, utc } from "../lib/format";
 import { drawOdds, usePool } from "../lib/pool";
-import { type DealState, type SponsorDeal, useSponsorDeal, useWalletTokens } from "../lib/sponsor";
+import { type DealState, type OfferDeal, type OfferDealState, type OfferView, type SponsorDeal, useOffer, useSponsorDeal, useWalletTokens } from "../lib/sponsor";
+import type { OfferRecord } from "../lib/offer";
 import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
-import { CyclingPunk, SponsorCtaBand, SponsorPunkPicker, SponsorStakePanel, SponsorTakenBand } from "./SponsorBands";
+import { CyclingPunk, OfferTakePanel, SponsorCtaBand, SponsorName, SponsorPunkPicker, SponsorStakePanel, SponsorTakenBand, TokenSquare } from "./SponsorBands";
 import { TokenArt } from "./TokenArt";
 import { type Tx, TxButton, TxLine, useTx } from "./Tx";
 
@@ -50,9 +51,12 @@ const STATE_WORD: Record<DealState, string> = {
   ended: "Ended",
 };
 
-export function SponsorPage({ record }: { record?: SponsorRecord }) {
+/** Offer mode when the offer record is present; the per-deal record shows only without it. */
+export function SponsorPage({ record: dealRecord, offer }: { record?: SponsorRecord; offer?: OfferRecord }) {
   const dep = useDeployment();
   const { address } = useAccount();
+  const record = offer ? undefined : dealRecord;
+  const offerQuery = useOffer(offer, address);
   const pool = usePool().data;
   const query = useSponsorDeal(record);
   const deal = query.data;
@@ -67,16 +71,16 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
   const listPrice = item && item.notional !== 0n ? item.notional : undefined;
   const odds = pool ? drawOdds(pool.board, pool.grail, pool.foreign) : undefined;
   const weight = odds?.rows.find((r) => item && r.key === `foreign-${item.listingId}`)?.weight ?? 0n;
-  const badge = record ? badgeText(deal, query.isLoading, listPrice) : "Slot open";
+  const badge = offer ? offerBadge(offerQuery.data, offerQuery.isLoading) : record ? badgeText(deal, query.isLoading, listPrice) : "Slot open";
   const oneIn = listPrice !== undefined ? oneInOf(weight, odds?.total ?? 0n) : undefined;
 
   return (
     <>
       <main className="sponsor-page">
         <section className="sponsor-hero">
-          {record && (
+          {(record ?? offer) && (
             <div className="sponsor-hero-art">
-              <CyclingPunk collection={record.collection} />
+              <CyclingPunk collection={(record ?? offer)!.collection} />
             </div>
           )}
           <span className="sponsor-kicker">One prize, one sponsor</span>
@@ -90,7 +94,10 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
 
         {query.error && <p className="error-line">Could not read the deal: {query.error.message}</p>}
 
-        {!record && <SponsorCtaBand />}
+        {offerQuery.error && <p className="error-line">Could not read the offer: {offerQuery.error.message}</p>}
+
+        {!record && !offer && <SponsorCtaBand />}
+        {offer && offerQuery.data && <OfferSections record={offer} o={offerQuery.data} />}
 
         {record && deal && (
           <>
@@ -130,14 +137,25 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
 
         <section className="sponsor-section" id="stake">
           <div className="sponsor-label">Stake your prize</div>
-          <div className="sponsor-steps">
-            <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim delay.</Step>
-            <Step n="02">The operator publishes the deal for your wallet and token.</Step>
-            <Step n="03">Approve and stake from this page. The token moves to the pool and the fee split locks.</Step>
-            <Step n="04">Payments begin at the next mint fee.</Step>
-          </div>
-          <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the operator, is planned.</p>
-          <p className="sponsor-note">Contact: {CONTACT}</p>
+          {offer ? (
+            <div className="sponsor-steps">
+              <Step n="01">Pick a punk in your wallet.</Step>
+              <Step n="02">Approve the offer contract for that punk.</Step>
+              <Step n="03">Take. The punk moves to the pool and the deal joins the fee queue.</Step>
+              <Step n="04">Mint fees credit the queue from the next mint, oldest deal first.</Step>
+            </div>
+          ) : (
+            <>
+              <div className="sponsor-steps">
+                <Step n="01">Agree the terms with the operator: list price, cap, floor, decay per pull and the reclaim delay.</Step>
+                <Step n="02">The operator publishes the deal for your wallet and token.</Step>
+                <Step n="03">Approve and stake from this page. The token moves to the pool and the fee split locks.</Step>
+                <Step n="04">Payments begin at the next mint fee.</Step>
+              </div>
+              <p className="sponsor-note">A permissionless offer, where a sponsor lists a token without the operator, is planned.</p>
+              <p className="sponsor-note">Contact: {CONTACT}</p>
+            </>
+          )}
         </section>
 
         {record && deal && (
@@ -172,7 +190,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
           <div className="sponsor-label">How it works</div>
           <div className="sponsor-steps">
             <Step n="01">The pool lists the token at the parked price. Each pull draws it with a chance set by that price.</Step>
-            <Step n="02">The operator&apos;s Shapes mint fees go to the sponsor until the cap is paid. Withdrawals come from the fee split.</Step>
+            <Step n="02">The operator&apos;s Shapes mint fees go to the sponsor until the cap is paid. Withdrawals come from {offer ? "the offer contract" : "the fee split"}.</Step>
             <Step n="03">At the cap the token turns hot. Its price falls with every settled pull toward the floor and the sponsor has no further claim.</Step>
             <Step n="04">A pull that draws the token captures it. The ticket FWA pays for it goes to the GRAIL fund.</Step>
           </div>
@@ -187,7 +205,7 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
             </div>
             <div>
               <b>Payments come only from mint fees. </b>
-              <span>The fee split pays the sponsor from the operator&apos;s Shapes mint fees. Depositor shares, Shape backing and pool cash keep separate balances.</span>
+              <span>{offer ? "The offer contract" : "The fee split"} pays the sponsor from the operator&apos;s Shapes mint fees. Depositor shares, Shape backing and pool cash keep separate balances.</span>
             </div>
             <div>
               <b>A capture while parked ends payments at what was paid. </b>
@@ -219,6 +237,11 @@ export function SponsorPage({ record }: { record?: SponsorRecord }) {
           <a href={evmNowAddressUrl(dep.pool, dep.chainId)} target="_blank" rel="noreferrer">
             Pool
           </a>
+          {offer && (
+            <a href={evmNowAddressUrl(offer.offer, dep.chainId)} target="_blank" rel="noreferrer">
+              Offer contract
+            </a>
+          )}
           {record && (
             <>
               <a href={evmNowAddressUrl(record.prize, dep.chainId)} target="_blank" rel="noreferrer">
@@ -254,6 +277,163 @@ function GameSection() {
       </div>
       {shape && <TokenArt token={shape} width={132} />}
     </section>
+  );
+}
+
+function offerBadge(o: OfferView | undefined, loading: boolean): string {
+  if (!o) return loading ? "Reading" : "Unavailable";
+  if (!o.terms.enabled) return "Offer closed";
+  if (o.freeSlots === 0) return "Offer full, next slot when a deal is paid";
+  return `Offer open, ${o.freeSlots} ${o.freeSlots === 1 ? "slot" : "slots"} free`;
+}
+
+const OFFER_STATE_WORD: Record<OfferDealState, string> = {
+  parked: "Parked",
+  hot: "Hot",
+  captured: "Captured",
+  held: "Token held, release pending",
+  unlisted: "Unlisted, rescue pending",
+  reclaimed: "Reclaimed",
+  released: "Released",
+  ended: "Ended",
+};
+
+/** Terms band with the take flow, the fee queue and the connected wallet's deals. */
+function OfferSections({ record, o }: { record: OfferRecord; o: OfferView }) {
+  const dep = useDeployment();
+  const { address } = useAccount();
+  const [picked, setPicked] = useState<bigint>();
+  const owned = useWalletTokens(record.collection, address).data;
+  const selected = picked !== undefined && owned?.includes(picked) ? picked : owned?.[0];
+  const t = o.terms;
+  const mine = address ? o.deals.filter((d) => same(d.sponsor, address)) : [];
+  const showMine = !!address && (mine.length > 0 || o.balance > 0n || same(address, o.owner));
+
+  return (
+    <>
+      <div className="sponsor-band sponsor-band-with-art">
+        <div>
+          <h2>Put a punk on the board</h2>
+          <p>
+            Stake any Wrapped Cryptopunk and earn the operator&apos;s Shapes mint fees up to {eth(t.capWei, 4)} ETH, then it goes hot.
+          </p>
+          <dl className="sponsor-facts">
+            <div><dt>Parked price</dt><dd>{eth(t.parkedPriceWei, 4)} ETH</dd></div>
+            <div><dt>Cap</dt><dd>{eth(t.capWei, 4)} ETH of mint fees</dd></div>
+            <div><dt>Floor</dt><dd>{eth(t.floorWei, 4)} ETH</dd></div>
+            <div><dt>Decay per pull</dt><dd>{eth(t.decayWeiPerPull, 6)} ETH once hot</dd></div>
+            <div><dt>Reclaim delay</dt><dd>{+(Number(t.reclaimDelay) / 86400).toFixed(2)} days</dd></div>
+            <div><dt>Slots</dt><dd>{o.freeSlots} free of {t.maxOpen.toString()}</dd></div>
+          </dl>
+          <OfferTakePanel record={record} offer={o} tokens={address ? owned : undefined} selected={selected} />
+        </div>
+        <div className="sponsor-band-art">
+          {selected === undefined ? <CyclingPunk collection={record.collection} /> : <TokenSquare collection={record.collection} tokenId={selected} />}
+        </div>
+      </div>
+      {address && owned && owned.length > 0 && <SponsorPunkPicker collection={record.collection} tokens={owned} selected={selected} onPick={setPicked} />}
+
+      <section className="sponsor-section">
+        <div className="sponsor-label">Fee queue</div>
+        {o.queue.length === 0 ? (
+          <p className="sponsor-note">No deal is waiting for fees. A take now is first in line.</p>
+        ) : (
+          <div className="sponsor-rows">
+            {o.queue.map((q, i) => {
+              const d = o.deals.find((x) => x.id === q.dealId);
+              return (
+                <Row
+                  key={q.dealId.toString()}
+                  label={`${i + 1}. ${d ? `Punk #${d.tokenId}` : `Deal ${q.dealId}`}`}
+                  value={
+                    d ? (
+                      <>
+                        <SponsorName address={d.sponsor} /> · paid {eth(d.paidWei, 4)} of {eth(d.capWei, 4)} ETH
+                      </>
+                    ) : (
+                      `${eth(q.remainingWei, 4)} ETH remaining`
+                    )
+                  }
+                />
+              );
+            })}
+          </div>
+        )}
+        <p className="sponsor-note">
+          {o.expectedWaitWei === 0n ? "Your wait: none." : `Your wait: about ${eth(o.expectedWaitWei, 4)} ETH of fees ahead of you.`}
+        </p>
+      </section>
+
+      {showMine && (
+        <section className="sponsor-section">
+          <div className="sponsor-label">Your deals</div>
+          <div className="sponsor-actions">
+            <Action
+              label="Offer balance"
+              big={`${eth(o.balance, 6)} ETH`}
+              button="Withdraw"
+              disabled={o.balance === 0n}
+              send={(tx) => tx.write({ address: record.offer, abi: sponsorOfferAbi, chainId: dep.chainId, functionName: "withdraw" })}
+              note="Pays this wallet's balance in the offer contract."
+            />
+          </div>
+          {mine.map((d) => (
+            <OfferDealCard key={d.id.toString()} record={record} deal={d} chainNow={o.chainNow} />
+          ))}
+        </section>
+      )}
+    </>
+  );
+}
+
+/** One deal of the connected wallet with the actions its phase allows. */
+function OfferDealCard({ record, deal, chainNow }: { record: OfferRecord; deal: OfferDeal; chainNow: bigint }) {
+  const dep = useDeployment();
+  const offer = { address: record.offer, abi: sponsorOfferAbi, chainId: dep.chainId } as const;
+  const reclaimable = deal.state === "parked" && chainNow >= deal.reclaimAfter;
+  return (
+    <div className="sponsor-deal">
+      <div className="sponsor-deal-art">
+        <TokenSquare collection={deal.collection} tokenId={deal.tokenId} />
+      </div>
+      <div>
+        <div className="sponsor-label">
+          Punk #{deal.tokenId.toString()} · {OFFER_STATE_WORD[deal.state]}
+        </div>
+        <div className="sponsor-rows">
+          <Row label="Paid" value={`${eth(deal.paidWei, 4)} of ${eth(deal.capWei, 4)} ETH`} strong />
+          <Row label="Reclaim from" value={utc(deal.reclaimAfter)} />
+        </div>
+        <div className="sponsor-actions">
+          {deal.state === "parked" && (
+            <Action
+              label="Reclaim"
+              big={reclaimable ? "Ready" : `From ${utc(deal.reclaimAfter)}`}
+              button="Reclaim token"
+              disabled={!reclaimable}
+              send={(tx) => tx.write({ ...offer, functionName: "reclaim", args: [deal.id] })}
+              note="Returns the token to the sponsor. Payments end at the amount paid and the rest of the cap is forfeited."
+            />
+          )}
+          {deal.state === "hot" && !deal.atFloor && (
+            <Action
+              label="Advance price"
+              button="Advance price"
+              send={(tx) => tx.write({ ...offer, functionName: "tick", args: [deal.id] })}
+              note="Anyone can call this. The pool accepts one reprice per rotate interval, so a call inside the interval leaves the price unchanged."
+            />
+          )}
+          {deal.state === "held" && (
+            <Action
+              label="Release held"
+              button="Release held"
+              send={(tx) => tx.write({ ...offer, functionName: "releaseHeld", args: [deal.id] })}
+              note="Sends the token held by the offer contract to the sponsor while parked and to the operator once hot."
+            />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

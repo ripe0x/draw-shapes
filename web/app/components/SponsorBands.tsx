@@ -10,8 +10,9 @@ import { evmNowAddressUrl } from "../lib/errors";
 import { short } from "../lib/format";
 import { useForeignImage } from "../lib/foreign";
 import { useCyclingPunkArt } from "../lib/punkArt";
-import { sponsoredPrizeAbi } from "../lib/abi/sponsor";
-import { type SponsorDeal, useStakeGate } from "../lib/sponsor";
+import { sponsorOfferAbi, sponsoredPrizeAbi } from "../lib/abi/sponsor";
+import type { OfferRecord } from "../lib/offer";
+import { type OfferView, type SponsorDeal, useStakeGate, useTakeGate } from "../lib/sponsor";
 import type { SponsorRecord } from "../lib/sponsorRecord";
 import { useDeployment } from "../Providers";
 import { CollectionName } from "./SponsoredPrizes";
@@ -29,7 +30,7 @@ export function CyclingPunk({ collection }: { collection?: Address }) {
 }
 
 /** Square tile with one token's image. */
-function TokenSquare({ collection, tokenId }: { collection: Address; tokenId: bigint }) {
+export function TokenSquare({ collection, tokenId }: { collection: Address; tokenId: bigint }) {
   const src = useForeignImage(collection, tokenId).data;
   return (
     <div className="sponsor-punk" aria-label={`Token ${tokenId.toString()}`}>
@@ -57,6 +58,17 @@ export function SponsorCtaBand() {
   );
 }
 
+/** A sponsor as a link: the ENS name on mainnet, else the short address. */
+export function SponsorName({ address }: { address: Address }) {
+  const dep = useDeployment();
+  const ens = useEnsName({ address, chainId: mainnet.id, query: { enabled: dep.chainId === mainnet.id } });
+  return (
+    <a href={evmNowAddressUrl(address, dep.chainId)} target="_blank" rel="noreferrer">
+      {ens.data ?? short(address)}
+    </a>
+  );
+}
+
 /** Band for a deal: the prize, its state, the sponsor (ENS on mainnet, else the short
  *  address) and the prize art. Without a `tokenId` the heading is the collection name and the
  *  art cycles through the collection. `children` render under the state line. */
@@ -73,8 +85,6 @@ export function SponsorTakenBand({
   state: string;
   children?: ReactNode;
 }) {
-  const dep = useDeployment();
-  const ens = useEnsName({ address: sponsor, chainId: mainnet.id, query: { enabled: dep.chainId === mainnet.id } });
   return (
     <div className="sponsor-band sponsor-band-with-art">
       <div>
@@ -85,10 +95,7 @@ export function SponsorTakenBand({
         <p className="sponsor-band-line">
           {state}
           <br />
-          Sponsor{" "}
-          <a href={evmNowAddressUrl(sponsor, dep.chainId)} target="_blank" rel="noreferrer">
-            {ens.data ?? short(sponsor)}
-          </a>
+          Sponsor <SponsorName address={sponsor} />
         </p>
         {children}
       </div>
@@ -216,6 +223,87 @@ export function SponsorStakePanel({ record, deal, tokens, selected }: { record: 
           : "Waiting for the operator to enable this deal."}
       </p>
       <TxLine tx={stake} />
+    </div>
+  );
+}
+
+/** Why `take` is unavailable, from the offer's terms and open slots; undefined when the offer accepts takes. */
+export function offerBlock(o: OfferView): string | undefined {
+  if (!o.terms.enabled) return "The offer is closed.";
+  if (o.freeSlots === 0) return "The offer is full. A slot opens when a deal is paid.";
+  return undefined;
+}
+
+/** Take panel of the standing offer: connect, then for the selected token approve the offer contract
+ *  (step 1 of 2) and call `take(collection, tokenId)` (step 2 of 2). `tokens` are the connected wallet's
+ *  tokens of the collection, undefined while unread. A landed transaction refetches the offer. */
+export function OfferTakePanel({ record, offer, tokens, selected }: { record: OfferRecord; offer: OfferView; tokens?: bigint[]; selected?: bigint }) {
+  const dep = useDeployment();
+  const { address } = useAccount();
+  const approve = useTx();
+  const take = useTx();
+  const gate = useTakeGate(record, address, selected).data;
+  const id = selected?.toString();
+  const line = (text: ReactNode) => (
+    <div className="sponsor-stake">
+      <p className="sponsor-band-line">{text}</p>
+    </div>
+  );
+
+  if (!address) {
+    return (
+      <div className="sponsor-stake">
+        <ConnectButton.Custom>
+          {({ mounted, openConnectModal }) => (
+            <button type="button" className="sponsor-pill sponsor-pill-invert" disabled={!mounted} onClick={openConnectModal}>
+              Connect a wallet <span aria-hidden>→</span>
+            </button>
+          )}
+        </ConnectButton.Custom>
+      </div>
+    );
+  }
+  if (!tokens) return line("Reading this wallet.");
+  if (selected === undefined)
+    return line(
+      <>
+        This wallet holds no <CollectionName collection={record.collection} />.
+      </>,
+    );
+  if (!gate?.approved) {
+    return (
+      <div className="sponsor-stake">
+        <TxButton
+          tx={approve}
+          label={`Approve punk #${id}`}
+          className="sponsor-pill sponsor-pill-invert"
+          disabled={!gate}
+          onClick={() =>
+            void approve.run(() => approve.write({ address: record.collection, abi: erc721Abi, chainId: dep.chainId, functionName: "approve", args: [record.offer, selected] }))
+          }
+        />
+        <p className="sponsor-band-line">Step 1 of 2. Approval lets the offer contract move this one token when you send the next transaction.</p>
+        <TxLine tx={approve} />
+      </div>
+    );
+  }
+  const block = offerBlock(offer);
+  return (
+    <div className="sponsor-stake">
+      <TxButton
+        tx={take}
+        label={`Take punk #${id}`}
+        className="sponsor-pill sponsor-pill-invert"
+        disabled={!gate.canTake || !!block}
+        onClick={() => void take.run(() => take.write({ address: record.offer, abi: sponsorOfferAbi, chainId: dep.chainId, functionName: "take", args: [record.collection, selected] }))}
+      />
+      <p className="sponsor-band-line">
+        {block ??
+          (gate.canTake
+            ? "Step 2 of 2. This transaction moves the token to the pool, joins the fee queue and sets the reclaim date."
+            : "The offer cannot take this punk now. The pool may be at its listing cap.")}
+      </p>
+      <TxLine tx={take} />
     </div>
   );
 }

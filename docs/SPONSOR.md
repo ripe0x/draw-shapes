@@ -152,8 +152,16 @@ reclaim 30 days, `maxOpen` 2. Changing terms affects future takes only.
   the floor, `tick(dealId)` by anyone, `atFloor`. A capture ends the deal and its payments. `reclaim(dealId)`
   by the sponsor while Parked after `reclaimAfter`. `releaseHeld(dealId)` after an exit. `rescue(dealId, to)`
   by the owner only when the pool reports the token unlisted, `to` the sponsor while Parked.
-- Views: `deals()`, `queue()` (unpaid deals in order with remaining cap), `expectedWait(collection)` is
-  the sum of remaining caps ahead of a new take, `canTake(collection, tokenId, who)`.
-- Keeper: `Shapes.withdrawFees(offer)` each pass, `tick` for every Hot deal.
-- Record `deployments/<chainId>-offer.json` with the contract address. The page reads it in place of the
+- Views: `deals()`, `dealCount()`, `deal(id)`, `queue()` (unpaid active deals in order with remaining cap),
+  `expectedWaitWei(collection)` (the sum of remaining caps ahead of a new take; the queue is shared by every
+  collection), `canTake(collection, tokenId, who)`, `phase(id)`, `active(id)`, `terms(collection)`.
+- Deal terms are copied into the deal at take time: `capWei`, `floorWei`, `decayWeiPerPull`, `parkedPriceWei` and
+  `reclaimAfter`.
+- Contract: `src/sponsor/SponsorOffer.sol`. Deploy: `script/DeployOffer.s.sol` with `script/env/offer.example.env`.
+  The script sets the terms, calls `pool.setRegistrar(offer)` when the broadcaster is the pool admin (otherwise it
+  logs the `cast send` line), logs the `Shapes.setFeeRecipient(offer)` step and writes the record.
+- Keeper: `script/keeper.sh` with `SPONSOR_OFFER` and `SHAPES` set calls `Shapes.withdrawFees(offer)` when owed and
+  `tick(id)` for every deal that is active, Hot and not `atFloor`.
+- Record `deployments/<chainId>-offer.json` with `{offer, collection}`. The page reads it in place of the
   per-deal record when present.
+- Tests: `test/fork/SponsorOffer.t.sol`.

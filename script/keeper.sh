@@ -3,6 +3,8 @@
 # Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool), KEEPER, INTERVAL (default 15), ONCE=1 for one pass.
 # SPONSOR_PRIZE, SHAPES and FEE_SPLIT (all three) add two steps to each pass: Shapes.withdrawFees(FEE_SPLIT)
 # when feesOwedTo(FEE_SPLIT) is nonzero, and SponsoredPrize.tick() while the prize is active, Hot and not atFloor.
+# SPONSOR_OFFER and SHAPES add the same fee step for the standing offer: Shapes.withdrawFees(SPONSOR_OFFER) when owed,
+# and tick(id) for every deal whose phase is Hot and not atFloor.
 # LOCAL_VRF=1 runs `script/local.sh fulfill` at the start of every pass (anvil only).
 # WALLET_MODE=anvil sends with --unlocked --from $KEEPER. WALLET_MODE=keystore sends with
 # --account $KEYSTORE_ACCOUNT and --password-file $KEYSTORE_PASSWORD_FILE (shell only, never a key in argv).
@@ -84,6 +86,21 @@ pass() {
        && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'phase()(uint8)')" == "1" ]]; then
       TARGET=$SPONSOR_PRIZE send "tick" "" 'tick()'
     fi
+  fi
+  if [[ -n "${SPONSOR_OFFER:-}" && -n "${SHAPES:-}" ]]; then
+    local ofees n id deal
+    ofees=$(cast call --rpc-url "$RPC_URL" "$SHAPES" 'feesOwedTo(address)(uint256)' "$SPONSOR_OFFER" | awk '{print $1}')
+    [[ "$ofees" == "0" ]] || TARGET=$SHAPES send "withdrawFees($SPONSOR_OFFER) pendingWei=$ofees" "" 'withdrawFees(address)' "$SPONSOR_OFFER"
+    # phase(id) is 1 in Hot. deal(id) is a static struct of 17 words; word 13 is atFloor.
+    n=$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'dealCount()(uint256)' | awk '{print $1}')
+    for ((id = 0; id < n; id++)); do
+      deal=$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'deal(uint256)' "$id")
+      if [[ "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'active(uint256)(bool)' "$id")" == "true" \
+         && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'phase(uint256)(uint8)' "$id")" == "1" \
+         && "${deal:$((2 + 64 * 13 + 63)):1}" == "0" ]]; then
+        TARGET=$SPONSOR_OFFER send "tick($id)" "" 'tick(uint256)' "$id"
+      fi
+    done
   fi
 }
 
