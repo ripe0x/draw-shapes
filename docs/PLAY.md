@@ -12,9 +12,15 @@ writes CSVs. `script/report.py` turns them into tables and an HTML page. The con
 5. Compare with FWA: `python3 script/report.py evidence/play/test_play500PerDay --fwa`. The flag reads
    `evidence/fwa/reference.json` unless a path follows it.
 
-Tests: `test_play100PerDay`, `test_play500PerDay`, `test_play2000PerDay`, and `test_playCustom`, which runs
-when `PLAY_PULLS_PER_DAY` is set. The first run at a fresh fork block fills the RPC cache and is slow.
-Later runs read it from disk.
+6. Rebuild the visual report: `python3 script/report.py --visual`. It reads `evidence/play/test_play500PerDay` and
+   `evidence/play/test_play100PerDay`, the FWA reference, `evidence/play/visual-static.json` (the FWA board and
+   previous-design columns) and `evidence/play/visual-report.template.html`, and writes
+   `evidence/play/visual-report.html`. Pass run directories to use others: `--visual MAIN_DIR [COMPARE_DIR]`.
+
+Tests: `test_play100PerDay`, `test_play500PerDay`, `test_playPullPastHourEnd`, `test_play2000PerDay`, and
+`test_playCustom`, which runs when `PLAY_PULLS_PER_DAY` is set. The first run at a fresh fork block fills the RPC
+cache and is slow. Later runs read it from disk. The committed runs are 100 a day, 500 a day and the pull past the
+hour end. The 2,000 a day run takes over an hour and is produced on demand; its directory is not committed.
 
 ## Env overrides
 
@@ -46,13 +52,16 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
 
 - Player: return is backing received over the ticket paid (the FWA acquisition fee; the VRF fee is zero at the fork block). The share at or above 1x is
   the share of pulls that return at least their ticket. GRAIL rows give hits per group and the hour of the first hit.
-  Group 0 (report label "minor") is the 1 ETH pieces and group 1 (label "major") is the merged items. `hourly.csv`
-  carries per-group backing, list price and odds columns (`grailBacking0` to `grailOddsBps1`) and the `grailFund`
-  and `grailTarget` columns, which show the fund filling toward the running cycle's target.
+  Group 0 is the 1 ETH pieces and group 1 is the merged items. `hourly.csv` carries per-group backing, list price
+  and odds columns (`grailBacking0` to `grailOddsBps1`) and the `grailFund` and `grailTarget` columns, which show
+  the fund filling toward the running cycle's target. The table adds the fund and target at the end, the fund peak
+  and the merged item's backing at the end.
 - Depositor: NAV per share at hour 0 (board built) and at the last hour, with the annualised rate. Exit wait runs
   from `withdraw` until the claim queue head passes its entry. Payouts from cash count as 0 h.
-- Board: purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
-  Rotate and settle calls are counted by the reason `rotateDue()` and `settleDue()` returned. A keeper tick runs every
+- Board: listed items at hour 0, at the last hour and at the peak (the board is sized from NAV and grows).
+  Purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
+  Rotate and settle calls are counted by the reason `rotateDue()` and `settleDue()` returned (settle: Batch, Age,
+  Thin, Deep). A keeper tick runs every
   5 minutes: it calls `settle` when `settleDue()` is nonzero and `rotate` when `rotateDue()` is nonzero.
 - Return buckets list the share of pulls by value over ticket. With `--fwa`, one reference column follows the
   run columns: "FWA V2 main, expected" (see FWA reference data). Every row with a value on both sides (ticket,
@@ -67,7 +76,8 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
   surcharge (ticket over expected backing) and the settlement discount.
 
 Files per run: `pulls.csv` (one row per request), `hourly.csv` (hour 0 is the baseline, hour h covers the h-th
-hour), `claims.csv`, `run.txt` (resolved inputs), `report.html`.
+hour), `claims.csv`, `run.txt` (resolved inputs), `report.html`. `evidence/play/visual-report.html` is the visual
+page across the 500 a day and 100 a day runs.
 
 ## FWA reference data
 

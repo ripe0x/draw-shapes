@@ -2,6 +2,7 @@
 """Reads run directories written by test/scenario/PlayMonth.t.sol and prints the player and depositor tables.
 
 usage: report.py RUN_DIR [RUN_DIR ...] [--fwa [REFERENCE_JSON]] [--no-html]
+       report.py --visual [MAIN_RUN_DIR [COMPARE_RUN_DIR]]
 
 Each RUN_DIR holds pulls.csv, hourly.csv, claims.csv and run.txt. The tables print one column per run. With
 --fwa one reference column "FWA V2 main, expected" is added from REFERENCE_JSON (default
@@ -13,18 +14,24 @@ After the table, an example pull block splits one ticket on each side. The Shape
 run's pulls.csv totals and the fee split in run.txt: the FWA protocol keeps (paid - base) / 2 with
 base = paid / feeOverEv, each ordinary capture owes mintFee x rungs, and the remaining margin divides by
 PREMIUM_BPS : MAINTENANCE_BPS : FEED_BPS. Unless --no-html is given, report.html is written into each RUN_DIR.
+--visual writes evidence/play/visual-report.html from evidence/play/visual-report.template.html, the main run (default
+evidence/play/test_play500PerDay), a second run for the NAV and board lines (default test_play100PerDay), the FWA
+reference and evidence/play/visual-static.json (the FWA board and previous-design columns, fixed data).
 Standard library only.
 """
 import csv
 import json
 import math
 import os
+import random
 import sys
 
 ETH = 10**18
 DEFAULT_REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "fwa", "reference.json")
 TRIGGERS = ["Claim", "GrailStep", "Held"]
-SETTLE_TRIGGERS = ["Batch", "Age", "Thin"]
+SETTLE_TRIGGERS = ["Batch", "Age", "Thin", "Deep"]
+# pulls.csv "track" values and hourly.csv group suffixes: 0 is the 1 ETH pieces, 1 is the merged items.
+GROUPS = (("minor", 0, "1 ETH pieces"), ("major", 1, "merged items"))
 # Edges of the return buckets, as multiples of the ticket. The last bucket is open ended.
 EDGES = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3, 5, 10]
 RETURN_KINDS = ("Shape", "Pack", "Grail")
@@ -100,10 +107,11 @@ def analyze(run_dir):
             m["share_" + kind] = sum(1 for r in counted if r["kind"] == kind) / len(counted)
     m["not_returned"] = len(pulls) - len(counted)
 
-    for track in ("minor", "major"):
+    for track, _, _ in GROUPS:
         hits = [int(r["hour"]) for r in pulls if r["kind"] == "Grail" and r["track"] == track]
         m["grail_" + track] = len(hits)
         m["grail_first_" + track] = min(hits) if hits else None
+    m["grail_captures"] = m["grail_minor"] + m["grail_major"]
 
     if hourly:
         first, last = hourly[0], hourly[-1]
@@ -119,7 +127,7 @@ def analyze(run_dir):
             m["rot_" + t] = sum(int(r["rot" + t]) for r in body)
         m["settles"] = sum(int(r["settles"]) for r in body)
         for t in SETTLE_TRIGGERS:
-            m["set_" + t] = sum(int(r["set" + t]) for r in body)
+            m["set_" + t] = sum(int(r.get("set" + t, 0)) for r in body)
         m["settle_listed"] = sum(int(r["settleListed"]) for r in body)
         m["settle_refund"] = sum(int(r["settleRefund"]) for r in body) / ETH
         m["inventory_changed"] = sum(int(r["inventoryChanged"]) for r in body)
@@ -127,6 +135,14 @@ def analyze(run_dir):
         m["wait_per_pull"] = sum(int(r["pullWaitSeconds"]) for r in body) / max(1, sum(int(r["pulls"]) for r in body))
         m["listed_avg"] = sum(int(r["listedCount"]) for r in body) / len(body)
         m["listed_min"] = min(int(r["listedCount"]) for r in body)
+        m["listed_start"], m["listed_end"] = int(first["listedCount"]), int(last["listedCount"])
+        m["listed_max"] = max(int(r["listedCount"]) for r in hourly)
+        if "grailFund" in last:
+            m["grail_fund_end"] = int(last["grailFund"]) / ETH
+            m["grail_target_end"] = int(last["grailTarget"]) / ETH
+            m["grail_fund_max"] = max(int(r["grailFund"]) for r in hourly) / ETH
+        m["grail_pieces_end"] = int(last["grailBacking0"]) / ETH
+        m["grail_item_end"] = int(last["grailBacking1"]) / ETH
         for t in (0, 1):
             m[f"odds_avg_{t}"] = sum(float(r[f"grailOddsBps{t}"]) for r in body) / len(body)
             # Hourly end-of-hour odds times that hour's pulls: a check of hits against odds.
@@ -175,14 +191,19 @@ ROWS = [
     ("share Shape", "share_Shape", _pct),
     ("share Pack", "share_Pack", _pct),
     ("share GRAIL", "share_Grail", _pct),
-    ("GRAIL hits minor", "grail_minor", lambda v: _n(v)),
-    ("first minor hit", "grail_first_minor", _first),
-    ("GRAIL hits major", "grail_major", lambda v: _n(v)),
-    ("first major hit", "grail_first_major", _first),
-    ("expected hits minor (odds x pulls)", "hits_expected_0", lambda v: _n(v, 2)),
-    ("avg odds minor (bps of weight)", "odds_avg_0", lambda v: _n(v, 2)),
-    ("expected hits major (odds x pulls)", "hits_expected_1", lambda v: _n(v, 2)),
-    ("avg odds major (bps of weight)", "odds_avg_1", lambda v: _n(v, 2)),
+    ("GRAIL captures, 1 ETH pieces", "grail_minor", lambda v: _n(v)),
+    ("first 1 ETH piece capture", "grail_first_minor", _first),
+    ("GRAIL captures, merged items", "grail_major", lambda v: _n(v)),
+    ("first merged item capture", "grail_first_major", _first),
+    ("expected captures, 1 ETH pieces (odds x pulls)", "hits_expected_0", lambda v: _n(v, 2)),
+    ("avg odds, 1 ETH pieces (bps of weight)", "odds_avg_0", lambda v: _n(v, 2)),
+    ("expected captures, merged items (odds x pulls)", "hits_expected_1", lambda v: _n(v, 2)),
+    ("avg odds, merged items (bps of weight)", "odds_avg_1", lambda v: _n(v, 2)),
+    ("GRAIL fund, end (ETH)", "grail_fund_end", lambda v: _n(v, 3)),
+    ("GRAIL fund, peak (ETH)", "grail_fund_max", lambda v: _n(v, 3)),
+    ("GRAIL cycle target, end (ETH)", "grail_target_end", lambda v: _n(v, 1)),
+    ("1 ETH pieces on the board, end (ETH)", "grail_pieces_end", lambda v: _n(v, 1)),
+    ("largest merged item, end (ETH backing)", "grail_item_end", lambda v: _n(v, 1)),
     ("rejected pulls", "rejected", lambda v: _n(v)),
     ("avg wait for the pause (s/pull)", "wait_per_pull", lambda v: _n(v, 1)),
     ("Depositor", None, None),
@@ -195,6 +216,9 @@ ROWS = [
     ("exit wait, average (h)", "exit_avg_h", lambda v: _n(v, 2)),
     ("exit wait, max (h)", "exit_max_h", lambda v: _n(v, 2)),
     ("Board", None, None),
+    ("listed items, hour 0", "listed_start", lambda v: _n(v)),
+    ("listed items, last hour", "listed_end", lambda v: _n(v)),
+    ("listed items, peak", "listed_max", lambda v: _n(v)),
     ("listed items, average", "listed_avg", lambda v: _n(v, 1)),
     ("listed items, minimum", "listed_min", lambda v: _n(v)),
     ("purchase pause (min/day)", "pause_min_day", lambda v: _n(v, 1)),
@@ -340,10 +364,15 @@ def write_html(m, fwa, ref=None):
     xs = [int(r["hour"]) for r in rows]
     charts = [
         line_chart("NAV per share (ETH)", [("NAV per share", [(x, int(r["navPerShare"]) / ETH) for x, r in zip(xs, rows)])]),
-        line_chart("Listed items", [("listed", [(x, int(r["listedCount"])) for x, r in zip(xs, rows)])]),
+        line_chart("Board depth, listed items", [("listed", [(x, int(r["listedCount"])) for x, r in zip(xs, rows)])]),
         line_chart(
             "GRAIL odds (bps of FWA selection weight)",
-            [(f"track {t}", [(x, float(r[f"grailOddsBps{t}"])) for x, r in zip(xs, rows)]) for t in (0, 1)],
+            [(label, [(x, float(r[f"grailOddsBps{t}"])) for x, r in zip(xs, rows)]) for _, t, label in GROUPS],
+        ),
+        line_chart("GRAIL fund (ETH)", [("fund", [(x, int(r["grailFund"]) / ETH) for x, r in zip(xs, rows)])]),
+        line_chart(
+            "GRAIL backing (ETH)",
+            [(label, [(x, int(r[f"grailBacking{t}"]) / ETH) for x, r in zip(xs, rows)]) for _, t, label in GROUPS],
         ),
     ]
     hist_series = [(m["name"], m["hist"])] if "hist" in m else []
@@ -364,12 +393,190 @@ def write_html(m, fwa, ref=None):
     return path
 
 
+# ---------------------------------------------------------------------------------------------- visual report
+
+PLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "evidence", "play")
+SESSIONS = 20_000
+
+
+def _series(rows, key, scale=1):
+    return [int(r[key]) / scale for r in rows]
+
+
+def session_stats(counted, ticket, spend, rng):
+    """Value over spend for SESSIONS sessions of round(spend / ticket) tickets drawn with replacement from the run."""
+    k = max(1, round(spend / ticket))
+    vals = [(int(r["backingReceived"]), int(r["paid"])) for r in counted]
+    out = []
+    for _ in range(SESSIONS):
+        pick = rng.choices(vals, k=k)
+        out.append(sum(v for v, _ in pick) / sum(p for _, p in pick))
+    out.sort()
+    return {
+        "tickets": k,
+        "p10": percentile(out, 0.10),
+        "median": percentile(out, 0.5),
+        "p90": percentile(out, 0.90),
+        "mean": sum(out) / len(out),
+        "atOrAbove": sum(1 for x in out if x >= 1) / len(out),
+        "belowHalf": sum(1 for x in out if x < 0.5) / len(out),
+    }
+
+
+def _changes(hourly, key):
+    """Hours at which an hourly column changes, as (hour, ETH) pairs."""
+    out, prev = [], None
+    for r in hourly:
+        v = int(r[key])
+        if v != prev:
+            out.append((int(r["hour"]), v / ETH))
+            prev = v
+    return out
+
+
+def visual_data(main, other, ref, static):
+    """Builds the D object and the template tokens from two analyzed runs."""
+    rows, rows2 = main["series"], other["series"]
+    sp = split_pulls(main, ref)
+    n = main["pulls"]
+    counted = [r for r in main["pulls_rows"] if r["kind"] in RETURN_KINDS]
+    ratios = [int(r["backingReceived"]) / int(r["paid"]) for r in counted]
+    per_day = main["cfg"].get("pullsPerDay", "?")
+    per_day2 = other["cfg"].get("pullsPerDay", "?")
+    ticket = main["ticket"]
+    t = sp["ticket"]
+    ours = {k: sp[k] / t for k in ("backing", "mint", "protocol", "premium", "maintenance", "feed")}
+    ours["prem"], ours["maint"] = ours.pop("premium"), ours.pop("maintenance")
+    paid_total = sum(int(r["paid"]) for r in counted) / ETH
+    split_eth = {k: sp[k] * len(counted) / ETH for k in sp}
+    nav0, nav1 = rows[0], rows[-1]
+    fund0 = int(rows[0]["grailFund"]) / ETH
+    opening = 50.0  # runner default PLAY_OPENING_ETH
+    cohort_shares = opening - fund0
+    break_even = opening / cohort_shares
+    claims = [{"hour": int(c["hour"]), "wait": int(c["waitSeconds"]), "paid": int(c["paidNow"]) / ETH} for c in read_csv(os.path.join(main["dir"], "claims.csv"))]
+    trig = [[f"rotate {t}", main["rot_" + t]] for t in TRIGGERS] + [[f"settle {t}", main["set_" + t]] for t in SETTLE_TRIGGERS]
+    rng = random.Random(1)
+    res, spends = {}, static["equalSpends"]
+    for sp_eth in spends:
+        key = f"{sp_eth:g}"  # same text as JavaScript's String(number)
+        res[key] = {"ours": session_stats(counted, ticket, sp_eth, rng), "fwa": static["equalFwa"][key]}
+    r100 = {"nav": _series(rows2, "navPerShare", ETH), "listed": _series(rows2, "listedCount")}
+    nav_a, nav_b = main["nav_start"], main["nav_end"]
+    nav2_a, nav2_b = other["nav_start"], other["nav_end"]
+
+    item = _changes(rows, "grailBacking1")
+    item = [c for c in item if c[1] > 0]
+    list_pct = None
+    first_item = next((r for r in rows if int(r["grailBacking1"]) > 0), None)
+    if first_item:
+        list_pct = round(100 * int(first_item["grailNotional1"]) / int(first_item["grailBacking1"]))
+    steps = "; ".join(f"hour {h}: {b:g} ETH" for h, b in item)
+    cap = main["grail_captures"]
+    grail_text = (
+        f"One fund and one ladder. The fund started the week at {fund0:g} ETH from the opening cohort's entry fee, mints 1 ETH pieces, "
+        f"and the pieces merge into one item that lists at {list_pct}% of its backing. Backing of the merged item by hour: {steps}. "
+        f"Cycle target {main['grail_target_end']:g} ETH. Captures in the week: {cap}. Fund at the end {main['grail_fund_end']:.3f} ETH. "
+        "Odds are the listing's share of FWA selection weight at that hour."
+        if item
+        else f"One fund and one ladder. No merged item was listed. Fund at the end {main['grail_fund_end']:.3f} ETH."
+    )
+    rot_text = ", ".join(str(main["rot_" + t]) + " " + t for t in TRIGGERS)
+    board_text = (
+        f"The board is sized from NAV and starts at {main['listed_start']} listed items. It reached {main['listed_end']:,} at the end of the "
+        f"week at {per_day} a day and {other['listed_end']:,} at {per_day2} a day. {main['settles']} settle calls listed "
+        f"{main['settle_listed']:,} items: {main['set_Batch']} on Batch, {main['set_Age']} on Age, {main['set_Thin']} on Thin and "
+        f"{main['set_Deep']} on Deep. {main['rotates']} rotate calls ran ({rot_text}). Settle refunds paid {main['settle_refund']:.4f} ETH. "
+        f"The purchase pause averaged {main['pause_min_day']:.1f} minutes a day (the factory cooldown is {main['cfg'].get('cooldown', '0')} at the fork block)."
+    )
+    flag = (
+        f"NAV per share moved from {nav_a:.4f} to {nav_b:.4f} at {per_day} a day ({100 * (nav_b / nav_a - 1):+.1f} percent) and from "
+        f"{nav2_a:.4f} to {nav2_b:.4f} at {per_day2} a day ({100 * (nav2_b / nav2_a - 1):+.1f} percent). "
+        f"The board grows from {main['listed_start']} to {main['listed_end']:,} listed items, and {main['set_Deep']} of {main['settles']} settle calls ran on Deep."
+    )
+    exits_note = (
+        "All paid from cash with no wait." if claims and all(c["wait"] == 0 for c in claims)
+        else f"{sum(1 for c in claims if c['wait'] > 0)} of {len(claims)} waited in the queue."
+    )
+    depositors = (
+        f"Depositors are the house. The opening cohort paid {opening:g} ETH and the entry fee put {fund0:g} ETH of it into the GRAIL fund, "
+        f"which leaves {cohort_shares:g} shares. After the first board's mint fees NAV per share started at {nav_a:.4f} and a share breaks even "
+        f"for the cohort at {break_even:.3f}. The week ended at {nav_b:.4f} ({100 * (nav_b / nav_a - 1):+.1f} percent). "
+        "FWA's V2 main pool has no depositor side: FWA supplies the inventory and keeps the 5 percent surcharge plus the 10 percent settlement discount."
+    )
+    d = {
+        "ours": ours,
+        "fwa": {"owner": ref["v2"]["evWei"] / ref["v2"]["ticketWei"], "protocol": 1 - ref["v2"]["evWei"] / ref["v2"]["ticketWei"]},
+        "r": {
+            "n": n, "P": paid_total, "B": split_eth["backing"], "ticket": ticket, "ev": main["mean"], "median": main["median"],
+            "p5": main["p5"], "p95": main["p95"], "atOrAbove": main["ge1"], "belowHalf": main["lt_half"], "two": main["ge2"],
+            "ten": sum(1 for x in ratios if x >= 10) / len(ratios), "hist": main["hist"],
+            "nav": _series(rows, "navPerShare", ETH), "listed": _series(rows, "listedCount"), "pph": _series(rows, "pulls"),
+            "odds0": [float(r["grailOddsBps0"]) for r in rows], "odds1": [float(r["grailOddsBps1"]) for r in rows],
+            "gb0": _series(rows, "grailBacking0", ETH), "gb1": _series(rows, "grailBacking1", ETH),
+            "fund": _series(rows, "grailFund", ETH), "claims": claims, "trig": trig,
+            "protocol": split_eth["protocol"], "mintline": split_eth["mint"], "prem": split_eth["premium"],
+            "maint": split_eth["maintenance"], "feed": split_eth["feed"],
+        },
+        "r100": r100,
+        "rText": {"paid": f"{paid_total:.2f} ETH over the week"},
+        "v2": static["v2"],
+        "prev": static["prev"],
+        "breakEven": break_even,
+        "equal": {"spends": spends, "res": res, "prev": static["equalPrev"], "ourTicket": ticket, "fwaTicket": static["v2"]["ticket"]},
+    }
+    mint_total = split_eth["mint"]
+    d["tiles"] = [
+        ["tickets", f"{n:,}", f"{main['hours'] // 24} days, {per_day} a day"],
+        ["ticket", f"{ticket:.4f} ETH", "FWA acquisition fee, VRF excluded"],
+        ["median return", f"{main['median']:.2f}×", f"FWA V2 {static['v2']['median']:.2f}×"],
+        ["expected return", f"{main['mean']:.2f}×", f"FWA V2 {static['v2']['ev']:.2f}×"],
+        ["NAV per share", f"{nav_a:.4f} → {nav_b:.4f}", f"{100 * (nav_b / nav_a - 1):+.1f}% in a week, break-even {break_even:.2f}"],
+        ["board listed", f"{main['listed_start']:,} → {main['listed_end']:,}", f"peak {main['listed_max']:,}"],
+        ["GRAIL fund", f"{main['grail_fund_end']:.2f} ETH", f"target {main['grail_target_end']:g} ETH, peak {main['grail_fund_max']:.1f}"],
+        ["GRAIL item", f"{main['grail_item_end']:g} ETH", f"{cap} captures in the week"],
+        ["settles", f"{main['settles']}", f"Batch {main['set_Batch']}, Age {main['set_Age']}, Thin {main['set_Thin']}, Deep {main['set_Deep']}"],
+        ["mint fees", f"{mint_total:.2f} ETH", "estimated from captures"],
+    ]
+    tokens = {
+        "forkBlock": f"{int(main['cfg'].get('forkBlock', 0)):,}", "perDay": per_day, "perDay100": per_day2, "n": f"{n:,}",
+        "flag": flag, "depositors": depositors, "breakEven": f"{break_even:.2f}", "entryFee": f"{fund0:g}",
+        "cohortShares": f"{cohort_shares:g}", "exitsNote": exits_note, "boardText": board_text, "grailText": grail_text,
+        "target": f"{main['grail_target_end']:g}",
+    }
+    return d, tokens
+
+
+def build_visual(args):
+    main_dir = args[0] if args else os.path.join(PLAY_DIR, "test_play500PerDay")
+    other_dir = args[1] if len(args) > 1 else os.path.join(PLAY_DIR, "test_play100PerDay")
+    main, other = analyze(main_dir), analyze(other_dir)
+    main["dir"], other["dir"] = main_dir, other_dir
+    with open(DEFAULT_REFERENCE) as f:
+        ref = json.load(f)
+    with open(os.path.join(PLAY_DIR, "visual-static.json")) as f:
+        static = json.load(f)
+    with open(os.path.join(PLAY_DIR, "visual-report.template.html")) as f:
+        page = f.read()
+    d, tokens = visual_data(main, other, ref, static)
+    for k, v in tokens.items():
+        page = page.replace("{{" + k + "}}", str(v))
+    page = page.replace("__DATA__", json.dumps(d, separators=(",", ":"), allow_nan=False))
+    path = os.path.join(PLAY_DIR, "visual-report.html")
+    with open(path, "w") as f:
+        f.write(page)
+    print("wrote", os.path.normpath(path))
+    return 0
+
+
 # ---------------------------------------------------------------------------------------------- main
 
 
 def main(argv):
     dirs, fwa_path, html = [], None, True
     args = list(argv)
+    if args and args[0] == "--visual":
+        return build_visual(args[1:])
     while args:
         a = args.pop(0)
         if a == "--fwa":

@@ -1,0 +1,237 @@
+<title>Draw Shapes Play Week</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of sections, each a short headline, one chart or table, and a plain reading of it. */
+:root {
+  --bg: #f7f6f2; --fg: #1c1b18; --muted: #6b675c; --line: #dcd8cd; --card: #ffffff;
+  --ink: #1f4e79; --ink2: #b8572c; --pos: #2f7d4f; --neg: #b03a2e; --grid: #e9e6de;
+  --display: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15171a; --fg: #ecebe6; --muted: #a39f94; --line: #2c3035; --card: #1d2024;
+  --ink: #7fb3e6; --ink2: #e8956a; --pos: #6cc08b; --neg: #e07a6e; --grid: #262a2f; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #15171a; --fg: #ecebe6; --muted: #a39f94; --line: #2c3035; --card: #1d2024;
+  --ink: #7fb3e6; --ink2: #e8956a; --pos: #6cc08b; --neg: #e07a6e; --grid: #262a2f; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 16px; line-height: 1.5; margin: 0; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 32px 64px; padding-inline: 20px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 20px; margin: 48px 0 6px; text-wrap: balance; }
+h3 { font-size: 15px; margin: 24px 0 6px; }
+p { max-width: 68ch; margin: 6px 0; }
+.sub { color: var(--muted); max-width: 70ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 20px 0; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.tile .k { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.tile .v { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.tile .n { font-size: 12px; color: var(--muted); }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+figure { margin: 14px 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
+.legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 14px; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+td.win, b.win { background: color-mix(in srgb, var(--pos) 18%, transparent); font-weight: 600; padding: 0 3px; border-radius: 3px; }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.tablewrap { overflow-x: auto; margin: 12px 0; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.grid2 > * { min-width: 0; }
+.note { font-size: 13px; color: var(--muted); }
+.flag { border-left: 3px solid var(--ink2); padding: 8px 12px; background: var(--card); margin: 12px 0; max-width: 72ch; }
+.flag b { color: var(--ink2); }
+.svgtext { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+a { color: var(--ink); }
+code { font-family: var(--mono); font-size: 0.92em; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<div class="wrap">
+<div class="eyebrow">Draw Shapes v1 · scenario runner on the real contracts · mainnet fork block {{forkBlock}}</div>
+<h1>One week of play at {{perDay}} tickets a day</h1>
+<p class="sub">{{n}} tickets, 50 ETH opening cohort, launch parameters from <code>script/env/anvil.env</code>, played against the deployed Shapes and FWA V2 contracts. Compared with FWA's V2 main pool, from its full 4,090-listing board on 30 September 2026. Tickets on both sides exclude VRF and gas. Every figure comes from <code>evidence/play/</code> CSVs committed on the branch.</p>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="flag"><b>Two things to look at first.</b> {{flag}}</div>
+
+<h2>Players</h2>
+<p>What a ticket buys, as redeemable ETH on both sides. Shapes: the Shape or pack backing, fully redeemable. FWA V2 main: 90 percent of the allocated item's backing, the ETH cashout. The FWA column is exact for a single pull on its 30 September board (4,090 listings, weights 1e36 over backing, cashout 90 percent), read from the previous repository's verified board replay. Highlighted cells are the best side for the player. The third column is the previous design's own model, for where the rebuild moved.</p><p>Example pull on each side, one ticket, before VRF and gas:</p><div class="tablewrap"><table id="example"></table></div><p></p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">Shapes run, {{perDay}} a day</span><span style="--c:var(--ink2)">FWA V2 main board, 30 Sep</span></div><svg id="hist" viewBox="0 0 460 260"></svg><figcaption>Share of tickets by value received over ticket paid. Dashed lines are each side's expected return.</figcaption></figure>
+<div class="tablewrap"><table id="ptable"></table></div>
+</div>
+<p class="note">VRF and gas are excluded on both sides: the simulated tickets carry VRF at zero (the fork block has no gas price) and the FWA ticket is the acquisition fee getter, which excludes VRF. Also excluded: FWA token and epoch rewards, resale value. Source: <code>evidence/fwa/v2-board-26088128-histogram.json</code>, the V2 main pool's active board at block 26,088,128, verified against the on-chain getters. FWA's observed cadence that week was 2,848 tickets a day.</p>
+
+<h3>Same ETH spent</h3>
+<p>Tickets differ by price, so this compares sessions of equal spend: a player buys tickets until the spend is reached, and the session return is value received over spend. Shapes sessions are drawn from the recorded {{n}} pulls, FWA sessions from its board, 20,000 sessions each; the previous design's figures are its own model's sessions of 5, 25 and 100 pulls, which cost the spends shown. Highlighted cells are the best for the player.</p>
+<div class="tablewrap"><table id="equal"></table></div>
+
+<h2>Depositors</h2>
+<p>{{depositors}}</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">{{perDay}} a day</span><span style="--c:var(--ink2)">{{perDay100}} a day</span><span style="--c:var(--neg)">opening cohort break-even {{breakEven}}</span><span style="--c:var(--muted)">entry value 1.00</span></div><svg id="nav" viewBox="0 0 460 240"></svg><figcaption>NAV per share by hour. The opening cohort paid 50 ETH, of which the entry fee put {{entryFee}} ETH into the GRAIL fund, so it holds {{cohortShares}} shares and recovers its 50 ETH at NAV per share {{breakEven}}. Deposits of 2 ETH a day and a 2 percent withdrawal every other day are in the runner.</figcaption></figure>
+<figure><svg id="exits" viewBox="0 0 460 240"></svg><figcaption>Withdrawals in the week: amount paid at once and queue wait. {{exitsNote}}</figcaption></figure>
+</div>
+
+<h2>Where each ticket goes</h2>
+<p>Per 1 ETH of tickets, derived from the recorded tickets and captures and the fee split in SPEC 9. VRF is zero at the fork block and is paid by the player on top on mainnet.</p>
+<figure><svg id="rev" viewBox="0 0 900 190"></svg><figcaption>Draw Shapes: backing returned to players, Shapes mint fees (operator revenue), FWA protocol fee, depositor premium, maintenance, GRAIL feed. FWA V2 main pool: expected ETH cashout to the player and the remainder FWA keeps (surcharge plus settlement discount), which also funds its token and epoch rewards.</figcaption></figure>
+<div class="tablewrap"><table id="rtable"></table></div>
+
+<h2>Board and upkeep</h2>
+<p>{{boardText}}</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">{{perDay}} a day</span><span style="--c:var(--ink2)">{{perDay100}} a day</span></div><svg id="board" viewBox="0 0 460 240"></svg><figcaption>Listed items by hour. The board is sized from NAV and grows as capacity is listed.</figcaption></figure>
+<figure><div class="legend"><span style="--c:var(--ink)">tickets per hour, {{perDay}} a day</span></div><svg id="pph" viewBox="0 0 460 240"></svg><figcaption>Tickets booked per hour.</figcaption></figure>
+<figure><svg id="trig" viewBox="0 0 460 240"></svg><figcaption>Rotate and settle calls by trigger, {{perDay}} a day. Deep settles queue missing items when the board is below its NAV-driven size.</figcaption></figure>
+</div>
+
+<h2>GRAIL</h2>
+<p>{{grailText}}</p>
+<div class="grid2">
+<figure><div class="legend"><span style="--c:var(--ink)">1 ETH pieces odds (bps)</span><span style="--c:var(--ink2)">merged items odds (bps)</span></div><svg id="odds" viewBox="0 0 460 240"></svg><figcaption>Selection odds per ticket in basis points of total weight.</figcaption></figure>
+<figure><div class="legend"><span style="--c:var(--ink)">1 ETH pieces backing</span><span style="--c:var(--ink2)">merged items backing</span></div><svg id="gb" viewBox="0 0 460 240"></svg><figcaption>Summed backing per group in ETH. Pieces step up as the fund mints them and drop when they merge into the item.</figcaption></figure>
+<figure><div class="legend"><span style="--c:var(--ink)">GRAIL fund (ETH)</span></div><svg id="fund" viewBox="0 0 460 240"></svg><figcaption>Fund balance by hour, target for the running cycle {{target}} ETH. The fund fills from entry fees and the feed share and drops when it mints a piece.</figcaption></figure>
+</div>
+
+<h2>Method and caveats</h2>
+<p class="note">Runner: <code>test/scenario/PlayMonth.t.sol</code>, deterministic for seed 1, VRF fulfilled by impersonating the coordinator, 20 rotating players buying 1 to 5 tickets, <code>rotate</code> and <code>settle</code> called whenever <code>rotateDue()</code> or <code>settleDue()</code> is not None. Report script: <code>script/report.py --visual</code>, which fills <code>evidence/play/visual-report.template.html</code> from the run CSVs and <code>evidence/play/visual-static.json</code>. The 2,000 a day run is produced on demand (<code>docs/PLAY.md</code>). Mint fees and the revenue split are computed from the recorded tickets and captures with the SPEC 9 formula. NAV figures are the pool's ordinary NAV, which excludes the GRAIL fund.</p>
+</div>
+<script>
+const D = __DATA__;
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const pct = x => (x*100).toFixed(1) + '%';
+const fx = (x,d=2) => x.toFixed(d);
+const nice = v => { const e = Math.pow(10, Math.floor(Math.log10(v))); const f = v / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e; };
+function tiles(){
+  $('tiles').innerHTML=D.tiles.map(x=>`<div class="tile"><div class="k">${x[0]}</div><div class="v">${x[1]}</div><div class="n">${x[2]}</div></div>`).join('');
+}
+function axisY(svg,x0,y0,y1,vmin,vmax,fmt,ticks=4){
+  let s='';
+  for(let i=0;i<=ticks;i++){const v=vmin+(vmax-vmin)*i/ticks;const y=y0-(y0-y1)*i/ticks;
+    s+=`<line x1="${x0}" x2="${svg.w-10}" y1="${y}" y2="${y}" stroke="${css('--grid')}"/>`;
+    s+=`<text class="svgtext" x="${x0-6}" y="${y+4}" text-anchor="end">${fmt(v)}</text>`;}
+  return s;
+}
+function line(svg,xs,ys,x0,x1,y0,y1,vmin,vmax,color){
+  const n=xs.length; const px=i=>x0+(x1-x0)*i/(n-1); const py=v=>y0-(y0-y1)*(v-vmin)/(vmax-vmin);
+  let d='';ys.forEach((v,i)=>{d+=(i?'L':'M')+px(i).toFixed(1)+' '+py(v).toFixed(1)+' ';});
+  const last=ys[n-1];
+  return `<path d="${d}" fill="none" stroke="${css(color)||color}" stroke-width="1.8" stroke-linejoin="round"/><circle cx="${px(n-1)}" cy="${py(last)}" r="3" fill="${css(color)||color}"/>`;
+}
+function dayTicks(x0,x1,y0,H){
+  let out=''; for(let d=0; d*24<=H; d++){const x=x0+(x1-x0)*d*24/H; out+=`<text class="svgtext" x="${x}" y="${y0+16}" text-anchor="middle">${d}d</text>`;}
+  return out;
+}
+// One chart: series is [[values, colorVar], ...] on a shared axis starting at zero.
+function seriesChart(id,series,fmt,opts={}){
+  const s={w:460}; const x0=opts.x0||52,x1=450,y0=210,y1=16; const H=series[0][0].length-1;
+  const top=nice(Math.max(...series.flatMap(a=>a[0]),opts.min||1e-9)*1.05);
+  let out=axisY(s,x0,y0,y1,0,top,fmt,4);
+  series.forEach(a=>{out+=line(s,a[0],a[0],x0,x1,y0,y1,0,top,a[1]);});
+  $(id).innerHTML=out+dayTicks(x0,x1,y0,H);
+}
+function hist(){
+  const s={w:460}; const labels=['<¼','¼-½','½-¾','¾-1','1-1¼','1¼-1½','1½-2','2-3','3-5','5-10','10+'];
+  const a=D.r.hist, b=D.v2.hist; const vmax=0.7; const x0=44,x1=450,y0=220,y1=20; const bw=(x1-x0)/labels.length;
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>pct(v).replace('.0',''),7);
+  labels.forEach((l,i)=>{const bx=x0+i*bw; const ha=(y0-y1)*a[i]/vmax, hb=(y0-y1)*b[i]/vmax;
+    out+=`<rect x="${bx+3}" y="${y0-ha}" width="${bw/2-4}" height="${ha}" fill="${css('--ink')}"/>`;
+    out+=`<rect x="${bx+bw/2+1}" y="${y0-hb}" width="${bw/2-4}" height="${hb}" fill="${css('--ink2')}"/>`;
+    out+=`<text class="svgtext" x="${bx+bw/2}" y="${y0+14}" text-anchor="middle">${l}</text>`;});
+  const px=v=>x0+3*bw+bw*((v-0.75)/0.25);
+  out+=`<line x1="${px(D.v2.ev)}" x2="${px(D.v2.ev)}" y1="${y1}" y2="${y0}" stroke="${css('--ink2')}" stroke-width="2" stroke-dasharray="5 4"/><text class="svgtext" x="${px(D.v2.ev)+5}" y="${y1+12}" fill="${css('--ink2')}">FWA ${D.v2.ev.toFixed(3)}×</text>`;
+  out+=`<line x1="${px(D.r.ev)}" x2="${px(D.r.ev)}" y1="${y1}" y2="${y0}" stroke="${css('--ink')}" stroke-width="2" stroke-dasharray="5 4"/><text class="svgtext" x="${px(D.r.ev)-5}" y="${y1+26}" text-anchor="end" fill="${css('--ink')}">Shapes ${D.r.ev.toFixed(3)}×</text>`;
+  out+=`<text class="svgtext" x="${(x0+x1)/2}" y="${y0+30}" text-anchor="middle">value received ÷ ticket paid</text>`;
+  $('hist').innerHTML=out;
+}
+function ptable(){
+  const r=D.r,b=D.v2,p=D.prev; const W=(x)=>`<td class="win">${x}</td>`; const C=x=>'<td>'+x+'</td>';
+  const best=(vals,higher)=>{let bi=-1,bv=null;vals.forEach((v,i)=>{if(v==null)return;if(bv==null||(higher?v>bv:v<bv)){bv=v;bi=i;}});return bi;};
+  const row=(label,disp,vals,higher)=>{const bi=vals?best(vals,higher):-1;return `<tr><td>${label}</td>${disp.map((x,i)=>i===bi?W(x):C(x)).join('')}</tr>`;};
+  const rows=[
+    row('sample',[r.n.toLocaleString()+' simulated tickets, 7 days, on the contracts',b.listings.toLocaleString()+' listings, exact single pull','200-path model, 365 days'],null),
+    row('ticket (ETH, no VRF, no gas)',[fx(r.ticket,4),fx(b.ticket,4),fx(p.ticket,4)+' to '+fx(p.ticketTop,4)],[r.ticket,b.ticket,p.ticket],false),
+    row('expected return',[fx(r.ev,3)+'×',fx(b.ev,3)+'×',fx(p.ev,3)+'× floor, '+fx(p.evTop,3)+'× top'],[r.ev,b.ev,p.ev],true),
+    row('expected return incl. GRAIL feed as prizes',[fx(r.ev,3)+'× (hits inside)',fx(b.ev,3)+'×',fx(p.evWithGrail,3)+'× upper bound'],null),
+    row('median return',[fx(r.median,2)+'×',fx(b.median,2)+'×','see same ETH spent'],[r.median,b.median,null],true),
+    row('p5 return',[fx(r.p5,2)+'×',fx(b.p5,2)+'×','see same ETH spent'],[r.p5,b.p5,null],true),
+    row('p95 return',[fx(r.p95,2)+'×',fx(b.p95,2)+'×','see same ETH spent'],[r.p95,b.p95,null],true),
+    row('at or above ticket',[pct(r.atOrAbove),pct(b.atOrAbove),'about '+pct(p.atOrAbove)],[r.atOrAbove,b.atOrAbove,p.atOrAbove],true),
+    row('below half the ticket',[pct(r.belowHalf),pct(b.belowHalf),'0% of 5-pull sessions'],[r.belowHalf,b.belowHalf,null],false),
+    row('2× or more',[pct(r.two),pct(b.two),'about '+pct(p.two)],[r.two,b.two,p.two],true),
+    row('10× or more',[pct(r.ten),pct(b.ten),'n/a'],[r.ten,b.ten,null],true),
+    row('value received',['backing, 100% redeemable','90% of backing, ETH cashout','backing, 100% redeemable'],null),
+    row('house take per ticket',[pct(1-r.ev),pct(1-b.ev),pct(p.houseTake)+' floor, '+pct(p.houseTakeTop)+' top'],[1-r.ev,1-b.ev,p.houseTake],false),
+    row('operator line in the ticket',['0 (mint fees only)','none (FWA is the house)','2.0% operator fee'],null),
+    row('depositor NAV per share, one week',[fx(r.nav[0],4)+' to '+fx(r.nav[r.nav.length-1],4),'none','1 ETH grows to 5.83 at 3,355/day, 2.81 at 826, 1.76 at 127 in a year'],null)];
+  $('ptable').innerHTML='<tr><th></th><th>Shapes run ({{perDay}}/day)</th><th>FWA V2 main</th><th>Previous design</th></tr>'+rows.join('')+'<tr><td colspan="4" class="note">Highlighted: best for the player among the columns with a value. Previous design: the old repository\'s last decided composition (OD-131), a 200-path Python model over 365 days dated 30 September 2026, keeper line inside the ticket, mint-time odds. Its figures are the model\'s, not a replay.</td></tr>';
+  const o=D.ours, tk=r.ticket, ft=b.ticket;
+  const ex=[['ticket paid',tk,ft],['value received, expected',tk*o.backing,ft*b.ev],['Shapes mint fees (operator)',tk*o.mint,null],['FWA protocol fee',tk*o.protocol,null],['depositor premium',tk*o.prem,null],['maintenance',tk*o.maint,null],['GRAIL feed',tk*o.feed,null],['FWA surcharge, 5% of expected backing',null,ft-ft/1.05],['FWA settlement discount, 10% of backing',null,ft/1.05*0.1]];
+  const cell=(v,base)=>v==null?'<td>-</td>':`<td>${v.toFixed(5)} ETH · ${pct(v/base)}</td>`;
+  $('example').innerHTML='<tr><th>one ticket</th><th>Shapes</th><th>FWA V2 main</th></tr>'+ex.map(e=>`<tr><td>${e[0]}</td>${cell(e[1],tk)}${cell(e[2],ft)}</tr>`).join('');
+}
+function nav(){
+  const s={w:460}; const a=D.r.nav,b=D.r100.nav; const x0=52,x1=450,y0=210,y1=16;
+  const vmin=Math.floor((Math.min(...a,...b)-0.005)*100)/100, vmax=Math.ceil((D.breakEven+0.01)*100)/100;
+  let out=axisY(s,x0,y0,y1,vmin,vmax,v=>v.toFixed(2),4);
+  const py=v=>y0-(y0-y1)*(v-vmin)/(vmax-vmin);
+  out+=`<line x1="${x0}" x2="${x1}" y1="${py(D.breakEven)}" y2="${py(D.breakEven)}" stroke="${css('--neg')}" stroke-width="1.5" stroke-dasharray="6 4"/><text class="svgtext" x="${x1-4}" y="${py(D.breakEven)-5}" text-anchor="end" fill="${css('--neg')}">cohort break-even ${D.breakEven.toFixed(2)}</text>`;
+  out+=`<line x1="${x0}" x2="${x1}" y1="${py(1)}" y2="${py(1)}" stroke="${css('--muted')}" stroke-width="1" stroke-dasharray="3 4"/><text class="svgtext" x="${x1-4}" y="${py(1)-5}" text-anchor="end">entry value 1.00</text>`;
+  out+=line(s,a,a,x0,x1,y0,y1,vmin,vmax,'--ink')+line(s,b,b,x0,x1,y0,y1,vmin,vmax,'--ink2');
+  $('nav').innerHTML=out+dayTicks(x0,x1,y0,a.length-1);
+}
+function exits(){
+  const s={w:460}; const c=D.r.claims; const x0=52,x1=450,y0=200,y1=20; const H=D.r.nav.length-1;
+  const vmax=nice(Math.max(...c.map(e=>e.paid),0.01)*1.2);
+  let out=axisY(s,x0,y0,y1,0,vmax,v=>v.toFixed(2)+' ETH',4);
+  c.forEach((e,i)=>{const bx=x0+(x1-x0)*e.hour/H; const h=(y0-y1)*e.paid/vmax;
+    out+=`<rect x="${bx-9}" y="${y0-h}" width="18" height="${h}" fill="${css('--pos')}"/>`;
+    out+=`<text class="svgtext" x="${bx}" y="${y0-h-6}" text-anchor="middle">h${e.hour} · wait ${e.wait}s</text>`;});
+  $('exits').innerHTML=out+dayTicks(x0,x1,y0,H);
+}
+function rev(){
+  const o=D.ours,f=D.fwa; const cols=[css('--ink'),css('--ink2'),css('--neg'),css('--pos'),'#8a7f6a','#c9a227'];
+  const ours=[['backing to players',o.backing],['Shapes mint fees',o.mint],['FWA protocol',o.protocol],['depositor premium',o.prem],['maintenance',o.maint],['GRAIL feed',o.feed]];
+  const fwa=[['ETH cashout to player',D.v2.ev],['kept by FWA',1-D.v2.ev]];
+  const x0=130,x1=880; let out='';
+  function bar(y,segs,colors){let x=x0;segs.forEach((sg,i)=>{const w=(x1-x0)*sg[1];out+=`<rect x="${x}" y="${y}" width="${w}" height="40" fill="${colors[i]}"/>`;if(w>46)out+=`<text x="${x+w/2}" y="${y+25}" text-anchor="middle" font-family="${css('--mono')}" font-size="12" fill="#fff">${pct(sg[1])}</text>`;x+=w;});}
+  bar(20,ours,cols); bar(110,fwa,[css('--ink2'),css('--neg')]);
+  out+=`<text class="svgtext" x="${x0-8}" y="45" text-anchor="end" font-size="13">Draw Shapes</text><text class="svgtext" x="${x0-8}" y="135" text-anchor="end" font-size="13">FWA V2 main</text>`;
+  let lx=x0; ours.forEach((sg,i)=>{out+=`<rect x="${lx}" y="72" width="10" height="10" fill="${cols[i]}"/><text class="svgtext" x="${lx+14}" y="81">${sg[0]}</text>`;lx+=120;});
+  lx=x0; fwa.forEach((sg,i)=>{out+=`<rect x="${lx}" y="162" width="10" height="10" fill="${[css('--ink2'),css('--neg')][i]}"/><text class="svgtext" x="${lx+14}" y="171">${sg[0]}</text>`;lx+=140;});
+  $('rev').innerHTML=out;
+  const r=D.r; const rows=[['tickets paid',fx(r.P,2),D.rText.paid],['backing delivered to players',fx(r.B,2),pct(o.backing)],['FWA protocol fee (half the 5% edge)',fx(r.protocol,2),pct(o.protocol)],['Shapes mint fees for replacements (operator revenue)',fx(r.mintline,2),pct(o.mint)+' · 0.001 ETH per Shape minted'],['depositor premium (stays in NAV)',fx(r.prem,2),pct(o.prem)],['maintenance (pays upkeep refunds)',fx(r.maint,2),pct(o.maint)],['GRAIL feed',fx(r.feed,2),pct(o.feed)]];
+  $('rtable').innerHTML='<tr><th>Draw Shapes, {{perDay}} a day</th><th>ETH</th><th>share of tickets</th></tr>'+rows.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td></tr>`).join('');
+}
+function board(){ seriesChart('board',[[D.r.listed,'--ink'],[D.r100.listed,'--ink2']],v=>v.toFixed(0)); }
+function pph(){ seriesChart('pph',[[D.r.pph,'--ink']],v=>v.toFixed(0)); }
+function trig(){
+  const rows=D.r.trig; const x0=100,x1=440; const vmax=Math.max(...rows.map(r=>r[1]),1); let out='';
+  rows.forEach((r,i)=>{const y=14+i*30; const w=(x1-x0)*r[1]/vmax; out+=`<text class="svgtext" x="${x0-8}" y="${y+15}" text-anchor="end" font-size="12">${r[0]}</text><rect x="${x0}" y="${y}" width="${Math.max(w,1)}" height="20" fill="${css(r[0].startsWith('settle')?'--ink2':'--ink')}"/><text class="svgtext" x="${x0+w+6}" y="${y+15}">${r[1]}</text>`;});
+  $('trig').innerHTML=out;
+}
+function odds(){ seriesChart('odds',[[D.r.odds0,'--ink'],[D.r.odds1,'--ink2']],v=>v.toFixed(2)+' bps'); }
+function gb(){ seriesChart('gb',[[D.r.gb0,'--ink'],[D.r.gb1,'--ink2']],v=>v.toFixed(0),{min:1}); }
+function fund(){ seriesChart('fund',[[D.r.fund,'--ink']],v=>v.toFixed(2)); }
+function equal(){
+  const E=D.equal; const W=x=>`<td class="win">${x}</td>`; const C=x=>'<td>'+x+'</td>';
+  const best=(vals,higher)=>{let bi=-1,bv=null;vals.forEach((v,i)=>{if(v==null)return;if(bv==null||(higher?v>bv:v<bv)){bv=v;bi=i;}});return bi;};
+  let out='<tr><th>spend</th><th>tickets S / F / P</th><th>median session return</th><th>p10</th><th>p90</th><th>session beats spend</th><th>session under half</th></tr>';
+  E.spends.forEach(sp=>{const o=E.res[String(sp)].ours,f=E.res[String(sp)].fwa,p=E.prev[String(sp)];
+    const med=[o.median,f.median,p?p.median:null], p10=[o.p10,f.p10,p?p.p10:null], p90=[o.p90,f.p90,p?p.p90:null], win=[o.atOrAbove,f.atOrAbove,null], half=[o.belowHalf,f.belowHalf,p&&p.belowHalf!=null?p.belowHalf:null];
+    const cellset=(vals,fmt,higher)=>{const bi=best(vals,higher);return '<td>'+vals.map((v,i)=>v==null?'<span class="note">n/a</span>':(i===bi?`<b class="win">${fmt(v)}</b>`:fmt(v))).join(' / ')+'</td>';};
+    out+=`<tr><td>${sp.toFixed(2)} ETH</td><td>${o.tickets} / ${f.tickets} / ${p?p.tickets:'n/a'}</td>${cellset(med,v=>v.toFixed(3)+'×',true)}${cellset(p10,v=>v.toFixed(3)+'×',true)}${cellset(p90,v=>v.toFixed(3)+'×',true)}${cellset(win,v=>pct(v),true)}${cellset(half,v=>pct(v),false)}</tr>`;});
+  out+=`<tr><td colspan="7" class="note">S = Shapes run (ticket ${E.ourTicket.toFixed(4)}), F = FWA V2 main (${E.fwaTicket.toFixed(4)}), P = previous design (0.0735). Each cell lists S / F / P. Session returns include GRAIL captures for Shapes. Excludes VRF, gas, FWA token and epoch rewards, resale.</td></tr>`;
+  $('equal').innerHTML=out;
+}
+function draw(){tiles();hist();ptable();equal();nav();exits();rev();board();pph();trig();odds();gb();fund();}
+draw();
+if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+</script>
