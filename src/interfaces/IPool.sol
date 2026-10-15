@@ -226,7 +226,9 @@ interface IPoolTypes {
     ///      fees. The token ids are consecutive from `firstTokenId`.
     event GrailMinted(uint256 indexed firstTokenId, uint256 quantity, uint256 cost);
     /// @dev Emitted when a GRAIL item is listed and when its list price changes.
-    event GrailListed(uint256 indexed listingId, address collection, uint256 tokenId, uint256 backing, uint256 notional);
+    event GrailListed(
+        uint256 indexed listingId, address collection, uint256 tokenId, uint256 backing, uint256 notional
+    );
     /// @dev `inputs` GRAIL items were combined into `tokenId` of `backing`. `completed` is true when
     ///      the output closed the cycle.
     event GrailMerged(uint256 indexed tokenId, uint256 backing, uint256 inputs, bool completed);
@@ -244,8 +246,12 @@ interface IPoolTypes {
     event ParamSet(bytes4 selector);
 }
 
-/// @notice External interface of a pool: the functions of `Pool` and of `PoolAdmin`, which `Pool`
-///         reaches through its `fallback`.
+/// @notice External interface of a pool: the functions of `Pool` and of the modules `Pool` reaches
+///         through its `fallback`. `PoolListing` serves the listing and GRAIL entrypoints, `setGrail`,
+///         `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `chooseRow` and the
+///         getters of parameters, rows, queues, held Shapes, migration state and the `margin` and
+///         `mintLineOwed` buckets that have no state getter in `Pool`. `PoolAdmin` serves the other
+///         admin, exit and import functions.
 interface IPool is IPoolTypes {
     // ------------------------------------------------------------------ state getters
 
@@ -316,7 +322,6 @@ interface IPool is IPoolTypes {
     // ------------------------------------------------------------------ views
 
     function nav() external view returns (uint256);
-    /// @dev Served by `PoolListing`.
     function boardItems() external view returns (uint256);
     function rowCount(uint256 row) external view returns (uint256);
     function mixLength() external view returns (uint256);

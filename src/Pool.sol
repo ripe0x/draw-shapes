@@ -34,8 +34,9 @@ import {IPool} from "./interfaces/IPool.sol";
 ///
 ///      Admin, exit and successor-import functions are implemented by `PoolAdmin`. The listing
 ///      engine and the GRAIL (mint, merge, decay, probability cap) are implemented by `PoolListing`.
-///      `fallback` delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice` and `grailReady`
-///      to `listingModule` and every other call to `adminModule`, on the storage layout of
+///      `fallback` delegates the listing and GRAIL entrypoints, the GRAIL setters and the read-only
+///      getters of parameters, rows, queues, held Shapes and migration state to `listingModule` and
+///      every other call to `adminModule`, on the storage layout of
 ///      `PoolStorage`. Share, claim and bucket amounts are in wei.
 contract Pool is PoolBooks {
     // ------------------------------------------------------------------ constants
@@ -408,12 +409,25 @@ contract Pool is PoolBooks {
         bytes4 sig = msg.sig;
         if (
             sig == IPool.listBatch.selector || sig == IPool.openBoard.selector || sig == IPool.queueMissing.selector
-                || sig == IPool.grailStep.selector
-                || sig == IPool.grailReprice.selector || sig == IPool.grailReady.selector
-                || sig == IPool.setGrail.selector || sig == IPool.setGrailStep.selector
-                || sig == IPool.setGrailTarget.selector
-                || sig == IPool.grail.selector || sig == IPool.grailItems.selector
-                || sig == IPool.boardItems.selector
+                || sig == IPool.grailStep.selector || sig == IPool.grailReprice.selector
+                || sig == IPool.grailReady.selector || sig == IPool.setGrail.selector
+                || sig == IPool.setGrailStep.selector || sig == IPool.setGrailTarget.selector
+                || sig == IPool.grail.selector || sig == IPool.grailItems.selector || sig == IPool.boardItems.selector
+                || sig == IPool.rowCount.selector || sig == IPool.mixLength.selector
+                || sig == IPool.listedRowCount.selector || sig == IPool.mixRow.selector
+                || sig == IPool.batchMin.selector || sig == IPool.batchMaxAge.selector
+                || sig == IPool.surpriseBps.selector || sig == IPool.restoreK.selector || sig == IPool.bandBps.selector
+                || sig == IPool.reserveBps.selector || sig == IPool.listWhilePaused.selector
+                || sig == IPool.oldestQueuedAt.selector || sig == IPool.claimQueue.selector
+                || sig == IPool.replacementQueue.selector || sig == IPool.openingDeadline.selector
+                || sig == IPool.openingDeadlineAt.selector || sig == IPool.maxBatch.selector
+                || sig == IPool.concurrency.selector || sig == IPool.lastRefundAt.selector
+                || sig == IPool.grailProbCapBps.selector || sig == IPool.maintenanceReceivable.selector
+                || sig == IPool.margin.selector || sig == IPool.mintLineOwed.selector
+                || sig == IPool.exportedShares.selector || sig == IPool.exportedNav.selector
+                || sig == IPool.importedShares.selector || sig == IPool.importedFromShares.selector
+                || sig == IPool.migrated.selector || sig == IPool.registered.selector || sig == IPool.chooseRow.selector
+                || sig == IPool.heldCount.selector || sig == IPool.heldShapes.selector
         ) module = listingModule;
         assembly ("memory-safe") {
             calldatacopy(0, 0, calldatasize())
@@ -431,13 +445,8 @@ contract Pool is PoolBooks {
         return _call(address(this), IPool.listBatch.selector, max, 0);
     }
 
-    /// @dev Reads the row choice from `PoolAdmin.chooseRow`, which holds the sampling code.
-    function _chooseRow(uint256 requestId, uint256 capturedRow)
-        internal
-        view
-        override
-        returns (uint256, bool)
-    {
+    /// @dev Reads the row choice from `PoolListing.chooseRow`.
+    function _chooseRow(uint256 requestId, uint256 capturedRow) internal view override returns (uint256, bool) {
         return IPool(address(this)).chooseRow(requestId, capturedRow);
     }
 
@@ -815,8 +824,7 @@ contract Pool is PoolBooks {
     function _listWork() internal view returns (bool) {
         if (_held.length != 0) return true;
         uint256 head = replacementHead;
-        return head < _replacementQueue.length
-            && _spendable() >= _rowCost(_replacementQueue[head], _mintFee());
+        return head < _replacementQueue.length && _spendable() >= _rowCost(_replacementQueue[head], _mintFee());
     }
 
     /// @dev Row backing plus the mint fee of every Shape the row mints.

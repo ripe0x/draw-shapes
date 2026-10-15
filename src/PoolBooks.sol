@@ -120,7 +120,7 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Row that replaces the capture of `requestId` and whether the surprise step chose it.
-    ///      `Pool` reads it from `PoolAdmin.chooseRow` and `PoolAdmin` computes it.
+    ///      `Pool` reads it from `PoolListing.chooseRow`.
     function _chooseRow(uint256 requestId, uint256 capturedRow)
         internal
         view
