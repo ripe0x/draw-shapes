@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {console2} from "forge-std/console2.sol";
 import {FeeSplit} from "../src/sponsor/FeeSplit.sol";
 import {SponsoredPrize} from "../src/sponsor/SponsoredPrize.sol";
@@ -11,7 +12,9 @@ import {SponsoredPrize} from "../src/sponsor/SponsoredPrize.sol";
 ///      `SPONSOR_OWNER`, which owns the new `FeeSplit` (or the existing one named by `SPONSOR_FEE_SPLIT`)
 ///      and calls `setSponsor` and `setPrize`. `reclaimAfter` is the deploy time plus
 ///      `SPONSOR_RECLAIM_DELAY`. `Shapes.setFeeRecipient`, `Pool.registerForeign` and `SponsoredPrize.start`
-///      are separate steps by other callers.
+///      are separate steps by other callers. A broadcast run writes the deal record the web app reads
+///      (`{feeSplit, prize, collection, tokenId}`) to `SPONSOR_RECORD`, default
+///      `deployments/<chainId>-sponsor.json`.
 contract DeploySponsor is Script {
     error GuardFailed(string reason);
 
@@ -56,6 +59,7 @@ contract DeploySponsor is Script {
         vm.stopBroadcast();
 
         _postflight(feeSplit, prize, t);
+        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)) _writeRecord(feeSplit, prize, t);
         _log(feeSplit, prize, t);
     }
 
@@ -91,6 +95,17 @@ contract DeploySponsor is Script {
         _eq(p.reclaimAfter() > block.timestamp, "prize.reclaimAfter");
         _eq(p.listingId() == 0 && !p.active(), "prize is not started");
         _eq(uint8(p.phase()) == 0, "prize.phase is Parked");
+    }
+
+    function _writeRecord(FeeSplit f, SponsoredPrize p, Terms memory t) internal {
+        string memory key = "sponsorRecord";
+        vm.serializeAddress(key, "feeSplit", address(f));
+        vm.serializeAddress(key, "prize", address(p));
+        vm.serializeAddress(key, "collection", t.collection);
+        string memory json = vm.serializeString(key, "tokenId", vm.toString(t.tokenId));
+        string memory path = vm.envOr("SPONSOR_RECORD", string(""));
+        if (bytes(path).length == 0) path = string.concat("deployments/", vm.toString(block.chainid), "-sponsor.json");
+        vm.writeJson(json, path);
     }
 
     function _eq(bool ok, string memory what) internal pure {

@@ -84,7 +84,9 @@ One per deal. Implements `IForeignController`.
          --account <keystore> --broadcast --slow
 
    The script deploys `FeeSplit(owner)` (or reuses `SPONSOR_FEE_SPLIT`), deploys `SponsoredPrize`, calls
-   `FeeSplit.setSponsor(sponsor, 45 ether)` and `FeeSplit.setPrize(prize)`, and reads every value back.
+   `FeeSplit.setSponsor(sponsor, 45 ether)` and `FeeSplit.setPrize(prize)`, and reads every value back. A broadcast run also writes
+   `deployments/<chainId>-sponsor.json` (`SPONSOR_RECORD` overrides the path) with `feeSplit`, `prize`,
+   `collection` and `tokenId`; the web app's `/sponsor` page reads it.
 2. The Shapes admin sets the fee recipient:
 
        cast send <shapes> "setFeeRecipient(address)" <feeSplit> --account <shapes admin keystore>

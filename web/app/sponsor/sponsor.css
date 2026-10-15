@@ -1,0 +1,225 @@
+.sponsor-page {
+  width: min(760px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 72px 0 96px;
+  color: var(--body);
+}
+
+.sponsor-hero h1 {
+  margin: 14px 0 20px;
+  font-family: var(--font-archivo), sans-serif;
+  font-size: clamp(46px, 9vw, 76px);
+  line-height: 0.95;
+  letter-spacing: -0.055em;
+  color: var(--ink);
+}
+.sponsor-hero p {
+  max-width: 62ch;
+  margin: 0 0 24px;
+  color: var(--body-dim);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.sponsor-kicker,
+.sponsor-label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.sponsor-badge {
+  display: inline-flex;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--page);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.sponsor-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 28px;
+  margin-top: 42px;
+  padding: 28px 32px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--page);
+}
+.sponsor-band h2 {
+  margin: 0 0 10px;
+  font-family: var(--font-archivo), sans-serif;
+  font-size: 30px;
+  letter-spacing: -0.03em;
+  color: var(--page);
+}
+.sponsor-band p {
+  margin: 12px 0 0;
+  color: var(--rule);
+  line-height: 1.5;
+}
+.sponsor-band-art {
+  width: 126px;
+  transform: rotate(2deg);
+}
+.sponsor-facts {
+  display: grid;
+  gap: 0;
+  margin: 14px 0 0;
+}
+.sponsor-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--body);
+  font-size: 13px;
+}
+.sponsor-facts dt {
+  color: var(--faint);
+}
+.sponsor-facts dd {
+  margin: 0;
+  text-align: right;
+}
+
+.sponsor-pill {
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  padding: 12px 20px;
+  background: var(--ink);
+  color: var(--page);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sponsor-pill:hover {
+  background: transparent;
+  color: var(--ink);
+}
+.sponsor-pill:disabled {
+  cursor: default;
+  opacity: 0.42;
+  background: var(--ink);
+  color: var(--page);
+}
+.sponsor-pill-small {
+  margin-top: 16px;
+}
+
+.sponsor-section {
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 2px solid var(--ink);
+}
+.sponsor-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+}
+.sponsor-label {
+  margin-bottom: 20px;
+}
+.sponsor-section-head .sponsor-label {
+  margin: 0;
+}
+.sponsor-rows {
+  display: grid;
+}
+.sponsor-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--rule-inner);
+  font-size: 14px;
+}
+.sponsor-row span {
+  color: var(--muted);
+}
+.sponsor-row b {
+  max-width: 60%;
+  text-align: right;
+  font-weight: 500;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.sponsor-row b.is-strong {
+  font-weight: 700;
+}
+.sponsor-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 42px;
+}
+.sponsor-advance {
+  margin-top: 36px;
+}
+.sponsor-big {
+  font-family: var(--font-archivo), sans-serif;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  color: var(--ink);
+}
+.sponsor-note {
+  margin: 14px 0 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.sponsor-steps {
+  display: grid;
+  gap: 18px;
+}
+.sponsor-step {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--body);
+}
+.sponsor-step span {
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sponsor-step p {
+  margin: 0;
+}
+.sponsor-fine {
+  margin: 54px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+@media (max-width: 640px) {
+  .sponsor-page {
+    padding-top: 44px;
+  }
+  .sponsor-band {
+    grid-template-columns: 1fr;
+    padding: 24px;
+  }
+  .sponsor-band-art {
+    justify-self: start;
+  }
+  .sponsor-actions {
+    grid-template-columns: 1fr;
+  }
+  .sponsor-row {
+    flex-direction: column;
+    gap: 5px;
+  }
+  .sponsor-row b {
+    max-width: none;
+    text-align: left;
+  }
+}
