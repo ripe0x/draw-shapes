@@ -243,10 +243,10 @@ table.kv i.sw{display:inline-block;width:10px;height:10px;border-radius:2px;marg
 const LADDER = [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100];
 const TICK = 300;
 const CONCURRENCY = 10, THIN_MARGIN = 5, MAX_LIST = 25;
-const MAX_PIECES = 6, MAX_GRAIL_ITEMS = 16, MAX_GRAIL_MINTS = 3, MAX_GRAIL_MERGES = 2, FIVE_PIECES = 5;
+const MAX_PIECE_ETH = 6, MAX_GRAIL_ITEMS = 16, MAX_GRAIL_MINTS = 3, MAX_GRAIL_MERGES = 2, OPENING_ETH = 5;
 const DAY = 86400, VOLUME_DAYS = 7;
-// Recipes, largest output first: [output, input size, input count, extra input size, extra input count]
-const RECIPES = [[100, 50, 2, 0, 0], [50, 25, 2, 0, 0], [25, 10, 2, 5, 1], [10, 5, 2, 0, 0], [5, 1, 5, 0, 0]];
+// Recipes, largest output first: [output, input size, input count, extra input size, extra input count]. The last one takes pieces: 5 ETH of them.
+function recipesFor(pieceSize) { return [[100, 50, 2, 0, 0], [50, 25, 2, 0, 0], [25, 10, 2, 5, 1], [10, 5, 2, 0, 0], [5, pieceSize, Math.round(5 / pieceSize), 0, 0]]; }
 const GAS_BASE = 100000, GAS_ITEM = 150000, GAS_OVERHEAD = 30000;
 const NB = 2400, LMIN = Math.log(1e-3), LSPAN = Math.log(1e6);
 
@@ -274,7 +274,7 @@ function defaultParams() {
     entryFloorBps: 1000, entryCapBps: 2500, paybackDays: 20,
     navCapFloor: 69, turnoverBps: 1250, founderWindowDays: 30,
     edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
-    grail: { target: 25, listBps: 7500, decay: 0.001, pieceFloor: 0.25, floor: 1 },
+    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1 },
     openingEth: 55, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
     ticketsPerDay: 500,
     rotateInterval: 900,
@@ -338,8 +338,9 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // GRAIL: one fund and a list of listed items { b: backing, notional: list price, since: pulls since the last list or reprice, done }
   const G = [];
-  const GR = { fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0 };
+  const GR = { hitSizes: {}, pieceOut: 0, pieceProceeds: 0, fund: 0, cycles: 0, firstCycleDay: -1, hits: 0, firstHitDay: -1, prizes: 0, largest: 0, largestHit: 0, minted: 0, merged: 0 };
   const grail = P.grail;
+  const pieceSize = grail.pieceSize, RECIPES = recipesFor(pieceSize), maxPieces = Math.round(MAX_PIECE_ETH / pieceSize), openingPieces = Math.round(OPENING_ETH / pieceSize);
   const feeDay = new Float64Array(days + 2); // booked ticket fees per day
 
   const S = {
@@ -479,8 +480,8 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // ---------- GRAIL (SPEC 11)
   function grailWeight() { let w = 0; for (const it of G) w += 1 / it.notional; return w; }
-  function pieces() { let c = 0; for (const it of G) if (it.b === 1) c++; return c; }
-  function canMint() { return GR.fund >= 1 + mintFee - 1e-12 && G.length < MAX_GRAIL_ITEMS && pieces() < MAX_PIECES; }
+  function pieces() { let c = 0; for (const it of G) if (it.piece) c++; return c; }
+  function canMint() { return GR.fund >= pieceSize + mintFee - 1e-12 && G.length < MAX_GRAIL_ITEMS && pieces() < maxPieces; }
   // Largest recipe whose output fits the target and whose inputs are listed and not done; returns the input positions or null.
   function recipe() {
     for (const [out, a, na, b, nb] of RECIPES) {
@@ -495,9 +496,9 @@ function simulate(P, seed, days, snapDays, opts) {
     }
     return null;
   }
-  function publish(b, notional) {
-    const done = b === grail.target;
-    G.push({ b, notional, since: 0, done });
+  function publish(b, notional, piece) {
+    const done = !piece && b === grail.target;
+    G.push({ b, notional, since: 0, done, piece: !!piece });
     if (b > GR.largest) GR.largest = b;
     if (done) { GR.cycles++; if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
   }
@@ -509,7 +510,9 @@ function simulate(P, seed, days, snapDays, opts) {
     GR.merged++;
     return true;
   }
-  function floorOf(it) { return it.b === 1 ? grail.pieceFloor : grail.floor; }
+  // pieceFloor is the floor of a 1 ETH piece and scales with the piece size
+  function floorOf(it) { return it.piece ? grail.pieceFloor * pieceSize : grail.floor; }
+  function decayOf(it) { return it.piece ? grail.pieceDecay : grail.decay; }
   // Decay reprice of every listed item (PoolListing.grailReprice): price falls to max(floor, notional - decay x pulls) when at
   // least repriceMinBps below the notional and the listed GRAIL weight at the new price stays within grailProbCapBps.
   // commit = false only counts the items that would change.
@@ -517,7 +520,7 @@ function simulate(P, seed, days, snapDays, opts) {
     if (!G.length) return 0;
     let w = grailWeight(), tot = sumOrd() + w, n = 0;
     for (const it of G) {
-      const old = it.notional, next = Math.max(floorOf(it), old - grail.decay * it.since);
+      const old = it.notional, next = Math.max(floorOf(it), old - decayOf(it) * it.since);
       const gap = old - next;
       if (!(gap > 1e-15) || gap < old * P.repriceMinBps / 1e4 - 1e-15) continue;
       const dw = 1 / next - 1 / old, nw = w + dw, nt = tot + dw;
@@ -608,8 +611,8 @@ function simulate(P, seed, days, snapDays, opts) {
     let changed = false, listedN = 0;
     payClaims();
     for (let n = 0; n < MAX_GRAIL_MINTS && canMint(); n++) {
-      GR.fund -= 1 + mintFee; A.mintGrail += mintFee; GR.minted++;
-      publish(1, 1); changed = true; listedN++;
+      GR.fund -= pieceSize + mintFee; A.mintGrail += mintFee; GR.minted++;
+      publish(pieceSize, pieceSize, true); changed = true; listedN++;
     }
     for (let n = 0; n < MAX_GRAIL_MERGES && merge(); n++) { changed = true; listedN++; }
     if (!P.decayInSettle && reprice(true)) changed = true;
@@ -669,9 +672,9 @@ function simulate(P, seed, days, snapDays, opts) {
   refreshTargets();
   topUp(0);
   fill(0, Infinity, true);
-  // opening five (SPEC 11): five pieces composed into one 5 ETH item listed at face
-  const openingFive = GR.fund >= FIVE_PIECES * (1 + mintFee) - 1e-12;
-  if (openingFive) { GR.fund -= FIVE_PIECES * (1 + mintFee); A.mintGrail += FIVE_PIECES * mintFee; publish(5, 5); }
+  // opening five (SPEC 11): 5 ETH of pieces (five of 1 ETH, ten of 0.5 ETH) composed into one 5 ETH item listed at face
+  const openingFive = GR.fund >= OPENING_ETH + openingPieces * mintFee - 1e-12;
+  if (openingFive) { GR.fund -= OPENING_ETH + openingPieces * mintFee; A.mintGrail += openingPieces * mintFee; publish(5, 5); }
   const cohortShares = S.shares, cohortEth = A.deposited;
   const cohortBreakEven = cohortEth / cohortShares;
   const navStart = nav() / S.shares;
@@ -713,7 +716,7 @@ function simulate(P, seed, days, snapDays, opts) {
       annualised: days > 0 && nps > 0 && navStart > 0 ? Math.pow(nps / navStart, 365 / day) - 1 : 0,
       breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
       grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles, grailFirstCycle: GR.firstCycleDay,
-      grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
+      grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailHitSizes: GR.hitSizes, pieceOut: GR.pieceOut, pieceProceeds: GR.pieceProceeds, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
       grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length,
       capClosedDays: series.gate.slice(0, day).filter(g => g === 1).length, windowDays: series.gate.slice(0, day).filter(g => g === 2).length,
       cap: series.cap[day], dailyVolume: series.volume[day], entryFeeBps: series.feeBps[day],
@@ -780,7 +783,8 @@ function simulate(P, seed, days, snapDays, opts) {
       const g = G.splice(pickT, 1)[0];
       A.deliveredReal += g.b; A.grailDelivered += g.b; GR.prizes += g.b;
       A.grailPaidTicket += proceeds;
-      GR.fund += proceeds; GR.hits++; if (GR.firstHitDay < 0) GR.firstHitDay = (t / DAY);
+      GR.fund += proceeds; GR.hits++; GR.hitSizes[g.b] = (GR.hitSizes[g.b] || 0) + 1;
+      if (g.piece) { GR.pieceOut += g.b; GR.pieceProceeds += proceeds; } if (GR.firstHitDay < 0) GR.firstHitDay = (t / DAY);
       if (g.b > GR.largestHit) GR.largestHit = g.b;
       events.push({ t: t / DAY, prize: g.b, done: g.done });
     } else {
@@ -858,7 +862,8 @@ const SENS = [
   { id: 'row5', label: 'Share of 0.5 Shape row (percent)', lo: 0, hi: 3, get: P => P.rows[5] ? P.rows[5].share : 0, set: (P, v) => { if (P.rows[5]) P.rows[5].share = v; } },
   { id: 'grailTarget', label: 'GRAIL target (ETH)', lo: 10, hi: 100, get: P => P.grail.target, set: (P, v) => { P.grail.target = v; } },
   { id: 'grailList', label: 'GRAIL list price (bps of backing)', lo: 5000, hi: 9000, get: P => P.grail.listBps, set: (P, v) => { P.grail.listBps = v; } },
-  { id: 'grailDecay', label: 'GRAIL decay (ETH per pull)', lo: 0.0005, hi: 0.002, get: P => P.grail.decay, set: (P, v) => { P.grail.decay = v; } },
+  { id: 'grailDecay', label: 'GRAIL decay (ETH per pull)', lo: 0.0005, hi: 0.002, get: P => P.grail.decay, set: (P, v) => setDecay(P, v) },
+  { id: 'grailPieceDecay', label: 'GRAIL piece decay (ETH per pull)', lo: 0.0005, hi: 0.002, get: P => P.grail.pieceDecay, set: (P, v) => { P.grail.pieceDecay = v; } },
   { id: 'grailFloor', label: 'GRAIL floor (ETH)', lo: 0.5, hi: 2, get: P => P.grail.floor, set: (P, v) => { P.grail.floor = v; } },
   { id: 'grailPieceFloor', label: 'GRAIL piece floor (ETH)', lo: 0.1, hi: 0.5, get: P => P.grail.pieceFloor, set: (P, v) => { P.grail.pieceFloor = v; } },
   { id: 'ticketsPerDay', label: 'Tickets per day', lo: 250, hi: 1000, get: P => P.ticketsPerDay, set: (P, v) => { P.ticketsPerDay = v; } },
@@ -956,8 +961,10 @@ const GROUPS = [
   { id: 'grail', title: 'GRAIL', fields: [
     F('grail.target', 'Target', 'ETH', 5, 5, 100, 'One of 5, 10, 25, 50, 100. A cycle completes when a merge output equals the target.'),
     F('grail.listBps', 'List price of a merge output', 'bps', 100, 1, 10000, 'Of backing. Pieces and the opening five list at face.'),
-    F('grail.decay', 'Decay per pull', 'ETH', 0.0005, 0, 1, 'Every listed GRAIL item. Repriced when 1 percent or more below its price.'),
-    F('grail.pieceFloor', 'Piece floor', 'ETH', 0.05, 0.01, 1, 'Lowest price of a 1 ETH piece.'),
+    F('grail.pieceSize', 'Piece size', 'ETH', 0.5, 0.5, 1, 'Backing of a minted piece: 1 or 0.5. At 0.5 the first recipe is ten pieces to a 5, the piece limit is 12 and the opening 5 is ten pieces.'),
+    F('grail.decay', 'Decay per pull', 'ETH', 0.0005, 0, 1, 'Every listed GRAIL item except pieces, which follow the piece decay. Repriced when 1 percent or more below its price. Moves the piece decay too while the two are equal.'),
+    F('grail.pieceDecay', 'Piece decay per pull', 'ETH', 0.0005, 0, 1, 'Decay of a listed piece. Equal to the decay per pull at launch.'),
+    F('grail.pieceFloor', 'Piece floor', 'ETH', 0.05, 0.01, 1, 'Lowest price of a 1 ETH piece. A piece floors at this value x piece size.'),
     F('grail.floor', 'Floor', 'ETH', 0.1, 0.01, 100, 'Lowest price of any other item.'),
   ] },
   { id: 'basis', title: 'Value received basis', fields: [
@@ -1022,7 +1029,12 @@ function parse(el, min, max) {
   if (el.closest('td')) el.style.borderColor = ok ? '' : 'var(--bad)';
   return ok ? v : null;
 }
-function onField(f, el) { const v = parse(el, f.min, f.max); if (v === null) return; setv(P, f.path, v); changed(); }
+function setDecay(Q, v) { if (Q.grail.pieceDecay === Q.grail.decay) Q.grail.pieceDecay = v; Q.grail.decay = v; }
+function onField(f, el) {
+  const v = parse(el, f.min, f.max); if (v === null) return;
+  if (f.path.join('.') === 'grail.decay') { setDecay(P, v); $('p_grail_pieceDecay').value = P.grail.pieceDecay; } else setv(P, f.path, v);
+  changed();
+}
 function onMix(i, k, el) { const v = parse(el, k === 'rungs' ? 1 : 0, k === 'share' ? 100 : 100); if (v === null) return; P.rows[i][k] = v; changed(); }
 function markChanged() {
   let n = 0;
@@ -1045,6 +1057,7 @@ function warnings() {
   if (![5, 10, 25, 50, 100].includes(gr.target)) w.push('GRAIL target has to be 5, 10, 25, 50 or 100 ETH. Other values leave every cycle open.');
   if (gr.floor > 5 * gr.listBps / 1e4 + 1e-9) w.push('GRAIL floor is above 5 ETH x list price, which the pool rejects.');
   if (gr.pieceFloor > 1 || gr.pieceFloor <= 0) w.push('GRAIL piece floor has to be above zero and at most 1 ETH.');
+  if (gr.pieceSize !== 1 && gr.pieceSize !== 0.5) w.push('GRAIL piece size has to be 1 or 0.5 ETH.');
   if (P.batchMin < 1) w.push('Settle batch size is at least 1.');
   if (P.batchMin > MAX_LIST) w.push('Settle lists at most ' + MAX_LIST + ' items per call, so with a batch size above ' + MAX_LIST + ' the queue holds at least ' + (P.batchMin - MAX_LIST) + ' entries between calls and the board runs thinner by that amount.');
   if (P.cooldownSeconds > 0) w.push('A purchase pause above zero delays tickets after every listing batch, so tickets arrive later than the schedule.');
@@ -1250,7 +1263,7 @@ function renderGrail() {
   h += '<tr><td>Hits</td>' + cnt.map(c => '<td>' + c + '</td>').join('') + '</tr>';
   h += '<tr><td>Largest hit (ETH)</td>' + big.map(c => '<td>' + (c || '') + '</td>').join('') + '</tr>';
   $('gtbl').innerHTML = h;
-  $('gnote').innerHTML = 'While the fund covers a piece and its mint fee, a rotate pass mints up to ' + MAX_GRAIL_MINTS + ' one ETH pieces, with at most ' + MAX_PIECES + ' pieces and ' + MAX_GRAIL_ITEMS + ' items listed, each listed at face. Merges run largest recipe first, at most ' + MAX_GRAIL_MERGES + ' per pass: 5 from five pieces, 10 from two 5s, 25 from two 10s and a 5, 50 from two 25s, 100 from two 50s, listed at ' + g.listBps + ' bps of backing. The cycle completes when an output equals the ' + g.target + ' ETH target; that item stays listed and is never a recipe input. Every listed item loses ' + g.decay + ' ETH per pull down to ' + g.pieceFloor + ' ETH (pieces) or ' + g.floor + ' ETH, repriced at a drop of ' + P.repriceMinBps + ' bps or more while the listed GRAIL weight stays within ' + P.grailProbCapBps + ' bps. A capture pays the ticket proceeds into the fund and the item leaves. Selection weight is 1 over list price, the ticket is the harmonic mean times ' + (1 + P.edgePct / 100).toFixed(2) + '.';
+  $('gnote').innerHTML = 'While the fund covers a piece and its mint fee, a rotate pass mints up to ' + MAX_GRAIL_MINTS + ' pieces of ' + g.pieceSize + ' ETH, with at most ' + Math.round(MAX_PIECE_ETH / g.pieceSize) + ' pieces and ' + MAX_GRAIL_ITEMS + ' items listed, each listed at face. Merges run largest recipe first, at most ' + MAX_GRAIL_MERGES + ' per pass: 5 from ' + Math.round(5 / g.pieceSize) + ' pieces, 10 from two 5s, 25 from two 10s and a 5, 50 from two 25s, 100 from two 50s, listed at ' + g.listBps + ' bps of backing. The cycle completes when an output equals the ' + g.target + ' ETH target; that item stays listed and is never a recipe input. Every listed item loses ' + g.decay + ' ETH per pull (' + g.pieceDecay + ' for pieces) down to ' + (g.pieceFloor * g.pieceSize) + ' ETH (pieces) or ' + g.floor + ' ETH, repriced at a drop of ' + P.repriceMinBps + ' bps or more while the listed GRAIL weight stays within ' + P.grailProbCapBps + ' bps. A capture pays the ticket proceeds into the fund and the item leaves. Selection weight is 1 over list price, the ticket is the harmonic mean times ' + (1 + P.edgePct / 100).toFixed(2) + '.';
 }
 
 const COL = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c6)', 'var(--c7)', 'var(--c9)', 'var(--c8)'];
@@ -1331,7 +1344,7 @@ function renderRevenue() {
 function exampleOptions() {
   const o = [];
   P.rows.forEach((r, i) => { if (r.share > 0) o.push({ v: 'r' + i, l: (r.rungs > 1 ? r.backing + ' ETH pack of ' + r.rungs : r.backing + ' ETH Shape') }); });
-  o.push({ v: 'g1', l: 'GRAIL piece (1 ETH)' }, { v: 'gT', l: 'GRAIL at target (' + P.grail.target + ' ETH)' });
+  o.push({ v: 'g1', l: 'GRAIL piece (' + P.grail.pieceSize + ' ETH)' }, { v: 'gT', l: 'GRAIL at target (' + P.grail.target + ' ETH)' });
   return o;
 }
 function renderExample() {
@@ -1356,7 +1369,7 @@ function renderExample() {
       row('GRAIL feed to the fund', fmt.eth(fd, 5), pc(fd)) +
       (margin < mf ? row('Mint fee carried as owed', fmt.eth(mf - rep, 5), pc(mf - rep)) : '') + '</table>';
   } else {
-    const b = v === 'g1' ? 1 : P.grail.target;
+    const b = v === 'g1' ? P.grail.pieceSize : P.grail.target;
     card1 = '<table class="kv">' + row('Ticket paid', fmt.eth(tk, 5), '100%') + row('FWA protocol', fmt.eth(prot, 5), pc(prot)) +
       row('Backing to the player', fmt.eth(b, 3), (b / tk).toFixed(1) + 'x') + row('Value received at ' + P.shapesRedeemPct + '%', fmt.eth(b * redeem, 3), (b * redeem / tk).toFixed(1) + 'x') +
       row('Proceeds to the GRAIL fund', fmt.eth(proceeds, 5), pc(proceeds)) + '</table>';
@@ -1374,7 +1387,7 @@ $('exsel').addEventListener('change', () => { if (R) renderExample(); });
 
 function basisText() {
   $('basisnote').innerHTML =
-    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split. Deposits: the entry fee is clamp(payback days x premium x daily volume / NAV, floor, cap) and goes to the GRAIL fund in full, the cap is max(floor, daily volume x 10,000 / turnover), the founder window closes deposits for its first days, and shares are minted at NAV. Daily volume is the mean of booked ticket fees over the last 7 complete days. Withdrawals are paid from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 25 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL mints and merges. GRAIL is one fund fed by the entry fee, the feed share of the margin and captures: while it covers a piece and its mint fee, rotate mints 1 ETH pieces (up to 3 per pass, 6 pieces, 16 items) and merges by recipe up to the target. Every listed GRAIL item decays by pull, and a reprice needs a drop of 1 percent and the listed GRAIL weight within the probability cap; it rides on a settle call that lists items, or on rotate with the toggle off. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL follows SPEC 11 and deposits follow SPEC 7 and docs/VOLUME_CAP.md.</p>' +
+    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split. Deposits: the entry fee is clamp(payback days x premium x daily volume / NAV, floor, cap) and goes to the GRAIL fund in full, the cap is max(floor, daily volume x 10,000 / turnover), the founder window closes deposits for its first days, and shares are minted at NAV. Daily volume is the mean of booked ticket fees over the last 7 complete days. Withdrawals are paid from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 25 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL mints and merges. GRAIL is one fund fed by the entry fee, the feed share of the margin and captures: while it covers a piece and its mint fee, rotate mints pieces of the piece size, 1 or 0.5 ETH (up to 3 per pass, 6 ETH of pieces, 16 items) and merges by recipe up to the target. Every listed GRAIL item decays by pull (pieces at their own decay), and a reprice needs a drop of 1 percent and the listed GRAIL weight within the probability cap; it rides on a settle call that lists items, or on rotate with the toggle off. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL follows SPEC 11 and deposits follow SPEC 7 and docs/VOLUME_CAP.md.</p>' +
     '<p style="margin-top:8px"><b>Left out of the model.</b> VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs and refunds, claim liquidation of listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing (each ticket is priced alone), migration and exit, gas for GRAIL reprices, mints and merges inside a refund, the compose and pack steps of a merge (the output lists at once), the unlisted state of a GRAIL item after a refund, the unsettled-acquisition gate on mints and merges, and the imported NAV of a successor pool. Captures are booked at the moment of the ticket.</p>' +
     '<p style="margin-top:8px"><b>Basis of every figure.</b> Returns are backing delivered divided by the ticket. Draw Shapes redeems backing at the value set under Value received basis, and FWA V2 settles delivered items at its cash-out value. Gas for players, VRF, FWA token and epoch rewards and resale value are excluded on both sides. FWA V2 is the board snapshot at block 26,088,128 with its observed ticket of 1.05 times the harmonic mean backing. FWA V2 observed 2,848 tickets a day (week to 2026-09-30) and 3,646 (week before). A ticket paid with a Shape uses a Shape no larger than the ticket, drawn from the capture value distribution, and leaves NAV unchanged.</p>';
 }
