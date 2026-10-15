@@ -40,10 +40,13 @@ Set as the Shapes mint fee recipient (`Shapes.setFeeRecipient`). Receives every 
 One per deal. Implements `IForeignController`.
 
 - Constructor: `pool`, `feeSplit`, `sponsor`, `collection`, `tokenId`, `parkedPriceWei` (30 ETH),
-  `floorWei` (0.25 ETH), `decayWeiPerPull` (0.001 ETH), `reclaimAfter` (listing time plus 30 days).
+  `floorWei` (0.25 ETH), `decayWeiPerPull` (0.001 ETH), `reclaimAfter` (absolute timestamp; the deploy
+  script sets it to the deploy time plus `SPONSOR_RECLAIM_DELAY`, 30 days).
 - `start(listingId)`: owner, after the admin has called `registerForeign` on the pool. Records the listing
   and `listedAtPull = pool.grail().pulls`, `startedAt = block.timestamp`.
-- `active()`: true while the listing is registered on the pool and not captured.
+- `owner`: `feeSplit.owner()`. The prize contract stores no owner of its own.
+- `active()`: true while the prize is started, not captured, and the pool entry exists with a nonzero
+  price. An entry that the pool holds unlisted after a refunded delivery is not active.
 - `phase()`: Parked while `feeSplit.paidWei() < feeSplit.capWei()`, else Hot.
 - `tick()`: anyone. In Hot phase computes `next = max(floorWei, parkedPriceWei - decayWeiPerPull *
   (pool.grail().pulls - hotFromPull))` and calls `pool.repriceForeign(listingId, next)` when `next` is at
@@ -54,12 +57,26 @@ One per deal. Implements `IForeignController`.
 - `onForeignCapture(listingId, tokenId, proceeds)`: payable, pool only. Marks captured, forwards the
   value to `pool.fundGrail()`.
 - `rescue(to)`: owner, only when the pool reports the token unlisted after a refunded delivery; calls
-  `pool.withdrawForeign(listingId, to)`.
+  `pool.withdrawForeign(listingId, to)`. In Parked `to` must be the sponsor.
 
 ## Operations
 
-1. Deploy `FeeSplit(owner)`. Call `Shapes.setFeeRecipient(feeSplit)`.
-2. Deploy `SponsoredPrize` with the terms. `FeeSplit.setSponsor(sponsor, 45 ether)`, `FeeSplit.setPrize(prize)`.
+1. Deploy both contracts and set the deal terms in one run (`script/DeploySponsor.s.sol`). Copy
+   `script/env/sponsor.example.env` to `script/env/sponsor.env`, fill the empty values, and run it with
+   the keystore account that is `SPONSOR_OWNER`:
+
+       set -a; source script/env/sponsor.env; set +a
+       forge build && forge script script/DeploySponsor.s.sol --rpc-url $RPC_URL \
+         --account <keystore> --broadcast --slow
+
+   The script deploys `FeeSplit(owner)` (or reuses `SPONSOR_FEE_SPLIT`), deploys `SponsoredPrize`, calls
+   `FeeSplit.setSponsor(sponsor, 45 ether)` and `FeeSplit.setPrize(prize)`, and reads every value back.
+2. The Shapes admin sets the fee recipient:
+
+       cast send <shapes> "setFeeRecipient(address)" <feeSplit> --account <shapes admin keystore>
+
+   Mint fees accrue in Shapes per recipient. `Shapes.withdrawFees(feeSplit)` is callable by anyone and
+   forwards the accrued fees to `FeeSplit.receive()`, which applies the routing at that moment.
 3. Sponsor transfers the punk to the admin. Admin calls `pool.registerForeign(wpunks, id, prize, 30 ether)`.
 4. Owner calls `prize.start(listingId)`.
 5. Keeper adds `prize.tick()` to each pass once Hot; it is a no-op before.
@@ -71,4 +88,6 @@ Fork tests against the real Wrapped Cryptopunks and Shapes contracts. Cover: fee
 until the cap then to the owner; cap reached flips the phase and `tick` decays to the floor and stops;
 capture in Parked stops sponsor payments at the paid amount; reclaim after 30 days in Parked returns the
 punk and ends payments; reclaim refused in Hot and before 30 days; `onForeignCapture` only from the
-pool; proceeds reach the GRAIL fund.
+pool; proceeds reach the GRAIL fund. `test/fork/Sponsor.t.sol` covers each case, the fees of the pool's
+own replacement mints, `tick` while FWA is busy and past the probability cap, `rescue`, and the deploy
+script.
