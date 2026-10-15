@@ -429,3 +429,16 @@ No entry is open. A "Superseded by" line under an entry names the entry or SPEC 
    is not repaid to NAV: the mint line in each list price funds only the replacement of a drawn card. Rejected:
    a temporary surcharge on the mint line that players repay, and a shallower board. The deposit page states the
    cost. Place: none in code; docs and web copy.
+
+44. **Foreign listings.** (decided, in SPEC) Owner decision of 2026-10-15. The pool lists up to 8 tokens it did not mint
+   (`MAX_FOREIGN`), each owned in practice by a controller contract that holds every rule about the prize: prices,
+   phases, reclaim rights and where capture proceeds go. The pool holds no term of any deal. The admin registers a token
+   with `registerForeign(collection, tokenId, controller, priceWei)`; the controller reprices and withdraws it
+   (`repriceForeign`, `withdrawForeign`), and a capture pays the proceeds to `controller.onForeignCapture`. A foreign item
+   is outside ordinary NAV, `backing` and the GRAIL fund, so I1 to I7 are unchanged. Reprice counts the foreign weight
+   under `grailProbCapBps` with the GRAIL weight. A controller call that fails leaves the proceeds in `cash` as margin.
+   Chosen details: the controller callback runs at the harvest that withdraws the proceeds from FWA, with at most
+   200,000 gas; a refunded delivery keeps the entry unlisted under its listing id until the controller withdraws it;
+   exit returns every foreign listing to its controller before the GRAIL estate moves. Place: `PoolListing.registerForeign`,
+   `repriceForeign`, `withdrawForeign`, `PoolBooks._closeForeign`, `_payForeign`, `PoolAdmin.exportStep`,
+   `Lens.foreign`, `IForeignController`. SPEC 3, 4, 9, 11, 12, 13 and 14.

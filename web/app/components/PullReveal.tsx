@@ -5,6 +5,7 @@ import { useListedItems, useTokenImages } from "../lib/art";
 import { eth } from "../lib/format";
 import { ACQ, type Batch, type Card } from "../lib/pulls";
 import { Eth } from "./Measure";
+import { CollectionName, ForeignArt } from "./SponsoredPrizes";
 import { TokenArt } from "./TokenArt";
 
 /** Steps of one pull from the wallet to the delivered item. */
@@ -149,15 +150,16 @@ function PullPack({ card, flip }: { card: Card; flip: boolean }) {
       </div>
     );
   }
-  const art = <TokenArt token={item} />;
+  const art = item.foreign ? <ForeignArt collection={item.collection} tokenId={item.tokenId} /> : <TokenArt token={item} />;
   const grail = item.grail === true;
   return (
     <div className={grail ? "pack pack-opened pack-grail pack-tier-major" : "pack pack-opened"}>
       {grail && <p className="pack-tier">GRAIL</p>}
+      {item.foreign && <p className="pack-tier">Sponsored prize</p>}
       {flip ? <PackFlip back={<PackBack />} front={art} /> : art}
-      <p className="pack-value">{eth(item.value)} ETH</p>
+      <p className="pack-value">{item.foreign ? <CollectionName collection={item.collection} /> : `${eth(item.value)} ETH`}</p>
       <p className="vault-note pack-result-line">
-        {item.pack ? "Draw Pack" : "Shape"} #{item.tokenId.toString()}. Paid {eth(ticket, 5)} ETH ticket.
+        {item.foreign ? "Token" : item.pack ? "Draw Pack" : "Shape"} #{item.tokenId.toString()}. Paid {eth(ticket, 5)} ETH ticket.
       </p>
     </div>
   );

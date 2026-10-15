@@ -6,6 +6,9 @@ import { useAccount, useSwitchChain, useWaitForTransactionReceipt, useWriteContr
 import { evmNowTxUrl, formatTxError } from "../lib/errors";
 import { useDeployment } from "../Providers";
 
+/** Query roots that hold per-token data fixed after mint, so a landed transaction leaves them cached. */
+const KEEP = new Set(["token-image", "foreign-image", "collection-name"]);
+
 /** One write flow: switches the wallet to the deployment chain, sends, waits for the receipt and
  *  refreshes the page queries once it lands. */
 export function useTx() {
@@ -20,8 +23,7 @@ export function useTx() {
   const receipt = useWaitForTransactionReceipt({ hash, chainId: dep.chainId });
 
   useEffect(() => {
-    // Token images are fixed per token, so they stay cached.
-    if (receipt.isSuccess) void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "token-image" });
+    if (receipt.isSuccess) void queryClient.invalidateQueries({ predicate: (q) => !KEEP.has(q.queryKey[0] as string) });
   }, [receipt.isSuccess, queryClient]);
 
   async function run(send: () => Promise<`0x${string}`>) {

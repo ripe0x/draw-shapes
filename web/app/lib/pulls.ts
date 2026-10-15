@@ -39,6 +39,8 @@ export interface Item {
   booked: boolean;
   /** True when the token was a GRAIL item, once `settle` books the capture. */
   grail?: boolean;
+  /** True when the token belongs to a foreign collection, a sponsored prize. It holds no backing. */
+  foreign?: boolean;
 }
 export interface Card {
   id: bigint;
@@ -118,16 +120,22 @@ async function load(client: PublicClient, dep: Deployment, owner: Address, prior
       contracts: todo.map((t) => ({ address: fwa, abi: fwaCloneAbi, functionName: "listings", args: [t.listingId] }) as const),
     });
     const packs = lists.map((l) => l[0].toLowerCase() === dep.drawPacks.toLowerCase());
-    const values = await client.multicall({
+    // A listing outside Shapes and Draw Packs is a sponsored prize and has no backing to read.
+    const foreign = lists.map((l, i) => !packs[i] && l[0].toLowerCase() !== dep.shapes.toLowerCase());
+    const read = lists.flatMap((_, i) => (foreign[i] ? [] : [i]));
+    const backing = await client.multicall({
       allowFailure: false,
-      contracts: lists.map((l, i) =>
+      contracts: read.map((i) =>
         packs[i]
-          ? ({ address: l[0], abi: packsAbi, functionName: "valueOf", args: [l[3]] } as const)
-          : ({ address: l[0], abi: shapesAbi, functionName: "backingOf", args: [l[3]] } as const),
+          ? ({ address: lists[i][0], abi: packsAbi, functionName: "valueOf", args: [lists[i][3]] } as const)
+          : ({ address: lists[i][0], abi: shapesAbi, functionName: "backingOf", args: [lists[i][3]] } as const),
       ),
     });
+    const values = new Map(read.map((i, j) => [i, backing[j]]));
     todo.forEach((t, i) => {
-      cards[t.id.toString()].item = { collection: lists[i][0], tokenId: lists[i][3], pack: packs[i], value: values[i], booked: !packs[i] };
+      cards[t.id.toString()].item = foreign[i]
+        ? { collection: lists[i][0], tokenId: lists[i][3], pack: false, value: 0n, booked: true, foreign: true }
+        : { collection: lists[i][0], tokenId: lists[i][3], pack: packs[i], value: values.get(i)!, booked: !packs[i] };
     });
   }
 

@@ -405,7 +405,7 @@ contract Pool is PoolBooks {
     }
 
     /// @notice Delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`,
-    ///         `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other call to
+    ///         `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `foreignListings`, `registerForeign`, `repriceForeign` and `withdrawForeign` to `listingModule` and every other call to
     ///         `adminModule`, and returns the module's return data or revert data.
     fallback() external payable {
         address module = adminModule;
@@ -416,6 +416,8 @@ contract Pool is PoolBooks {
                 || sig == IPool.grailReady.selector || sig == IPool.setGrail.selector
                 || sig == IPool.setGrailStep.selector || sig == IPool.setGrailTarget.selector
                 || sig == IPool.grail.selector || sig == IPool.grailItems.selector || sig == IPool.boardItems.selector
+                || sig == IPool.foreignListings.selector || sig == IPool.registerForeign.selector
+                || sig == IPool.repriceForeign.selector || sig == IPool.withdrawForeign.selector
                 || sig == IPool.rowCount.selector || sig == IPool.mixLength.selector
                 || sig == IPool.listedRowCount.selector || sig == IPool.mixRow.selector
                 || sig == IPool.batchMin.selector || sig == IPool.batchMaxAge.selector

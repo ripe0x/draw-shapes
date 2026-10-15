@@ -81,6 +81,16 @@ contract Lens {
         GrailItemView[] items;
     }
 
+    /// @dev A foreign listing with its share of the FWA selection weight in bps, zero while it is unlisted.
+    struct ForeignView {
+        address collection;
+        uint256 tokenId;
+        address controller;
+        uint256 listingId;
+        uint256 notional;
+        uint256 weightBps;
+    }
+
     struct QueuedClaim {
         address to;
         uint256 amount;
@@ -129,6 +139,7 @@ contract Lens {
         address fwaFactory;
         address fwaPool;
         address admin;
+        address registrar;
         address oldPool;
         address exitDest;
         IPoolTypes.Lifecycle lifecycle;
@@ -272,6 +283,26 @@ contract Lens {
         }
     }
 
+    // ------------------------------------------------------------------ foreign listings
+
+    /// @notice Every foreign listing with its share of the FWA selection weight. The share is zero
+    ///         unless the FWA listing is Active.
+    function foreign() external view returns (ForeignView[] memory v) {
+        IPoolTypes.ForeignListing[] memory items = _ip().foreignListings();
+        v = new ForeignView[](items.length);
+        IFWAClone fwa = pool.fwaPool();
+        uint256 total = address(fwa) == address(0) ? 0 : fwa.totalWeight();
+        for (uint256 i; i < items.length; ++i) {
+            IPoolTypes.ForeignListing memory f = items[i];
+            uint256 weightBps;
+            if (f.notional != 0 && total != 0) {
+                (,,,,,,, IFWAClone.ListingStatus status) = fwa.listings(f.listingId);
+                if (status == IFWAClone.ListingStatus.Active) weightBps = PricingLib.weightOf(f.notional) * BPS / total;
+            }
+            v[i] = ForeignView(f.collection, f.tokenId, f.controller, f.listingId, f.notional, weightBps);
+        }
+    }
+
     // ------------------------------------------------------------------ claims
 
     /// @notice Unpaid withdrawal claims in payment order, from `claimHead` to the end of the queue.
@@ -382,6 +413,7 @@ contract Lens {
         p.fwaFactory = pool.fwaFactory();
         p.fwaPool = address(pool.fwaPool());
         p.admin = pool.admin();
+        p.registrar = pool.registrar();
         p.oldPool = pool.oldPool();
         p.exitDest = pool.exitDest();
         p.lifecycle = pool.lifecycle();
