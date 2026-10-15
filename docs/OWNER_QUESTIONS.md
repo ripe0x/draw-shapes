@@ -381,7 +381,9 @@ No entry is open.
    major tracks. The fund mints 1 ETH pieces, at most 6 pieces and 16 items at once and 3 mints per rotate. Merges
    build 5 ETH (five pieces), 10 ETH (two 5 ETH), 25 ETH (two 10 ETH and one 5 ETH, a Draw Pack), 50 ETH (two 25 ETH)
    and 100 ETH (two 50 ETH) up to the cycle target; the output backing equal to the target completes the cycle. Launch
-   values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 1 ETH
+   values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 0.1 ETH
+   (floor lowered from 1 ETH on 2026-10-15: on a NAV-deep board a finished GRAIL at 1 ETH was one draw in
+   80,000 and sat unclaimed; at 0.1 ETH the lab year shows a 25 ETH win about every 61 days at 500 tickets a day)
    (`GRAIL_TARGET_WEI`, `GRAIL_LIST_BPS`, `GRAIL_DECAY_WEI_PER_PULL`, `GRAIL_PIECE_FLOOR_WEI`, `GRAIL_FLOOR_WEI`).
    `minorShareBps` is removed: the whole entry contribution and the feed share go to the fund. Two chosen behaviours:
    a sixth piece may stay listed after the 5 ETH merge (the recipe takes any five pieces), and a completed GRAIL stays

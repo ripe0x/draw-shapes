@@ -105,7 +105,7 @@ the rest is listed on the board).
 - `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
 
 `grailProbCapBps` and the GRAIL parameters are set in `script/env/<env>.env`: target 25 ETH, `listBps` 7,500,
-`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 0.25 ETH, `floorWei` 1 ETH.
+`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 0.25 ETH, `floorWei` 0.1 ETH.
 
 ## 6. Lifecycle
 
@@ -331,7 +331,7 @@ below `notional`, and the listed GRAIL weight at `next` stays within `grailProbC
 Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
 A captured intermediate does not stop the cycle; the recipe waits for new inputs.
 
-Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 1 ETH.
+Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 0.1 ETH.
 
 ## 12. Admin
 

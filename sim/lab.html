@@ -245,6 +245,7 @@ const TICK = 300;
 const CONCURRENCY = 10, THIN_MARGIN = 5, MAX_LIST = 25;
 const MAX_PIECE_ETH = 6, MAX_GRAIL_ITEMS = 16, MAX_GRAIL_MINTS = 3, MAX_GRAIL_MERGES = 2, OPENING_ETH = 5;
 const DAY = 86400, VOLUME_DAYS = 7;
+const MIN_MERGED_PRICE = 0.1, MERGED_FROM = 5;
 // Recipes, largest output first: [output, input size, input count, extra input size, extra input count]. The last one takes pieces: 5 ETH of them.
 function recipesFor(pieceSize) { return [[100, 50, 2, 0, 0], [50, 25, 2, 0, 0], [25, 10, 2, 5, 1], [10, 5, 2, 0, 0], [5, pieceSize, Math.round(5 / pieceSize), 0, 0]]; }
 const GAS_BASE = 100000, GAS_ITEM = 150000, GAS_OVERHEAD = 30000;
@@ -274,7 +275,7 @@ function defaultParams() {
     entryFloorBps: 1000, entryCapBps: 2500, paybackDays: 20,
     navCapFloor: 69, turnoverBps: 1250, founderWindowDays: 30,
     edgePct: 5, grailProbCapBps: 1000, repriceMinBps: 100,
-    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1 },
+    grail: { target: 25, listBps: 7500, decay: 0.001, pieceSize: 1, pieceDecay: 0.001, pieceFloor: 0.25, floor: 1, floorPulls: 20000 },
     openingEth: 55, openingDepositors: 5, depositPerDay: 2, withdrawBpsPerDay: 200,
     ticketsPerDay: 500,
     rotateInterval: 900,
@@ -498,7 +499,7 @@ function simulate(P, seed, days, snapDays, opts) {
   }
   function publish(b, notional, piece) {
     const done = !piece && b === grail.target;
-    G.push({ b, notional, since: 0, done, piece: !!piece });
+    G.push({ b, notional, since: 0, age: 0, cutAge: 0, done, piece: !!piece });
     if (b > GR.largest) GR.largest = b;
     if (done) { GR.cycles++; if (GR.firstCycleDay < 0) GR.firstCycleDay = clock / DAY; }
   }
@@ -511,8 +512,16 @@ function simulate(P, seed, days, snapDays, opts) {
     return true;
   }
   // pieceFloor is the floor of a 1 ETH piece and scales with the piece size
-  function floorOf(it) { return it.piece ? grail.pieceFloor * pieceSize : grail.floor; }
-  function decayOf(it) { return it.piece ? grail.pieceDecay : grail.decay; }
+    function decayOf(it) { return it.piece ? grail.pieceDecay : grail.decay; }
+  // Merged items (backing MERGED_FROM and up) floor at the price where their selection odds are 1 in floorPulls against the
+  // live board weight: p = (floorPulls - 1) / rest, rest = total weight minus the item's own weight, bounded below by
+  // MIN_MERGED_PRICE. floorPulls = 0 gives the fixed price floor.
+  function floorFor(it, tot) {
+    if (it.piece) return grail.pieceFloor * pieceSize;
+    if (!grail.floorPulls || it.b < MERGED_FROM) return grail.floor;
+    const rest = tot - 1 / it.notional;
+    return rest > 0 ? Math.max(MIN_MERGED_PRICE, (grail.floorPulls - 1) / rest) : MIN_MERGED_PRICE;
+  }
   // Decay reprice of every listed item (PoolListing.grailReprice): price falls to max(floor, notional - decay x pulls) when at
   // least repriceMinBps below the notional and the listed GRAIL weight at the new price stays within grailProbCapBps.
   // commit = false only counts the items that would change.
@@ -520,13 +529,13 @@ function simulate(P, seed, days, snapDays, opts) {
     if (!G.length) return 0;
     let w = grailWeight(), tot = sumOrd() + w, n = 0;
     for (const it of G) {
-      const old = it.notional, next = Math.max(floorOf(it), old - decayOf(it) * it.since);
+      const old = it.notional, next = Math.max(floorFor(it, tot), old - decayOf(it) * it.since);
       const gap = old - next;
       if (!(gap > 1e-15) || gap < old * P.repriceMinBps / 1e4 - 1e-15) continue;
       const dw = 1 / next - 1 / old, nw = w + dw, nt = tot + dw;
       if (nw / nt > capProb + 1e-12) continue;
       w = nw; tot = nt; n++;
-      if (commit) { it.notional = next; it.since = 0; }
+      if (commit) { it.notional = next; it.since = 0; it.cutAge = it.age; }
     }
     return n;
   }
@@ -717,7 +726,7 @@ function simulate(P, seed, days, snapDays, opts) {
       breakEvenDay: beDay >= 0 && beDay <= day ? beDay : -1,
       grailHits: GR.hits, grailFirst: GR.firstHitDay, grailPrizes: GR.prizes, grailFund: GR.fund, grailCycles: GR.cycles, grailFirstCycle: GR.firstCycleDay,
       grailLargest: GR.largest, grailLargestHit: GR.largestHit, grailMinted: GR.minted, grailHitSizes: GR.hitSizes, pieceOut: GR.pieceOut, pieceProceeds: GR.pieceProceeds, grailMerged: GR.merged, grailBacking: G.reduce((a, it) => a + it.b, 0),
-      grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length,
+      grailListed: G.length, grailSizes: G.reduce((m, it) => { m[it.b] = (m[it.b] || 0) + 1; return m; }, {}), grailDone: G.filter(it => it.done).length, weightExDone: sumOrd() + G.reduce((w, it) => w + (it.done ? 0 : 1 / it.notional), 0), grailDoneItems: G.filter(it => it.done).map(it => ({ price: it.notional, age: it.age, cutAge: it.cutAge })),
       capClosedDays: series.gate.slice(0, day).filter(g => g === 1).length, windowDays: series.gate.slice(0, day).filter(g => g === 2).length,
       cap: series.cap[day], dailyVolume: series.volume[day], entryFeeBps: series.feeBps[day],
       mintLineAccrued: A.mintLineAccrued, carry: S.margin - S.mintOwed, avgNav: series.nav.slice(0, day + 1).reduce((a, b) => a + b, 0) / (day + 1),
@@ -777,7 +786,7 @@ function simulate(P, seed, days, snapDays, opts) {
       for (let gi = 0; gi < G.length; gi++) { const w = 1 / G[gi].notional; if (u < w) { pickT = gi; break; } u -= w; }
       if (pickT < 0) { pick = nR - 1; while (pick > 0 && R[pick].n <= 0) pick--; }
     }
-    for (const g of G) g.since++;
+    for (const g of G) { g.since++; g.age++; }
     if (pickT >= 0) {
       // capture of a GRAIL item: the pool is paid the ticket into the fund and the item leaves
       const g = G.splice(pickT, 1)[0];
@@ -786,7 +795,7 @@ function simulate(P, seed, days, snapDays, opts) {
       GR.fund += proceeds; GR.hits++; GR.hitSizes[g.b] = (GR.hitSizes[g.b] || 0) + 1;
       if (g.piece) { GR.pieceOut += g.b; GR.pieceProceeds += proceeds; } if (GR.firstHitDay < 0) GR.firstHitDay = (t / DAY);
       if (g.b > GR.largestHit) GR.largestHit = g.b;
-      events.push({ t: t / DAY, prize: g.b, done: g.done });
+      events.push({ t: t / DAY, prize: g.b, done: g.done, price: g.notional, age: g.age, cutAge: g.cutAge });
     } else {
       const r = R[pick];
       refreshTargets();
@@ -965,7 +974,8 @@ const GROUPS = [
     F('grail.decay', 'Decay per pull', 'ETH', 0.0005, 0, 1, 'Every listed GRAIL item except pieces, which follow the piece decay. Repriced when 1 percent or more below its price. Moves the piece decay too while the two are equal.'),
     F('grail.pieceDecay', 'Piece decay per pull', 'ETH', 0.0005, 0, 1, 'Decay of a listed piece. Equal to the decay per pull at launch.'),
     F('grail.pieceFloor', 'Piece floor', 'ETH', 0.05, 0.01, 1, 'Lowest price of a 1 ETH piece. A piece floors at this value x piece size.'),
-    F('grail.floor', 'Floor', 'ETH', 0.1, 0.01, 100, 'Lowest price of any other item.'),
+    F('grail.floor', 'Merged floor (floorWei)', 'ETH', 0.1, 0.01, 100, 'Lowest price of a merged item (5 ETH and up) while Floor pulls is 0; with Floor pulls on, the lowest price is fixed at 0.1 ETH.'),
+    F('grail.floorPulls', 'Floor pulls', 'pulls', 1000, 0, 1000000, 'Merged items (5 ETH and up) decay to the price where their selection odds are 1 in this many pulls against the live board weight, never below 0.1 ETH. 0 gives the fixed Floor.'),
   ] },
   { id: 'basis', title: 'Value received basis', fields: [
     F('shapesRedeemPct', 'Shapes redeem value', 'percent', 1, 1, 100, 'Share of backing a player receives.'),
@@ -1263,7 +1273,7 @@ function renderGrail() {
   h += '<tr><td>Hits</td>' + cnt.map(c => '<td>' + c + '</td>').join('') + '</tr>';
   h += '<tr><td>Largest hit (ETH)</td>' + big.map(c => '<td>' + (c || '') + '</td>').join('') + '</tr>';
   $('gtbl').innerHTML = h;
-  $('gnote').innerHTML = 'While the fund covers a piece and its mint fee, a rotate pass mints up to ' + MAX_GRAIL_MINTS + ' pieces of ' + g.pieceSize + ' ETH, with at most ' + Math.round(MAX_PIECE_ETH / g.pieceSize) + ' pieces and ' + MAX_GRAIL_ITEMS + ' items listed, each listed at face. Merges run largest recipe first, at most ' + MAX_GRAIL_MERGES + ' per pass: 5 from ' + Math.round(5 / g.pieceSize) + ' pieces, 10 from two 5s, 25 from two 10s and a 5, 50 from two 25s, 100 from two 50s, listed at ' + g.listBps + ' bps of backing. The cycle completes when an output equals the ' + g.target + ' ETH target; that item stays listed and is never a recipe input. Every listed item loses ' + g.decay + ' ETH per pull (' + g.pieceDecay + ' for pieces) down to ' + (g.pieceFloor * g.pieceSize) + ' ETH (pieces) or ' + g.floor + ' ETH, repriced at a drop of ' + P.repriceMinBps + ' bps or more while the listed GRAIL weight stays within ' + P.grailProbCapBps + ' bps. A capture pays the ticket proceeds into the fund and the item leaves. Selection weight is 1 over list price, the ticket is the harmonic mean times ' + (1 + P.edgePct / 100).toFixed(2) + '.';
+  $('gnote').innerHTML = 'While the fund covers a piece and its mint fee, a rotate pass mints up to ' + MAX_GRAIL_MINTS + ' pieces of ' + g.pieceSize + ' ETH, with at most ' + Math.round(MAX_PIECE_ETH / g.pieceSize) + ' pieces and ' + MAX_GRAIL_ITEMS + ' items listed, each listed at face. Merges run largest recipe first, at most ' + MAX_GRAIL_MERGES + ' per pass: 5 from ' + Math.round(5 / g.pieceSize) + ' pieces, 10 from two 5s, 25 from two 10s and a 5, 50 from two 25s, 100 from two 50s, listed at ' + g.listBps + ' bps of backing. The cycle completes when an output equals the ' + g.target + ' ETH target; that item stays listed and is never a recipe input. Every listed item loses ' + g.decay + ' ETH per pull (' + g.pieceDecay + ' for pieces) down to ' + (g.pieceFloor * g.pieceSize) + ' ETH (pieces) or, for merged items, ' + (g.floorPulls ? 'the price at which the item has 1 chance in ' + fmt.n0(g.floorPulls) + ' pulls against the live board weight (at least ' + MIN_MERGED_PRICE + ' ETH)' : g.floor + ' ETH') + ', repriced at a drop of ' + P.repriceMinBps + ' bps or more while the listed GRAIL weight stays within ' + P.grailProbCapBps + ' bps. A capture pays the ticket proceeds into the fund and the item leaves. Selection weight is 1 over list price, the ticket is the harmonic mean times ' + (1 + P.edgePct / 100).toFixed(2) + '.';
 }
 
 const COL = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c6)', 'var(--c7)', 'var(--c9)', 'var(--c8)'];
@@ -1387,7 +1397,7 @@ $('exsel').addEventListener('change', () => { if (R) renderExample(); });
 
 function basisText() {
   $('basisnote').innerHTML =
-    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split. Deposits: the entry fee is clamp(payback days x premium x daily volume / NAV, floor, cap) and goes to the GRAIL fund in full, the cap is max(floor, daily volume x 10,000 / turnover), the founder window closes deposits for its first days, and shares are minted at NAV. Daily volume is the mean of booked ticket fees over the last 7 complete days. Withdrawals are paid from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 25 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL mints and merges. GRAIL is one fund fed by the entry fee, the feed share of the margin and captures: while it covers a piece and its mint fee, rotate mints pieces of the piece size, 1 or 0.5 ETH (up to 3 per pass, 6 ETH of pieces, 16 items) and merges by recipe up to the target. Every listed GRAIL item decays by pull (pieces at their own decay), and a reprice needs a drop of 1 percent and the listed GRAIL weight within the probability cap; it rides on a settle call that lists items, or on rotate with the toggle off. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL follows SPEC 11 and deposits follow SPEC 7 and docs/VOLUME_CAP.md.</p>' +
+    '<p><b>Modelled for Draw Shapes.</b> Mix rows, listing price with the mint line, the harmonic mean ticket with the FWA edge, draws weighted by one over price, half of the edge returned to the pool, mint fee repayment first and the 200:100:400 margin split. Deposits: the entry fee is clamp(payback days x premium x daily volume / NAV, floor, cap) and goes to the GRAIL fund in full, the cap is max(floor, daily volume x 10,000 / turnover), the founder window closes deposits for its first days, and shares are minted at NAV. Daily volume is the mean of booked ticket fees over the last 7 complete days. Withdrawals are paid from cash. Each capture queues one replacement row, sampled with the deficit weight, the surprise upgrade and the band cap. Settle lists the queue in batches (batch size, maximum age, thin board), at most 25 items per call, filling from held Shapes before minting, and mints only from cash above queued claims plus the reserve. A share of tickets is paid with a Shape that the pool keeps. Keepers call settle and rotate on a 300 second tick. Rotate runs at the rotate interval for GRAIL mints and merges. GRAIL is one fund fed by the entry fee, the feed share of the margin and captures: while it covers a piece and its mint fee, rotate mints pieces of the piece size, 1 or 0.5 ETH (up to 3 per pass, 6 ETH of pieces, 16 items) and merges by recipe up to the target. Every listed GRAIL item decays by pull (pieces at their own decay; merged items floor at their odds floor, pieces at the piece floor), and a reprice needs a drop of 1 percent and the listed GRAIL weight within the probability cap; it rides on a settle call that lists items, or on rotate with the toggle off. Settle and rotate refunds draw on the maintenance bucket at the gas price set. The cooldown pauses ticket arrival after a listing batch. GRAIL follows SPEC 11 and deposits follow SPEC 7 and docs/VOLUME_CAP.md.</p>' +
     '<p style="margin-top:8px"><b>Left out of the model.</b> VRF latency and fees, FWA outstanding request limits, DeliveryPending write-offs and refunds, claim liquidation of listed items and the Claim and Held rotate reasons, pool staging and the opening deadline, batch pricing (each ticket is priced alone), migration and exit, gas for GRAIL reprices, mints and merges inside a refund, the compose and pack steps of a merge (the output lists at once), the unlisted state of a GRAIL item after a refund, the unsettled-acquisition gate on mints and merges, and the imported NAV of a successor pool. Captures are booked at the moment of the ticket.</p>' +
     '<p style="margin-top:8px"><b>Basis of every figure.</b> Returns are backing delivered divided by the ticket. Draw Shapes redeems backing at the value set under Value received basis, and FWA V2 settles delivered items at its cash-out value. Gas for players, VRF, FWA token and epoch rewards and resale value are excluded on both sides. FWA V2 is the board snapshot at block 26,088,128 with its observed ticket of 1.05 times the harmonic mean backing. FWA V2 observed 2,848 tickets a day (week to 2026-09-30) and 3,646 (week before). A ticket paid with a Shape uses a Shape no larger than the ticket, drawn from the capture value distribution, and leaves NAV unchanged.</p>';
 }
