@@ -344,8 +344,8 @@ A captured intermediate does not stop the cycle; the recipe waits for new inputs
 Foreign listings. A prize the pool did not mint, owned by a controller contract that holds every rule about it.
 Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `tokenId`, `controller`, `listingId`,
 `notional`, `lastRepriceAt`, keyed by the FWA `listingId`. A foreign item is outside `backing`, ordinary NAV and the GRAIL fund.
-- `registerForeign(collection, tokenId, controller, priceWei)`: admin, Live only. Transfers the ERC-721 from the
-  admin to the pool (the admin approves the pool first), approves and lists it on the FWA pool at `priceWei`, records
+- `registerForeign(collection, tokenId, controller, priceWei)`: admin or `registrar`, Live only. Transfers the
+  ERC-721 from the caller to the pool (the caller approves the pool first), approves and lists it on the FWA pool at `priceWei`, records
   the entry and marks the token registered, so `sweep` and `importItem` refuse it. Reverts `NotLive`, `ForeignFull`,
   `AlreadyRegistered`, `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` and
   `ProbCapExceeded`. The price needs a selection weight: `priceWei` is nonzero and at most `1e36`, so `PricingLib.weightOf`
@@ -389,6 +389,8 @@ Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `t
   failed withdrawal or transfer.
 - Lens: `foreign()` returns every entry with its selection weight in bps, which is zero unless the FWA listing is
   Active.
+`setRegistrar(address)`: admin. One address, zero to clear, that may call `registerForeign` besides the admin, so an
+offer contract can register a token a third party hands it without an admin signature. `registrar()` is a view.
 The pool holds no term of any deal. A controller decides prices, phases, reclaim rights and where capture proceeds go.
 
 Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
