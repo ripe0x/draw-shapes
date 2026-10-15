@@ -422,3 +422,10 @@ No entry is open. A "Superseded by" line under an entry names the entry or SPEC 
    existing queue entries included) and lists at most 25. `open()` goes Live as before, on the first call that lists fewer than 20 items or once `listedCount` is at least `minItems`.
    No new parameter. Place: `PoolBooks._boardItems`, `PoolStorage._setMix`, `PoolListing._queueMissing`,
    `Pool.settleDue`, `Pool.settle`, `PricingLib.chooseRow`, `PoolListing.boardItems`, `Lens.parameters`. SPEC 9.
+
+43. **Board mint fees are paid by depositors.** (decided) Owner decision of 2026-10-15. The Shapes mint fee
+   (0.001 ETH per Shape at launch) on the opening board and on every expansion that follows a deposit is paid from
+   ordinary NAV and received by the Shapes operator. It is about 5 percent of the capital that goes on the board and
+   is not repaid to NAV: the mint line in each list price funds only the replacement of a drawn card. Rejected:
+   a temporary surcharge on the mint line that players repay, and a shallower board. The deposit page states the
+   cost. Place: none in code; docs and web copy.
