@@ -130,3 +130,30 @@ punk and ends payments; reclaim refused in Hot and before 30 days; `onForeignCap
 pool; proceeds reach the GRAIL fund. `test/fork/Sponsor.t.sol` covers each case, `stake` and `canStake` (sponsor only, registrar role, approval, once, terms), the fees of the pool's
 own replacement mints, `tick` while FWA is busy and past the probability cap, `rescue`, and the deploy
 script.
+
+## Standing offer: `SponsorOffer`
+
+Owner decision of 2026-10-15. One contract replaces the per-deal pair for the open offer. It is the pool's
+registrar and the Shapes mint fee recipient. The bilateral `SponsoredPrize` stays for hand deals.
+
+Terms per collection, set by the owner: `parkedPriceWei`, `floorWei`, `decayWeiPerPull`, `reclaimDelay`,
+`capWei`, `maxOpen` (deals that may be unpaid at once), `enabled`. Launch terms for Wrapped Cryptopunks:
+parked 32 ETH, cap 48 ETH (the 32 ETH value plus 50 percent), floor 0.25 ETH, decay 0.001 ETH per pull,
+reclaim 30 days, `maxOpen` 2. Changing terms affects future takes only.
+
+- `take(collection, tokenId)`: anyone. Requires the collection enabled, open deals below `maxOpen`, the pool
+  below its foreign cap, and the caller to own and have approved the token. Pulls the token, registers it on
+  the pool at the parked price, opens a deal `{sponsor, collection, tokenId, listingId, capWei, paidWei,
+  takenAt, reclaimAfter, phase}` and appends it to the fee queue. Event `Taken(dealId, sponsor, collection,
+  tokenId, listingId)`.
+- Fees: `receive()` credits the head of the queue (the oldest deal still unpaid and active) up to its remaining
+  cap, moves on to the next, and credits the owner with the rest. `withdraw()` pays the caller's balance.
+- Phases per deal as in `SponsoredPrize`: Parked until `paidWei == capWei`, then Hot with decay by pulls to
+  the floor, `tick(dealId)` by anyone, `atFloor`. A capture ends the deal and its payments. `reclaim(dealId)`
+  by the sponsor while Parked after `reclaimAfter`. `releaseHeld(dealId)` after an exit. `rescue(dealId, to)`
+  by the owner only when the pool reports the token unlisted, `to` the sponsor while Parked.
+- Views: `deals()`, `queue()` (unpaid deals in order with remaining cap), `expectedWait(collection)` is
+  the sum of remaining caps ahead of a new take, `canTake(collection, tokenId, who)`.
+- Keeper: `Shapes.withdrawFees(offer)` each pass, `tick` for every Hot deal.
+- Record `deployments/<chainId>-offer.json` with the contract address. The page reads it in place of the
+  per-deal record when present.
