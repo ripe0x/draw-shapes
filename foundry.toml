@@ -30,7 +30,7 @@ compilation_restrictions = [
 ]
 bytecode_hash = "none"
 cbor_metadata = false
-fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./script/env" }, { access = "read-write", path = "./evidence/play" }]
+fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./script/env" }, { access = "read-write", path = "./evidence/play" }, { access = "read-write", path = "./evidence/punks" }]
 # Fork suites read MAINNET_RPC_URL (default: Tenderly public gateway) and FORK_BLOCK from the
 # environment in test/fork/ForkBase.sol. Pin FORK_BLOCK so ~/.foundry/cache/rpc compounds.
 no_storage_caching = false
