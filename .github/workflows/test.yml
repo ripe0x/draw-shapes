@@ -1,0 +1,53 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  FORK_BLOCK: "26170000"
+  MAINNET_RPC_URL: https://gateway.tenderly.co/public/mainnet
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      # The fork tests read mainnet state at the pinned block. The RPC cache keyed on the block makes every run after
+      # the first serve from disk.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.foundry/cache/rpc
+          key: foundry-rpc-${{ env.FORK_BLOCK }}
+      - run: forge build --sizes
+      - run: forge test --match-path "test/unit/*.t.sol"
+      - run: forge test --match-path "test/fork/*.t.sol"
+      - run: forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
+      - run: forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
