@@ -46,6 +46,11 @@ Lens (read-only, one call each):
 - `settleDue()` and `rotateDue()`: reason codes the keeper acts on (0 means none).
 - Pool `maintenance()`: keeper refund bucket. Refunds stop at zero.
 
+Reserve. `cash` holds `reserveBps` of NAV (launch 1,000, 10 percent) so withdrawals pay at once, replacement mints
+run at settle before the capture's proceeds are harvested, and deposited Shapes can be held. Every point of reserve
+is capital off the board. Once the keeper cadence and the withdrawal pattern are seen, lower it with
+`setReserve(bps)`; the previous design ran at zero.
+
 Keeper log, one line per transaction:
 
 ```

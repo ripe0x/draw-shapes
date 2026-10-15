@@ -535,7 +535,7 @@ contract PlayMonthTest is ForkBase, Deploy {
         _truncate(
             "hourly.csv",
             "hour,navPerShare,cash,backing,receivable,claims,listedCount,grailBacking0,grailNotional0,grailOddsBps0,"
-            "grailBacking1,grailNotional1,grailOddsBps1,rotates,rotClaim,rotGrailStep,rotHeld,"
+            "grailBacking1,grailNotional1,grailOddsBps1,grailFund,grailTarget,rotates,rotClaim,rotGrailStep,rotHeld,"
             "inventoryChanged,pauseSecondsAccrued,pulls,rejected,pullWaitSeconds,"
             "settles,setBatch,setAge,setThin,setDeep,settleListed,settleRefund"
         );
@@ -578,6 +578,10 @@ contract PlayMonthTest is ForkBase, Deploy {
         for (uint256 t; t < 2; ++t) {
             (uint256 b, uint256 notional, uint256 odds) = _grailStats(t);
             line = string.concat(_c(_c(line, b), notional), ",", _fixed4(odds));
+        }
+        {
+            Lens.GrailView memory gv = lens.grail();
+            line = _c(_c(line, gv.fund), gv.targetWei);
         }
         line = _c(_c(line, rotates), rotTrig[0]);
         line = _c(_c(line, rotTrig[1]), rotTrig[2]);
