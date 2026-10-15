@@ -52,22 +52,23 @@ The pool is Opening and takes deposits at once. The admin then:
 
 1. Calls `createFwaPool(expectedFee)`. The factory must allow the admin to create a pool, and the
    pool must hold the fee in the FWA token. The opening deadline starts here. The call sets the
-   pool as the FWA `purchaseOperator`, so FWA accepts purchases made through the pool's `acquire`
-   and `acquireBatch` only. `purchaseOperator()` on the FWA pool returns the pool.
+   pool as the FWA `purchaseOperator`, so FWA accepts purchases made through the pool's `acquire`,
+   `acquireBatch` and `pullWithShapes` only (`pullWithShapes` forwards to FWA through the pool). `purchaseOperator()` on the FWA pool returns the pool.
 2. Waits for `openingDeadlineAt`.
 3. Calls `open()` until `lifecycle()` returns Live. Each call lists at most 20 items.
 
 ## Keeper
 
 Run a keeper on a short interval. It reads `Lens.settleDue()` (or `Pool.settleDue()`) and calls `Pool.settle(20)`
-whenever `settleDue() != None`. A nonzero value means a batch, an age, a thin board or a deep board (NAV above the reserve funds more items
-than the board holds) reason holds and funded work is queued or can be queued. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL item. `settle` lists while the
+whenever `settleDue() != None`. A nonzero value means a batch, an age, a thin board or a deep board reason holds. Deep is due when the listed, held and queued
+items are short of `boardItems()` by at least `batchMin`. It does not check spendable cash: a Deep settle with
+no funded work queues the missing items and lists nothing. The caller receives a refund from `maintenance` when the call lists an item or reprices a GRAIL item. `settle` lists while the
 factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on.
 
 Keeper funding: `maintenanceBps` 100 covers mint and list gas up to about 2 gwei. Above that, top the bucket up with
 `Pool.fundMaintenance()` (payable, anyone) from Shapes mint fee revenue, which the operator receives at the Shapes
-contract. Watch `maintenance()` on Lens or Pool; refunds stop when it is empty and the board relists only on the thin
-trigger until it is refilled.
+contract. Watch `maintenance()` on Lens or Pool; an empty bucket zeroes the refund. `settle` lists on any due trigger
+regardless of the bucket.
 
 The keeper also reads `rotateDue()` and calls `Pool.rotate()` whenever `rotateDue() != None`. A nonzero value means the
 spacing since `lastRotateAt` has passed and a reason holds: Claim, GrailStep or Held. A rotate that leaves

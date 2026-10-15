@@ -77,8 +77,8 @@ A withdrawal is never blocked by the cap. The cap only closes new deposits.
 - Cash reserve: unchanged. More NAV means more cash above the reserve, so replacements are always
   funded when the cap is open.
 - GRAIL feed: more volume means more feed; the cap does not touch the GRAIL buckets.
-- Board depth: independent. `minItems` sizes the board; the cap sizes capital. The board tide
-  idea (parked) would use the same volume measure, so one ring buffer serves both.
+- Board depth: follows NAV above the reserve. `boardItems()` is `max(minItems, (nav - nav * reserveBps /
+  10_000) / meanRowCost)`, so `minItems` is the floor and the cap, by bounding NAV, bounds the board.
 
 ## 7. Implementation
 

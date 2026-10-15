@@ -25,6 +25,8 @@ the named place; none of them is load bearing for the others unless the entry sa
 3. GRAIL probability cap decided: enforced by price only. The `GrailProbTooHigh` revert leaves the
    purchase path; `rotate` lifts a track's notional back toward `backing * listBps / 10_000` when
    its listed weight exceeds `grailProbCapBps`; growth and decay keep their cap checks.
+   Superseded by entry 41 (2026-10-14): one fund and one ladder replace the tracks, and there is no lift. When the
+   cap binds, the item keeps its price (SPEC 11).
 4. Liquidation charge decided: stays, named the re-mint cost everywhere.
 5. Launch values decided (entry 14 superseded for these keys): `MIN_ITEMS=100`,
    `NAV_CAP_WEI=100 ether`, `MIX_ROWS="0:3800;0,0:2800;0,0,0:1900;1:1000;2:400;3:100"` (0.01 Shape
@@ -33,6 +35,9 @@ the named place; none of them is load bearing for the others unless the entry sa
    `grailProbCapBps` unchanged. Reasoning: a 100 item board gives headroom over FWA's 10 outstanding
    requests and the per-rotate captures, the 100 ETH cap bounds the opening, and the two large
    Shape rows restore the launch profile's 0.10 and 0.50 pieces at a small share.
+   Superseded by entry 39 (2026-10-14) for the deposit cap (`NAV_CAP_FLOOR_WEI` and `TURNOVER_BPS` replace
+   `NAV_CAP_WEI`) and the entry curve, by SPEC 5 for `ROTATE_INTERVAL_SECONDS` (900), and by
+   entry 41 (2026-10-14) for the GRAIL tracks.
 6. Every decided entry is folded into SPEC in one commit; this file stays the log, with each entry
    marked decided, open or superseded.
 7. Remaining entries accepted as written: 4, 5, 10, 13, 18, 20, 22, 28, 29, 30, 31. Entry 6 is
@@ -105,6 +110,7 @@ c. Batches: `batchMin` 20, `batchMaxAge` 3,600 s, `MAX_LIST_PER_SETTLE` 25 so on
    clears a batch (a 20-item settle costs about 10.9M gas). The tip is `tipWei`, `setTip`
    (at most 0.01 ETH), launch 0.0002 ETH, used by settle and rotate refunds.
 d. Minor GRAIL `listBps` 10,000 at launch (lists at 1 ETH at target); `setGrail` lowers it later.
+   Superseded by entry 41 (2026-10-14): no minor track; `listBps` 7,500 applies to merged items.
 e. Measured, 500 a day for 7 days at cooldown 0: 40 rotates (all GrailStep), 174 settles,
    refunds 0.043 ETH against 1.04 ETH of maintenance inflow; NAV per share 1.0408; listed items
    average 91. At 100 a day: 21 rotates, 117 settles, 0.024 ETH refunds against 0.33 ETH.
@@ -117,8 +123,8 @@ f. Lab, 365 days at 500 a day and 1 gwei: keeper cost 34 ETH fully refunded from
 
 ## Guesses taken during the run
 
-Every entry carries its status in the title: decided (folded into SPEC on 2026-10-13) or superseded by an owner decision.
-No entry is open.
+Every entry carries its status in the title: decided (folded into SPEC), superseded by an owner decision, or deferred (entry 35).
+No entry is open. A "Superseded by" line under an entry names the entry or SPEC section that replaced it; the entry text is the record of the earlier decision.
 
 0. **The admin and exit surface lives in a delegatecall module. SPEC 3 forbids delegatecall
    libraries; this is the one guess that changes architecture, read it first.** (decided, in SPEC) The feature
@@ -144,6 +150,8 @@ No entry is open.
    direct capture never depresses NAV between settle and harvest. Place: `Pool._bookSurplus`.
    Proposed SPEC 9 step 4 wording: "received must be at least the booked receivables; the
    difference is the proceeds of direct purchases and enters the margin."
+   Superseded by entry 40 (2026-10-14): the pool is the FWA `purchaseOperator`, so the surplus arises only from a
+   purchase the pool did not record (the operator cleared through `adminCall`).
 
 1b. **Share pricing follows the books.** (decided, in SPEC) FWA processes acquisitions permissionlessly and VRF words
    are public once Ready, so a depositor could exit at a pre-loss NAV. Guess: `deposit`,
@@ -221,6 +229,9 @@ No entry is open.
    - Kept by the owner from the guesses: `minorShareBps` 2,000; minor track target 1 ETH, step 0.1 ETH, floor 0.25 ETH;
      major track target 25 ETH, step 0.5 ETH, floor 1 ETH; both `listBps` 7,500; `grailProbCapBps` 1,000.
    Place: `script/env/mainnet.env` (and anvil, sepolia). Edit the values, the deploy reads them.
+   Superseded by entry 39 (2026-10-14) for the entry fee and the deposit cap (`NAV_CAP_WEI` is replaced by
+   `NAV_CAP_FLOOR_WEI` and `TURNOVER_BPS`), by entry 41 (2026-10-14 and 2026-10-15) for GRAIL (one fund, no tracks,
+   no `minorShareBps`, floors 1 ETH), and by SPEC 5 for `ROTATE_INTERVAL_SECONDS` (900). `REPRICE_MIN_BPS` is removed.
 
 15. **Retirement folds `maintenance` into `cash`.** (decided, in SPEC) SPEC 13 moves maintenance to a successor and
    says nothing for retirement. Guess: at the final `exportStep` of a retirement, `cash +=
@@ -323,6 +334,7 @@ No entry is open.
    no `GrailProbTooHigh` revert. `rotate` lifts a track's notional toward `backing * listBps / 10_000` when the listed
    GRAIL weight exceeds `grailProbCapBps`, the mirror of decay. Decay keeps its cap check. Place: `Pool._rotateGrail`,
    `Pool._liftedNotional`. SPEC 9 and 11.
+   Superseded by entry 41 (2026-10-14): the lift is removed; the item keeps its price when the cap binds (SPEC 11).
 
 34. **FWA-shaped purchase ABI.** (decided, in SPEC) Owner decision 2. The pool exposes `acquire`,
    `acquireBatch` and `quoteAcquisitionPrice`; `purchaser` must equal the caller; the caller's slippage, minimum weighted
@@ -334,12 +346,15 @@ No entry is open.
    an unlisted pack whose decayed price would exceed `grailProbCapBps` stays unlisted until the board
    deepens. Trying the face price `backing * listBps / 10_000` before giving up would relist sooner.
    Spec author's second pass, 2026-10-13: low, not worth Pool's remaining margin in v1.
+   Superseded by entry 41 (2026-10-14): `_rotateGrail` and GRAIL packs per track are removed; `PoolListing.grailStep`
+   and `grailReprice` own the GRAIL step.
 
 36. **Size plan for a future Pool change.** (decided) Pool is 23,711 B of 24,576. The first lever when
    a Pool change is required: move the views `rowCount`, `mixLength`, `listedRowCount` and `mixRow`
    into `PoolAdmin`, reachable through the fallback, which frees several hundred bytes with no ABI
    change. Any Pool change is a redeploy, so the margin is accepted for v1. After entry 37 Pool is 24,330 B, 246 B under
    the limit, and the views stay in `Pool`.
+   Superseded by SPEC 3: the row, queue and parameter getters live in `PoolListing`, and the current sizes are in SPEC 3.
 
 37. **Demand-triggered rotate.** (decided, in SPEC) Owner decision 8. `rotate()` runs once `rotateInterval` (launch
    900 s, the minimum spacing between inventory changes) has passed since `lastRotateAt` and a trigger holds: Weight,
@@ -357,11 +372,13 @@ No entry is open.
    legitimate exit, bounded by the spacing and the 25 item slice. Place: `Pool.rotate`, `Pool.rotateDue`,
    `Pool._rotateTrigger`, `PoolAdmin.setRestockTriggerBps`, `PoolAdmin.setQuietInterval`, `script/env/*.env`
    (`ROTATE_INTERVAL_SECONDS`, `RESTOCK_TRIGGER_BPS`, `QUIET_INTERVAL_SECONDS`). SPEC 5, 7, 9, 10, 11, 14.
+   Superseded by owner decision 10b (2026-10-13) and SPEC 9: the reasons are Claim, GrailStep and Held. Weight,
+   GrailCap, Restock and Quiet, `setRestockTriggerBps` and `setQuietInterval` no longer exist.
 
-38. **`payClaims()` pays queued claims in every lifecycle state.** (proposed, pending owner confirmation) Removing
+38. **`payClaims()` pays queued claims in every lifecycle state.** (decided, in SPEC) Removing
    `liquidate()` was the only function that paid queued claims to an Exiting or Exported pool, because `rotate` requires
    Live. `payClaims()` pays from `cash` in FIFO order, at most 20 entries per call, and leaves items alone. Place:
-   `Pool.payClaims`. SPEC 7 and 13.
+   `Pool.payClaims`. Built; SPEC 7 and 13.
 
 39. **Admission rules.** (decided, in SPEC) Owner decisions of 2026-10-14 for `deposit()`. Cap: `navCap()` is
    `max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`, with `navCapFloor` 69 ETH and `turnoverBps` 1,250
@@ -381,15 +398,16 @@ No entry is open.
    major tracks. The fund mints 1 ETH pieces, at most 6 pieces and 16 items at once and 3 mints per rotate. Merges
    build 5 ETH (five pieces), 10 ETH (two 5 ETH), 25 ETH (two 10 ETH and one 5 ETH, a Draw Pack), 50 ETH (two 25 ETH)
    and 100 ETH (two 50 ETH) up to the cycle target; the output backing equal to the target completes the cycle. Launch
-   values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 0.25 ETH, floor 0.1 ETH
-   (floor lowered from 1 ETH on 2026-10-15: on a NAV-deep board a finished GRAIL at 1 ETH was one draw in
-   80,000 and sat unclaimed; at 0.1 ETH the lab year shows a 25 ETH win about every 61 days at 500 tickets a day)
+   values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH
    (`GRAIL_TARGET_WEI`, `GRAIL_LIST_BPS`, `GRAIL_DECAY_WEI_PER_PULL`, `GRAIL_PIECE_FLOOR_WEI`, `GRAIL_FLOOR_WEI`).
    `minorShareBps` is removed: the whole entry contribution and the feed share go to the fund. Two chosen behaviours:
    a sixth piece may stay listed after the 5 ETH merge (the recipe takes any five pieces), and a completed GRAIL stays
    listed while the next cycle builds. The completed item carries a `done` flag so it is not a merge input. Place:
-   `PoolListing.grailStep`, `grailReprice`, `PoolBooks._capture`, `PoolAdmin.setGrail`-family. SPEC 5, 11 and 13.
+   `PoolListing.grailStep`, `grailReprice`, `PoolBooks._capture`, `PoolListing.setGrail`-family. SPEC 5, 11 and 13.
    2026-10-15 floor decision: `pieceFloorWei` and `floorWei` are both 1 ETH, so a piece lists at face and a merged item decays to 1 ETH.
+   Earlier steps on the same day: piece floor 0.25 ETH with floor 0.1 ETH (floor lowered from 1 ETH because, on a
+   NAV-deep board, a finished GRAIL at 1 ETH was one draw in 80,000 and sat unclaimed; at 0.1 ETH the lab year showed
+   a 25 ETH win about every 61 days at 500 tickets a day), then the 1 ETH values above.
    Done items are capped apart from building items (`MAX_DONE_ITEMS` 32, `MAX_BUILDING_ITEMS` 16) so finished GRAILs do not stall the fund.
    Ladder step: a cycle under `stepUpSeconds` (14 days) moves `nextTargetWei` one rung up, one over `stepDownSeconds` (60 days) one rung down (`setGrailStep`).
 
@@ -400,7 +418,7 @@ No entry is open.
    A row at or past its band cap is redirected to the row of largest deficit, so a row above target gets no replacement
    until it is below it; nothing is delisted when NAV falls. A surprise upgrade only lands on a single rung row below
    its target. New settle trigger `Deep`: the listed, held and queued ordinary items are fewer than `boardItems()` by at
-   least `batchMin`. `settle` on `Deep` queues each row's missing items (at most `MAX_LIST_PER_SETTLE` queued per call)
-   and lists at most 25. `open()` goes Live as before, on the first call that lists fewer than `MAX_OPEN_MINTS` items.
+   least `batchMin`. `settle` on `Deep` queues each row's missing items (up to 25 entries in total per call,
+   existing queue entries included) and lists at most 25. `open()` goes Live as before, on the first call that lists fewer than 20 items or once `listedCount` is at least `minItems`.
    No new parameter. Place: `PoolBooks._boardItems`, `PoolStorage._setMix`, `PoolListing._queueMissing`,
-   `Pool.settleDue`, `Pool.settle`, `PricingLib.chooseRow`, `PoolAdmin.boardItems`, `Lens.parameters`. SPEC 9.
+   `Pool.settleDue`, `Pool.settle`, `PricingLib.chooseRow`, `PoolListing.boardItems`, `Lens.parameters`. SPEC 9.

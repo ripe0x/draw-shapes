@@ -28,7 +28,8 @@ the deploy script uses. Every key `K` of that file is overridden by `PLAY_K`:
 - Fee split: `PLAY_PREMIUM_BPS`, `PLAY_MAINTENANCE_BPS`, `PLAY_FEED_BPS`
 - Entry fee: `PLAY_ENTRY_FLOOR_BPS`, `PLAY_ENTRY_CAP_BPS`, `PLAY_ENTRY_PAYBACK_DAYS`
 - GRAIL: `PLAY_GRAIL_TARGET_WEI`, `PLAY_GRAIL_LIST_BPS`, `PLAY_GRAIL_DECAY_WEI_PER_PULL`,
-  `PLAY_GRAIL_PIECE_FLOOR_WEI`, `PLAY_GRAIL_FLOOR_WEI`
+  `PLAY_GRAIL_PIECE_FLOOR_WEI`, `PLAY_GRAIL_FLOOR_WEI`, `PLAY_GRAIL_STEP_UP_SECONDS`,
+  `PLAY_GRAIL_STEP_DOWN_SECONDS`
 
 Run settings (defaults in brackets):
 
@@ -44,7 +45,10 @@ Amounts take decimals (`PLAY_DEPOSIT_ETH_PER_DAY=0.5`). The same seed and fork b
 ## Reading the report
 
 - Player: return is backing received over the ticket paid (the FWA acquisition fee; the VRF fee is zero at the fork block). The share at or above 1x is
-  the share of pulls that return at least their ticket. GRAIL rows give hits per group (pieces as minor, larger items as major) and the hour of the first hit.
+  the share of pulls that return at least their ticket. GRAIL rows give hits per group and the hour of the first hit.
+  Group 0 (report label "minor") is the 1 ETH pieces and group 1 (label "major") is the merged items. `hourly.csv`
+  carries per-group backing, list price and odds columns (`grailBacking0` to `grailOddsBps1`) and the `grailFund`
+  and `grailTarget` columns, which show the fund filling toward the running cycle's target.
 - Depositor: NAV per share at hour 0 (board built) and at the last hour, with the annualised rate. Exit wait runs
   from `withdraw` until the claim queue head passes its entry. Payouts from cash count as 0 h.
 - Board: purchase pause is the time FWA blocks purchases after an inventory change, from `purchasesResumeAt`.
