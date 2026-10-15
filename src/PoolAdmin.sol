@@ -161,16 +161,23 @@ contract PoolAdmin is PoolBooks {
     }
 
     /// @notice Sends an ERC-721 token the pool does not account for to `to`. Reverts `Accounted`
-    ///         for a held or listed ordinary item and for a GRAIL item.
+    ///         for a held or listed ordinary item and for a GRAIL item. A token whose foreign release
+    ///         failed (`ForeignReleaseFailed`) goes to its controller whatever `to` is.
     function sweep(address token, uint256 id, address to) external onlyDelegated onlyAdmin {
         if (_registered[token][id]) revert Accounted();
+        address controller = _heldFor[token][id];
+        if (controller != address(0)) {
+            delete _heldFor[token][id];
+            to = controller;
+        }
         _transfer(token, address(this), to, id);
     }
 
     /// @notice Calls `target` with `data` and `msg.value` as value, then requires I1 and I2.
     ///         `msg.value` must equal `value`, so the call is funded by the admin and not by the
-    ///         buckets. Reverts `AdminCallDenied` for `withdrawOwnerProceeds` on the FWA pool, which
-    ///         `harvest` alone performs. Reverts with the target's revert data and `InvariantBroken`
+    ///         buckets. Reverts `AdminCallDenied` for `withdrawOwnerProceeds`, `withdrawListing`,
+    ///         `withdrawListingTo` and `updatePrice` on the FWA pool, and for any call to the collection
+    ///         of a foreign listing. Reverts with the target's revert data and `InvariantBroken`
     ///         when a check fails.
     function adminCall(address target, bytes calldata data, uint256 value)
         external
@@ -180,10 +187,16 @@ contract PoolAdmin is PoolBooks {
         nonReentrant
     {
         if (msg.value != value) revert AdminValueMismatch();
-        if (
-            target == address(fwaPool) && data.length >= 4
-                && bytes4(data[:4]) == IFWAClone.withdrawOwnerProceeds.selector
-        ) revert AdminCallDenied();
+        if (target == address(fwaPool) && data.length >= 4) {
+            bytes4 sel = bytes4(data[:4]);
+            if (
+                sel == IFWAClone.withdrawOwnerProceeds.selector || sel == IFWAClone.withdrawListing.selector
+                    || sel == IFWAClone.withdrawListingTo.selector || sel == IFWAClone.updatePrice.selector
+            ) revert AdminCallDenied();
+        }
+        for (uint256 i; i < _foreign.length; ++i) {
+            if (_foreign[i].collection == target) revert AdminCallDenied();
+        }
         (bool ok, bytes memory ret) = target.call{value: value}(data);
         if (!ok) {
             assembly ("memory-safe") {
@@ -311,8 +324,8 @@ contract PoolAdmin is PoolBooks {
 
     /// @dev Removes the foreign listing at `index` and unregisters its token. Withdraws the FWA listing
     ///      when it is listed, then transfers the token to the entry's controller, forwarding at most
-    ///      `FOREIGN_CALL_GAS` to the collection. A failed step emits `ForeignReleaseFailed` and leaves
-    ///      the token where it is. A token that reached the pool is then sent by `sweep`.
+    ///      `FOREIGN_CALL_GAS` to the collection. A failed step emits `ForeignReleaseFailed`, leaves
+    ///      the token where it is and records the controller in `_heldFor`, which `sweep` pays.
     function _releaseForeignOrHold(uint256 index) internal {
         ForeignListing memory f = _removeForeign(index);
         bool ok = true;
@@ -334,7 +347,10 @@ contract PoolAdmin is PoolBooks {
             );
         }
         if (ok) emit ForeignWithdrawn(f.listingId, f.collection, f.tokenId, f.controller);
-        else emit ForeignReleaseFailed(f.listingId, f.tokenId);
+        else {
+            _heldFor[f.collection][f.tokenId] = f.controller;
+            emit ForeignReleaseFailed(f.listingId, f.tokenId);
+        }
     }
 
     /// @dev Calls `selector` on `target` with three word arguments, forwarding at most `gasLimit`.

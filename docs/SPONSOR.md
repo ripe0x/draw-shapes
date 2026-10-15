@@ -10,11 +10,12 @@ of contracts and no pool change.
 - Sponsor lends the punk. The pool lists it at 30 ETH, where it is one draw in about 2.3 million per
   pull and stays until the sponsor is paid.
 - Sponsor is paid from the Shapes mint fees the operator earns: 100 percent of every mint fee until
-  `cap` (45 ETH, the 30 ETH value plus 50 percent). Payment comes from mint fees and from nothing else.
+  `cap` (45 ETH, the 30 ETH value plus 50 percent). Payment comes from mint fees.
 - When `cap` is reached the punk belongs to the game: its price decays from 30 ETH toward a 0.25 ETH
   floor at 0.001 ETH per settled pull, and the sponsor has no further claim or reclaim right.
-- If the punk is won before `cap` is reached, mint fees stop flowing to the sponsor at that moment. The
-  sponsor keeps what was paid. The operator owes nothing further.
+- Sponsor risk: a capture in Parked ends the sponsor's payments at the amount paid so far. The punk goes to
+  the purchaser and does not return to the sponsor. The sponsor keeps what was paid and the remainder of
+  `cap` is not paid.
 - After `reclaimAfter` (30 days from listing) and while the punk is unwon and `cap` unpaid, the sponsor may
   reclaim the punk. They keep what was paid, the remainder of `cap` is forfeited, mint fees return to the
   operator.
@@ -26,13 +27,15 @@ of contracts and no pool change.
 
 Set as the Shapes mint fee recipient (`Shapes.setFeeRecipient`). Receives every mint fee.
 
-- Storage: `owner`, `sponsor`, `capWei`, `paidWei`, `prize` (the `SponsoredPrize` address), `ownerBalance`,
-  `sponsorBalance`.
+- Storage: `owner`, `sponsor`, `capWei`, `paidWei`, `prize` (the `SponsoredPrize` address), `locked`,
+  `ownerBalance`, `sponsorBalance`.
 - `receive()`: while `paidWei < capWei` and `prize.active()` is true, credit `sponsorBalance` up to the
   remaining cap and `paidWei`; the rest credits `ownerBalance`.
 - `withdraw()`: the caller takes their balance.
-- `setPrize(address)`: owner, only while `paidWei == 0` and no prize is active.
-- `setSponsor(address, capWei)`: owner, while no prize is active. Sets `paidWei` to zero, which starts a new
+- `lock()` and `unlock()`: the prize only (`NotPrize`). `SponsoredPrize.start` locks. The prize unlocks at the
+  end of the deal: capture, `reclaim`, `rescue` or `releaseHeld`.
+- `setPrize(address)`: owner, only while `paidWei == 0` (`DealLocked`) and unlocked (`Locked`).
+- `setSponsor(address, capWei)`: owner, while unlocked (`Locked`). Sets `paidWei` to zero, which starts a new
   deal on the same contract; `ownerBalance` and `sponsorBalance` keep their values. A different sponsor
   needs `sponsorBalance == 0`, so the previous sponsor withdraws first. A new deal calls `setSponsor`
   before `setPrize`.
@@ -42,25 +45,33 @@ Set as the Shapes mint fee recipient (`Shapes.setFeeRecipient`). Receives every 
 
 One per deal. Implements `IForeignController`.
 
-- Constructor: `pool`, `feeSplit`, `sponsor`, `collection`, `tokenId`, `parkedPriceWei` (30 ETH),
+- Constructor: `pool`, `feeSplit`, `sponsor`, `capWei` (45 ETH), `collection`, `tokenId`, `parkedPriceWei` (30 ETH),
   `floorWei` (0.25 ETH), `decayWeiPerPull` (0.001 ETH), `reclaimAfter` (absolute timestamp; the deploy
   script sets it to the deploy time plus `SPONSOR_RECLAIM_DELAY`, 30 days).
-- `start(listingId)`: owner, after the admin has called `registerForeign` on the pool. Records the listing
-  and `listedAtPull = pool.grail().pulls`, `startedAt = block.timestamp`.
+- `start(listingId)`: owner, after the admin has called `registerForeign` on the pool. Requires
+  `feeSplit.sponsor() == sponsor` and `feeSplit.capWei() == capWei` (`TermsMismatch`) and calls
+  `feeSplit.lock()`. Records the listing and `listedAtPull = pool.grail().pulls`,
+  `startedAt = block.timestamp`.
 - `owner`: `feeSplit.owner()`. The prize contract stores no owner of its own.
 - `active()`: true while the prize is started, not captured, and the pool entry exists with a nonzero
   price. An entry that the pool holds unlisted after a refunded delivery is not active.
-- `phase()`: Parked while `feeSplit.paidWei() < feeSplit.capWei()`, else Hot.
+- `phase()`: Parked while `feeSplit.paidWei() < capWei` (the constructor value), else Hot.
 - `tick()`: anyone. In Hot phase computes `next = max(floorWei, parkedPriceWei - decayWeiPerPull *
   (pool.grail().pulls - hotFromPull))` and calls `pool.repriceForeign(listingId, next)` when `next` is at
-  least 1 percent below the current price. `hotFromPull` is the pull count when Hot began, set by the
-  first `tick` that sees Hot. The keeper calls `tick` on each pass.
+  least 1 percent below the current price. A `next` below `floorWei * 102 / 100` becomes `floorWei`. When the
+  pool rejects the step to `floorWei` as `RepriceTooSmall`, the price is within 1 percent of the floor and
+  `atFloor` becomes true; later `tick` calls do nothing. `hotFromPull` is the pull count when Hot began,
+  set by the first `tick` that sees Hot. The keeper calls `tick` on each pass.
 - `reclaim()`: sponsor, Parked phase, `block.timestamp >= reclaimAfter`. Calls
   `pool.withdrawForeign(listingId, sponsor)`. After this `active()` is false.
-- `onForeignCapture(listingId, tokenId, proceeds)`: payable, pool only. Marks captured, forwards the
-  value to `pool.fundGrail()`.
+- `onForeignCapture(listingId, tokenId, proceeds)`: payable, pool only, for the deal's `listingId`
+  (`UnknownEntry` otherwise). Marks captured, unlocks `feeSplit`, forwards the value to `pool.fundGrail()`.
 - `rescue(to)`: owner, only when the pool reports the token unlisted after a refunded delivery; calls
-  `pool.withdrawForeign(listingId, to)`. In Parked `to` must be the sponsor.
+  `pool.withdrawForeign(listingId, to)`. In Parked `to` must be the sponsor. Unlocks `feeSplit`.
+- `releaseHeld()`: sponsor or owner. Transfers the token this contract holds to the sponsor in Parked and
+  to the owner in Hot, then unlocks `feeSplit`. The pool's `exportStep` sends the token of a listing to
+  its controller, so after an exit the token sits in this contract until `releaseHeld`.
+- `onERC721Received`: accepts the deal's token from its collection.
 
 ## Operations
 
@@ -85,7 +96,7 @@ One per deal. Implements `IForeignController`.
 5. Keeper (`script/keeper.sh`) with `SPONSOR_PRIZE`, `SHAPES` and `FEE_SPLIT` set runs two more steps on each
    pass. It calls `Shapes.withdrawFees(feeSplit)` when `Shapes.feesOwedTo(feeSplit)` is nonzero, so accrued
    fees reach `FeeSplit.receive()` while the prize is active. It calls `prize.tick()` while `prize.active()`
-   is true and `prize.phase()` is Hot. The pool accepts one reprice per `rotateInterval`; a `tick` inside
+   is true, `prize.phase()` is Hot and `prize.atFloor()` is false. The pool accepts one reprice per `rotateInterval`; a `tick` inside
    the interval leaves the price unchanged and the next `tick` retries.
 6. On capture the pool pays the prize contract, which forwards to the GRAIL fund.
 

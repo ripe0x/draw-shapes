@@ -43,6 +43,7 @@ contract DeploySponsor is Script {
             t.pool,
             address(feeSplit),
             t.sponsor,
+            t.capWei,
             t.collection,
             t.tokenId,
             t.parkedPriceWei,
@@ -81,6 +82,7 @@ contract DeploySponsor is Script {
         _eq(address(p.pool()) == t.pool, "prize.pool");
         _eq(address(p.feeSplit()) == address(f), "prize.feeSplit");
         _eq(p.sponsor() == t.sponsor, "prize.sponsor");
+        _eq(p.capWei() == t.capWei, "prize.capWei");
         _eq(p.collection() == t.collection, "prize.collection");
         _eq(p.tokenId() == t.tokenId, "prize.tokenId");
         _eq(p.parkedPriceWei() == t.parkedPriceWei, "prize.parkedPriceWei");

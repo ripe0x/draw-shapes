@@ -37,7 +37,7 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 23,484 B, `PoolAdmin` 22,960 B, `PoolListing` 23,861 B, `Lens` 17,537 B (limit 24,576 B).
+Runtime sizes: `Pool` 23,692 B, `PoolAdmin` 23,731 B, `PoolListing` 24,286 B, `Lens` 17,677 B (limit 24,576 B).
 
 ## 4. Buckets and invariants
 
@@ -349,16 +349,19 @@ Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `t
   the entry and marks the token registered, so `sweep` and `importItem` refuse it. Reverts `NotLive`, `ForeignFull`,
   `AlreadyRegistered`, `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` and
   `ProbCapExceeded`. The price needs a selection weight: `priceWei` is nonzero and at most `1e36`, so `PricingLib.weightOf`
-  is defined for it. The Active GRAIL and foreign weight plus the weight of the new listing at `priceWei` stays within
-  `grailProbCapBps` of the FWA selection weight including that listing.
+  is defined for it. The Active and Staged GRAIL and foreign weight plus the weight of the new listing at `priceWei`
+  stays within `grailProbCapBps` of the FWA selection weight including that listing and the Staged listings. A
+  Staged listing (made while FWA holds an unsettled acquisition) joins the FWA selection weight on activation, so
+  registers made before `activateListings` count each other.
 - `repriceForeign(listingId, priceWei)`: the entry's controller only (`NotController`), while the listing is Active
   (`ListingNotActive`) and FWA holds no unsettled acquisition and the booking walk is level (`FwaBusy`). Calls
   `updatePrice` and stores `notional` and `lastRepriceAt`. `priceWei` has a selection weight (`PriceOutOfRange`, as in
   `registerForeign`) and differs from `notional` by at least 1 percent of `notional` (`RepriceTooSmall`). The entry
   takes one reprice per `rotateInterval` (`RepriceTooSoon`); the first reprice of an entry is accepted at once, and a
   withdrawal removes the entry with its `lastRepriceAt`. A price that raises the entry's selection weight is refused
-  (`ProbCapExceeded`) when the Active GRAIL and foreign weight at `priceWei` would pass `grailProbCapBps` of the FWA
-  selection weight. The GRAIL decay in `grailReprice` counts the Active foreign weight under the same cap. Every
+  (`ProbCapExceeded`) when the Active and Staged GRAIL and foreign weight at `priceWei` would pass `grailProbCapBps`
+  of the FWA selection weight. The GRAIL decay in `grailReprice` counts the Active and Staged foreign weight under the
+  same cap. Every
   stored foreign `notional` has a selection weight, so `grailReprice` and `settle` compute the weight of every foreign entry.
 - `withdrawForeign(listingId, to)`: the entry's controller only. Withdraws the listing, transfers the token to `to`,
   removes the entry. A listed entry needs FWA to hold no unsettled acquisition and the walk to be level (`FwaBusy`).
@@ -380,8 +383,9 @@ Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `t
   listing removes the entry and reports `ForeignCaptured` with zero proceeds.
 - Exit: `exportStep` releases every foreign listing to its controller before the GRAIL estate moves: it withdraws the
   FWA listing when the entry is listed and transfers the token, forwarding at most `FOREIGN_CALL_GAS` to the
-  collection. A step that fails removes the entry, clears the token's registration so `sweep` can send it once the pool
-  holds it, emits `ForeignReleaseFailed(listingId, tokenId)` and the export continues. `withdrawForeign` reverts on a
+  collection. A step that fails removes the entry, clears the token's registration, records the controller in
+  `heldFor[collection][tokenId]`, emits `ForeignReleaseFailed(listingId, tokenId)` and the export continues. `sweep`
+  of such a token sends it to the recorded controller whatever `to` is, then clears the record. `withdrawForeign` reverts on a
   failed withdrawal or transfer.
 - Lens: `foreign()` returns every entry with its selection weight in bps, which is zero unless the FWA listing is
   Active.
@@ -402,9 +406,11 @@ denomination, queue and claim entries and the GRAIL fund and items. `chooseRow(r
 replacement row for a fulfilled request.
 
 `sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item, a GRAIL
-item or a foreign listing). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
+item or a foreign listing; a token with a `heldFor` record goes to its controller). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
 the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. A call to the FWA pool with the selector
-of `withdrawOwnerProceeds` reverts `AdminCallDenied`: FWA owner proceeds leave FWA through the harvest. The admin is trusted: on the old pool,
+of `withdrawOwnerProceeds` reverts `AdminCallDenied`: FWA owner proceeds leave FWA through the harvest. The selectors
+`withdrawListing`, `withdrawListingTo` and `updatePrice` on the FWA pool and any call whose target is the collection of
+a live foreign listing revert `AdminCallDenied` as well. The admin is trusted: on the old pool,
 `adminCall` can reach the successor's import functions, and a forged `finalizeImport` argument misprices a migration.
 
 ## 13. Exit: retirement and migration

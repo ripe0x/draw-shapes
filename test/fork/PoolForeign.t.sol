@@ -792,6 +792,32 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.ownerProceeds, ()), 0);
     }
 
+    function test_revert_adminCallOfAFwaListingWithdrawalOrPriceChange() public {
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        vm.startPrank(admin);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.updatePrice, (listingId, 2 ether)), 0);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.withdrawListing, (listingId)), 0);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.withdrawListingTo, (listingId, admin)), 0);
+        vm.stopPrank();
+        assertEq(_priceOf(listingId), PRICE);
+        assertEq(IERC721(WPUNKS).ownerOf(IERC721Enumerable(WPUNKS).tokenByIndex(0)), address(clone));
+    }
+
+    function test_revert_adminCallToTheCollectionOfALiveForeignListing() public {
+        (uint256 tokenId,) = _register(0, address(controller), PRICE);
+        _activate();
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(WPUNKS, abi.encodeCall(IERC721.approve, (admin, tokenId)), 0);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(WPUNKS, abi.encodeCall(IERC721.ownerOf, (tokenId)), 0);
+    }
+
     // ---------------------------------------------------------------- register bounds
 
     function test_revert_registerOverTheProbabilityCap() public {
@@ -805,6 +831,19 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
     function test_theCapAtRegistrationCountsTheOtherForeignListings() public {
         _register(0, address(controller), 0.00125 ether);
         _activate();
+        uint256 id = _punk(1);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.ProbCapExceeded.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), 0.00125 ether);
+    }
+
+    function test_theCapAtRegistrationCountsStagedForeignListings() public {
+        // Same prices as above, but the first listing is Staged (made while an acquisition is unsettled):
+        // it joins the FWA weight on activation.
+        warpPastCooldown(clone);
+        acquirePooled(address(pool), clone, player, 1);
+        _register(0, address(controller), 0.00125 ether);
+        assertEq(uint8(_status(_ip().foreignListings()[0].listingId)), uint8(IFWAClone.ListingStatus.Staged));
         uint256 id = _punk(1);
         vm.prank(admin);
         vm.expectRevert(IPoolTypes.ProbCapExceeded.selector);
@@ -917,10 +956,37 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         assertFalse(_ip().registered(address(coll), 7));
         assertTrue(_status(blockedListing) != IFWAClone.ListingStatus.Active);
 
+        coll.setBlocked(address(0));
         vm.prank(admin);
         _ip().sweep(address(coll), 7, admin);
-        assertEq(coll.ownerOf(7), admin, "sweep sends the token out");
+        assertEq(coll.ownerOf(7), address(controller), "sweep delivers to the controller whatever `to` is");
+        assertEq(_ip().foreignListings().length, 0);
         _assertI1();
+    }
+
+    function test_sweepOfAFailedReleaseClearsTheRecord() public {
+        BlockableCollection coll = new BlockableCollection();
+        coll.mint(admin, 7);
+        vm.prank(admin);
+        coll.approve(address(pool), 7);
+        vm.prank(admin);
+        _ip().registerForeign(address(coll), 7, address(controller), PRICE);
+        _activate();
+        coll.setBlocked(address(controller));
+        vm.prank(admin);
+        _ip().startExit(address(pool));
+        for (uint256 i; i < 40 && !_ip().exportStep(50); ++i) {}
+
+        coll.setBlocked(address(0));
+        vm.prank(admin);
+        _ip().sweep(address(coll), 7, admin);
+        assertEq(coll.ownerOf(7), address(controller));
+        // The record is gone: a token that returns to the pool is swept to the requested address.
+        vm.prank(address(controller));
+        coll.transferFrom(address(controller), address(pool), 7);
+        vm.prank(admin);
+        _ip().sweep(address(coll), 7, admin);
+        assertEq(coll.ownerOf(7), admin);
     }
 
     // ---------------------------------------------------------------- failed delivery

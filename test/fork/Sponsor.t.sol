@@ -37,6 +37,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
     address internal keeper = makeAddr("keeper");
     address internal stranger = makeAddr("stranger");
     uint256 internal decay = 10 ether;
+    uint256 internal parked = PARKED_PRICE;
     uint256 internal fee;
     uint256 internal tokenId;
     uint256 internal listingId;
@@ -108,9 +109,10 @@ contract SponsorForkTest is ForkBase, PoolFixture {
             address(pool),
             address(feeSplit),
             sponsor,
+            CAP,
             collection,
             id,
-            PARKED_PRICE,
+            parked,
             FLOOR,
             decay,
             block.timestamp + 30 days
@@ -120,7 +122,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         vm.stopPrank();
         vm.startPrank(admin);
         IERC721(collection).approve(address(pool), id);
-        _ip().registerForeign(collection, id, address(p), PARKED_PRICE);
+        _ip().registerForeign(collection, id, address(p), parked);
         vm.stopPrank();
         IPoolTypes.ForeignListing[] memory all = _ip().foreignListings();
         lid = all[all.length - 1].listingId;
@@ -267,11 +269,11 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         assertEq(address(feeSplit).balance, 0);
     }
 
-    function test_dealTermsLockOnceFeesArePaidOrThePrizeIsActive() public {
+    function test_dealTermsLockWhileTheDealRuns() public {
         vm.startPrank(dealOwner);
-        vm.expectRevert(FeeSplit.DealLocked.selector);
+        vm.expectRevert(FeeSplit.Locked.selector);
         feeSplit.setSponsor(stranger, 1 ether);
-        vm.expectRevert(FeeSplit.DealLocked.selector);
+        vm.expectRevert(FeeSplit.Locked.selector);
         feeSplit.setPrize(address(0));
         vm.stopPrank();
         vm.prank(stranger);
@@ -518,7 +520,7 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         vm.expectRevert(SponsoredPrize.AlreadyStarted.selector);
         prize.start(listingId);
         SponsoredPrize other = new SponsoredPrize(
-            address(pool), address(feeSplit), sponsor, WPUNKS, tokenId, PARKED_PRICE, FLOOR, decay, 0
+            address(pool), address(feeSplit), sponsor, CAP, WPUNKS, tokenId, PARKED_PRICE, FLOOR, decay, 0
         );
         vm.prank(stranger);
         vm.expectRevert(SponsoredPrize.NotOwner.selector);
@@ -568,10 +570,216 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         _assertI1();
     }
 
+    function test_aRefundedDeliveryKeepsThePhaseAndTheTermsOfTheDeal() public {
+        (SponsoredPrize p, uint256 id,) = _griefedShape();
+        FeeSplit split = p.feeSplit();
+        assertFalse(p.active());
+        assertTrue(split.locked(), "still locked while the entry is unlisted");
+
+        vm.startPrank(dealOwner);
+        vm.expectRevert(FeeSplit.Locked.selector);
+        split.setSponsor(sponsor, 0);
+        vm.expectRevert(FeeSplit.Locked.selector);
+        split.setPrize(address(0));
+        vm.stopPrank();
+        assertEq(uint8(p.phase()), uint8(SponsoredPrize.Phase.Parked));
+
+        vm.prank(dealOwner);
+        vm.expectRevert(SponsoredPrize.WrongDestination.selector);
+        p.rescue(dealOwner);
+        vm.prank(dealOwner);
+        p.rescue(sponsor);
+        assertEq(IERC721(SHAPES_ADDR).ownerOf(id), sponsor);
+        assertFalse(split.locked(), "unlocked after the rescue");
+    }
+
     function test_revert_rescueWhileTheEntryIsListed() public {
         vm.prank(dealOwner);
         vm.expectRevert(SponsoredPrize.NotUnlisted.selector);
         prize.rescue(sponsor);
+    }
+
+    // ---------------------------------------------------------------- lock
+
+    function test_theDealTermsCannotChangeAfterStart() public {
+        assertTrue(feeSplit.locked());
+        vm.startPrank(dealOwner);
+        vm.expectRevert(FeeSplit.Locked.selector);
+        feeSplit.setSponsor(sponsor, 0);
+        vm.expectRevert(FeeSplit.Locked.selector);
+        feeSplit.setSponsor(stranger, CAP);
+        vm.expectRevert(FeeSplit.Locked.selector);
+        feeSplit.setPrize(address(0));
+        vm.stopPrank();
+        assertEq(feeSplit.capWei(), CAP);
+        assertEq(feeSplit.sponsor(), sponsor);
+        assertEq(uint8(prize.phase()), uint8(SponsoredPrize.Phase.Parked));
+
+        vm.prank(stranger);
+        vm.expectRevert(FeeSplit.NotPrize.selector);
+        feeSplit.unlock();
+        vm.prank(dealOwner);
+        vm.expectRevert(FeeSplit.NotPrize.selector);
+        feeSplit.lock();
+    }
+
+    function test_startRequiresTheFeeSplitToHoldTheTermsOfThePrize() public {
+        FeeSplit other = new FeeSplit(dealOwner);
+        SponsoredPrize p =
+            new SponsoredPrize(address(pool), address(other), sponsor, CAP, WPUNKS, tokenId, PARKED_PRICE, FLOOR, decay, 0);
+        vm.startPrank(dealOwner);
+        other.setSponsor(sponsor, 2 * CAP);
+        other.setPrize(address(p));
+        vm.expectRevert(SponsoredPrize.TermsMismatch.selector);
+        p.start(listingId);
+        other.setSponsor(stranger, CAP);
+        vm.expectRevert(SponsoredPrize.TermsMismatch.selector);
+        p.start(listingId);
+        vm.stopPrank();
+    }
+
+    function test_theFeeSplitUnlocksWhenTheDealEnds() public {
+        _capture();
+        assertFalse(feeSplit.locked(), "captured");
+
+        FeeSplit second = new FeeSplit(dealOwner);
+        FeeSplit saved = feeSplit;
+        feeSplit = second;
+        (SponsoredPrize p,,) = _deal(WPUNKS, 1);
+        feeSplit = saved;
+        assertTrue(second.locked());
+        vm.warp(p.reclaimAfter());
+        vm.prank(sponsor);
+        p.reclaim();
+        assertFalse(second.locked(), "reclaimed");
+    }
+
+    // ---------------------------------------------------------------- exported token
+
+    function _export() internal {
+        vm.prank(admin);
+        _ip().startExit(address(pool));
+        for (uint256 i; i < 40 && !_ip().exportStep(50); ++i) {}
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported));
+    }
+
+    function test_releaseHeldReturnsAnExportedTokenToTheSponsorInParked() public {
+        _export();
+        assertEq(IERC721(WPUNKS).ownerOf(tokenId), address(prize), "the export sent the token to the controller");
+        vm.prank(stranger);
+        vm.expectRevert(SponsoredPrize.NotParty.selector);
+        prize.releaseHeld();
+
+        vm.prank(dealOwner);
+        prize.releaseHeld();
+        assertEq(IERC721(WPUNKS).ownerOf(tokenId), sponsor);
+        assertFalse(feeSplit.locked());
+        _payFees(1);
+        assertEq(feeSplit.sponsorBalance(), 0, "the prize is no longer active");
+    }
+
+    function test_releaseHeldSendsAnExportedTokenToTheOwnerInHot() public {
+        _hot();
+        _export();
+        vm.prank(sponsor);
+        prize.releaseHeld();
+        assertEq(IERC721(WPUNKS).ownerOf(tokenId), dealOwner);
+        assertFalse(feeSplit.locked());
+    }
+
+    function test_revert_releaseHeldWhileThePoolHoldsTheToken() public {
+        vm.prank(sponsor);
+        vm.expectRevert();
+        prize.releaseHeld();
+        assertEq(IERC721(WPUNKS).ownerOf(tokenId), address(clone));
+        assertTrue(feeSplit.locked());
+    }
+
+    function test_onERC721ReceivedAcceptsOnlyTheTokenOfTheDeal() public {
+        vm.prank(WPUNKS);
+        assertEq(prize.onERC721Received(address(0), address(0), tokenId, ""), bytes4(0x150b7a02));
+        vm.prank(WPUNKS);
+        vm.expectRevert(SponsoredPrize.WrongToken.selector);
+        prize.onERC721Received(address(0), address(0), tokenId + 1, "");
+        vm.prank(stranger);
+        vm.expectRevert(SponsoredPrize.WrongToken.selector);
+        prize.onERC721Received(address(0), address(0), tokenId, "");
+    }
+
+    // ---------------------------------------------------------------- capture of another listing
+
+    function test_aCaptureOfAnotherListingOfThePrizeDoesNotEndTheDeal() public {
+        uint256 id2 = IERC721Enumerable(WPUNKS).tokenByIndex(1);
+        address holder = IERC721(WPUNKS).ownerOf(id2);
+        vm.prank(holder);
+        IERC721(WPUNKS).transferFrom(holder, admin, id2);
+        vm.startPrank(admin);
+        IERC721(WPUNKS).approve(address(pool), id2);
+        _ip().registerForeign(WPUNKS, id2, address(prize), PARKED_PRICE);
+        vm.stopPrank();
+        IPoolTypes.ForeignListing[] memory all = _ip().foreignListings();
+        uint256 lid2 = all[all.length - 1].listingId;
+        assertTrue(lid2 != listingId);
+        vm.prank(address(pool));
+        clone.activateListings(20);
+
+        vm.prank(address(pool));
+        vm.expectRevert(SponsoredPrize.UnknownEntry.selector);
+        prize.onForeignCapture(lid2, id2, 0);
+
+        warpPastCooldown(clone);
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 1);
+        fulfill(clone, ids[0], wordFor(clone, lid2));
+        vm.prank(keeper);
+        pool.settle(20);
+
+        assertEq(IERC721(WPUNKS).ownerOf(id2), player, "the second token was won");
+        assertFalse(prize.captured());
+        assertTrue(prize.active());
+        assertTrue(feeSplit.locked());
+        _assertI1();
+    }
+
+    // ---------------------------------------------------------------- floor
+
+    function _slowDeal() internal returns (SponsoredPrize p, uint256 lid) {
+        FeeSplit second = new FeeSplit(dealOwner);
+        FeeSplit saved = feeSplit;
+        feeSplit = second;
+        (p,, lid) = _deal(WPUNKS, 1);
+        feeSplit = saved;
+        (bool ok,) = address(second).call{value: CAP}("");
+        assertTrue(ok);
+        assertEq(uint8(p.phase()), uint8(SponsoredPrize.Phase.Hot));
+    }
+
+    function test_aTargetJustAboveTheFloorSnapsToTheFloor() public {
+        // 30 - 3 * 9.665 = 1.005 ETH, which is 0.5 percent above the floor.
+        decay = 9.665 ether;
+        (SponsoredPrize p, uint256 lid) = _slowDeal();
+        p.tick();
+        for (uint256 i; i < 3; ++i) {
+            _pull();
+            _nextInterval();
+            p.tick();
+        }
+        assertEq(_priceOf(lid), FLOOR, "snapped to the floor");
+        assertFalse(p.atFloor());
+    }
+
+    function test_aPriceWithinOnePercentOfTheFloorIsFinal() public {
+        // Parked at 1.005 ETH: the step to the 1 ETH floor is below the pool's 1 percent minimum.
+        parked = 1.005 ether;
+        (SponsoredPrize p, uint256 lid) = _slowDeal();
+        p.tick();
+        assertTrue(p.atFloor());
+        assertEq(_priceOf(lid), 1.005 ether);
+
+        _pull();
+        _nextInterval();
+        vm.expectCall(address(pool), abi.encodeCall(IPool.repriceForeign, (lid, FLOOR)), 0);
+        p.tick();
+        assertEq(_priceOf(lid), 1.005 ether, "no further attempts");
     }
 
     // ---------------------------------------------------------------- deploy script

@@ -279,7 +279,7 @@ interface IPoolTypes {
     ///      opened directly at the FWA pool and for a write-off of a pending delivery.
     event ForeignCaptured(uint256 indexed listingId, uint256 tokenId, uint256 proceeds, bool delivered);
     /// @dev `exportStep` could not withdraw or transfer the token of a foreign listing. The entry is
-    ///      removed and the token is unregistered, so `sweep` can send it once the pool holds it.
+    ///      removed and the token is unregistered. `sweep` sends it to the controller once the pool holds it.
     event ForeignReleaseFailed(uint256 indexed listingId, uint256 tokenId);
     event ExitStarted(address indexed dest);
     /// @dev `nav` is `exportedNav`, `shares` is `exportedShares`.

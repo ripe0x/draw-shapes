@@ -2,7 +2,7 @@
 # Keeper loop: settle, rotate and payClaims on the pool, one log line per sent transaction.
 # Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool), KEEPER, INTERVAL (default 15), ONCE=1 for one pass.
 # SPONSOR_PRIZE, SHAPES and FEE_SPLIT (all three) add two steps to each pass: Shapes.withdrawFees(FEE_SPLIT)
-# when feesOwedTo(FEE_SPLIT) is nonzero, and SponsoredPrize.tick() while the prize is active and Hot.
+# when feesOwedTo(FEE_SPLIT) is nonzero, and SponsoredPrize.tick() while the prize is active, Hot and not atFloor.
 # LOCAL_VRF=1 runs `script/local.sh fulfill` at the start of every pass (anvil only).
 # WALLET_MODE=anvil sends with --unlocked --from $KEEPER. WALLET_MODE=keystore sends with
 # --account $KEYSTORE_ACCOUNT and --password-file $KEYSTORE_PASSWORD_FILE (shell only, never a key in argv).
@@ -78,8 +78,9 @@ pass() {
     local fees
     fees=$(cast call --rpc-url "$RPC_URL" "$SHAPES" 'feesOwedTo(address)(uint256)' "$FEE_SPLIT" | awk '{print $1}')
     [[ "$fees" == "0" ]] || TARGET=$SHAPES send "withdrawFees($FEE_SPLIT) pendingWei=$fees" "" 'withdrawFees(address)' "$FEE_SPLIT"
-    # phase() is 1 in Hot. tick() does nothing in Parked or after a capture.
+    # phase() is 1 in Hot. tick() does nothing in Parked, after a capture or once atFloor() is true.
     if [[ "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'active()(bool)')" == "true" \
+       && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'atFloor()(bool)')" == "false" \
        && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'phase()(uint8)')" == "1" ]]; then
       TARGET=$SPONSOR_PRIZE send "tick" "" 'tick()'
     fi
