@@ -309,6 +309,12 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         delete _registered[it.collection][it.tokenId];
     }
 
+    /// @dev Reverts `InsufficientGas` unless the remaining gas funds a call that forwards
+    ///      `FOREIGN_CALL_GAS` after the 63/64 rule, plus 20,000 for the code that follows it.
+    function _requireCallGas() internal view {
+        if (gasleft() < FOREIGN_CALL_GAS * 64 / 63 + 20_000) revert InsufficientGas();
+    }
+
     /// @dev Removes the foreign listing at `index` from `_foreign`, `_foreignAt` and `_registered`.
     function _removeForeign(uint256 index) internal returns (ForeignListing memory f) {
         uint256 last = _foreign.length - 1;

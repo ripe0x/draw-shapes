@@ -97,8 +97,10 @@ contract PoolListing is PoolBooks {
     /// @notice Takes `tokenId` of `collection` from the admin, lists it on the FWA pool at `priceWei`
     ///         and records it as a foreign listing of `controller`, keyed by the FWA listing id.
     ///         The admin approves this contract for the token first. Live only. Reverts `ForeignFull`
-    ///         at `MAX_FOREIGN` entries, `AlreadyRegistered` for a token the pool accounts for and
-    ///         `ZeroAddress` for a zero `collection` or `controller`.
+    ///         at `MAX_FOREIGN` entries, `AlreadyRegistered` for a token the pool accounts for,
+    ///         `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` for a price
+    ///         with no selection weight and `ProbCapExceeded` when the Active GRAIL and foreign weight
+    ///         plus the new listing's weight would pass `grailProbCapBps` of the FWA selection weight.
     function registerForeign(address collection, uint256 tokenId, address controller, uint256 priceWei)
         external
         onlyDelegated
@@ -109,11 +111,16 @@ contract PoolListing is PoolBooks {
         if (collection == address(0) || controller == address(0)) revert ZeroAddress();
         if (_registered[collection][tokenId]) revert AlreadyRegistered();
         if (_foreign.length >= MAX_FOREIGN) revert ForeignFull();
+        uint256 weight = _boundedWeight(priceWei);
+        if ((_activeGrailWeight() + _activeForeignWeight() + weight) * BPS > (_totalWeight() + weight) * _grailProbCapBps)
+        {
+            revert ProbCapExceeded();
+        }
         _transfer(collection, msg.sender, address(this), tokenId);
         _call(collection, IERC721.approve.selector, uint160(address(fwaPool)), tokenId);
         uint256 id =
             _callFull(address(fwaPool), 0, IFWAClone.listNFT.selector, uint160(collection), tokenId, priceWei);
-        _foreign.push(ForeignListing(collection, tokenId, controller, id, priceWei));
+        _foreign.push(ForeignListing(collection, tokenId, controller, id, priceWei, 0));
         _foreignAt[id] = _foreign.length;
         _registered[collection][tokenId] = true;
         emit ForeignRegistered(collection, tokenId, controller, id, priceWei);
@@ -121,9 +128,11 @@ contract PoolListing is PoolBooks {
 
     /// @notice Sets the list price of foreign listing `listingId` to `priceWei`. Controller only,
     ///         while the listing is Active and FWA holds no unsettled acquisition and the booking walk
-    ///         is level (`FwaBusy`). A price that raises the entry's selection weight is refused with
-    ///         `ProbCapExceeded` when the Active GRAIL and foreign weight would pass `grailProbCapBps`
-    ///         of the FWA selection weight.
+    ///         is level (`FwaBusy`). The price must differ from the current one by at least 1 percent of
+    ///         it (`RepriceTooSmall`), at most one reprice per `rotateInterval` is accepted
+    ///         (`RepriceTooSoon`) and a price with no selection weight reverts `PriceOutOfRange`. A price
+    ///         that raises the entry's selection weight is refused with `ProbCapExceeded` when the
+    ///         Active GRAIL and foreign weight would pass `grailProbCapBps` of the FWA selection weight.
     function repriceForeign(uint256 listingId, uint256 priceWei) external onlyDelegated nonReentrant {
         ForeignListing storage f = _foreignOf(listingId);
         if (msg.sender != f.controller) revert NotController();
@@ -132,8 +141,10 @@ contract PoolListing is PoolBooks {
         if (old == 0 || _listingStatus(listingId) != uint256(IFWAClone.ListingStatus.Active)) {
             revert ListingNotActive(listingId);
         }
+        uint256 newWeight = _boundedWeight(priceWei);
+        if ((priceWei > old ? priceWei - old : old - priceWei) * 100 < old) revert RepriceTooSmall();
+        if (f.lastRepriceAt != 0 && block.timestamp < f.lastRepriceAt + rotateInterval) revert RepriceTooSoon();
         uint256 oldWeight = PricingLib.weightOf(old);
-        uint256 newWeight = PricingLib.weightOf(priceWei);
         if (newWeight > oldWeight) {
             uint256 weight = _activeGrailWeight() + _activeForeignWeight() - oldWeight + newWeight;
             uint256 total = _totalWeight() - oldWeight + newWeight;
@@ -141,6 +152,7 @@ contract PoolListing is PoolBooks {
         }
         _call(address(fwaPool), IFWAClone.updatePrice.selector, listingId, priceWei);
         f.notional = priceWei;
+        f.lastRepriceAt = uint64(block.timestamp);
         emit ForeignRepriced(listingId, priceWei);
     }
 
@@ -395,6 +407,13 @@ contract PoolListing is PoolBooks {
         uint256 at = _foreignAt[listingId];
         if (at == 0) revert UnknownListing(listingId);
         return _foreign[at - 1];
+    }
+
+    /// @dev `PricingLib.weightOf(priceWei)`, or reverts `PriceOutOfRange` where `weightOf` would revert:
+    ///      a zero price or a price above `PricingLib.NUM`.
+    function _boundedWeight(uint256 priceWei) internal pure returns (uint256) {
+        if (priceWei == 0 || priceWei > PricingLib.NUM) revert PriceOutOfRange();
+        return PricingLib.weightOf(priceWei);
     }
 
     /// @dev Selection weight of the Active GRAIL listings.

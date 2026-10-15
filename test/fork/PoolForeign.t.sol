@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Vm} from "forge-std/Test.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {IERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
 import {Lens} from "../../src/Lens.sol";
 import {Pool} from "../../src/Pool.sol";
@@ -61,6 +62,26 @@ contract TestController is IForeignController {
 
     function withdraw(uint256 listingId, address to) external {
         pool.withdrawForeign(listingId, to);
+    }
+}
+
+/// @dev ERC-721 collection whose transfers to `blocked` revert.
+contract BlockableCollection is ERC721 {
+    address public blocked;
+
+    constructor() ERC721("Blockable", "BLK") {}
+
+    function mint(address to, uint256 id) external {
+        _mint(to, id);
+    }
+
+    function setBlocked(address who) external {
+        blocked = who;
+    }
+
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        require(to != blocked, "blocked");
+        return super._update(to, tokenId, auth);
     }
 }
 
@@ -199,6 +220,13 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         vm.prank(keeper);
         pool.settle(20);
         logs = vm.getRecordedLogs();
+    }
+
+    /// @dev One pooled acquisition fulfilled on `listingId`, left unbooked.
+    function _fulfillOnly(uint256 listingId) internal {
+        warpPastCooldown(clone);
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 1);
+        fulfill(clone, ids[0], wordFor(clone, listingId));
     }
 
     function _foreignCaptured(Vm.Log[] memory logs)
@@ -401,6 +429,7 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         // Lower the cap below the current share. A rise in price only lowers the share.
         vm.prank(admin);
         _ip().setGrailProbCap(1);
+        vm.warp(block.timestamp + pool.rotateInterval());
         controller.reprice(listingId, 0.06 ether);
         assertEq(_priceOf(listingId), 0.06 ether);
     }
@@ -559,6 +588,338 @@ contract PoolForeignForkTest is ForkBase, PoolFixture {
         assertEq(controller.callCount(), 1, "one foreign capture");
         assertEq(_ip().foreignListings().length, 0);
         assertEq(pool.receivable(), 0);
+        _assertI1();
+    }
+
+    // ---------------------------------------------------------------- gas, harvest and dues
+
+    function test_settleWithTooLittleGasForTheControllerRevertsAndDivertsNothing() public {
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        _fulfillOnly(listingId);
+        uint256 owed = clone.ownerProceeds();
+        uint256 balanceBefore = address(pool).balance;
+
+        uint256 snap = vm.snapshotState();
+        uint256 g0 = gasleft();
+        vm.prank(keeper);
+        pool.settle(20);
+        uint256 used = g0 - gasleft();
+        vm.revertToState(snap);
+
+        bool found;
+        for (uint256 g = used; g > used / 4 && !found; g -= 20_000) {
+            snap = vm.snapshotState();
+            vm.prank(keeper);
+            try pool.settle{gas: g}(20) {}
+            catch (bytes memory err) {
+                found = err.length >= 4 && bytes4(err) == IPoolTypes.InsufficientGas.selector;
+            }
+            if (found) {
+                assertEq(controller.callCount(), 0, "no callback");
+                assertEq(_ip().foreignListings().length, 1, "the entry is still booked");
+                assertEq(_books().receivable, 0, "nothing diverted to margin");
+                assertEq(address(pool).balance, balanceBefore);
+                assertEq(clone.ownerProceeds(), owed, "the proceeds stay at FWA");
+            }
+            vm.revertToState(snap);
+        }
+        assertTrue(found, "a gas limit hit InsufficientGas");
+
+        vm.prank(keeper);
+        pool.settle(20);
+        assertEq(controller.callCount(), 1);
+        assertEq(address(controller).balance, owed, "the controller is paid in full by a settle with enough gas");
+    }
+
+    function test_aZeroProceedsCaptureIsReportedToTheControllerAtHarvest() public {
+        (uint256 tokenId, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        warpPastCooldown(clone);
+        vm.prank(address(pool));
+        clone.setPurchaseOperator(address(0));
+        uint256 requestId = acquireAs(alice, player, clone, block.timestamp + 1 hours);
+        fulfill(clone, requestId, wordFor(clone, listingId));
+        (, bool recorded) = pool.baseOf(requestId);
+        assertFalse(recorded, "a request opened at the FWA pool books zero proceeds");
+
+        pool.bookOnly(5);
+        assertEq(_ip().foreignListings().length, 0, "the walk removed the entry");
+        assertEq(controller.callCount(), 0, "the walk does not call the controller");
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.ForeignCaptured(listingId, tokenId, 0, true);
+        assertTrue(pool.harvest());
+        assertEq(controller.callCount(), 1, "harvest reports the capture");
+        TestController.Call memory c = controller.callAt(0);
+        assertEq(c.listingId, listingId);
+        assertEq(c.tokenId, tokenId);
+        assertEq(c.proceeds, 0);
+        assertEq(c.value, 0);
+        _assertI1();
+    }
+
+    function test_aShortfallCutsTheOrdinaryReceivableBeforeAForeignDue() public {
+        (uint256 tokenId, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        _fulfillOnly(listingId);
+        pool.bookOnly(5);
+        uint256 owed = clone.ownerProceeds();
+        pool.addReceivables(7, 0, 0);
+        Books memory before_ = _books();
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit IPoolTypes.HarvestShortfall(owed, owed + 7);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.ForeignCaptured(listingId, tokenId, owed, true);
+        assertTrue(pool.harvest());
+
+        Books memory after_ = _books();
+        assertEq(address(controller).balance, owed, "the controller is paid in full");
+        assertEq(after_.balance, before_.balance + owed - owed, "pool balance delta = harvest received - controller payout");
+        assertEq(after_.cash, before_.cash, "no cash");
+        assertEq(after_.receivable, 0);
+        _assertI1();
+    }
+
+    function test_aShortfallBeyondTheOtherReceivablesCutsTheForeignDueLastAndNeverCash() public {
+        (uint256 tokenId, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        _fulfillOnly(listingId);
+        pool.bookOnly(5);
+        uint256 owed = clone.ownerProceeds();
+        pool.inflateForeignDue(3);
+        Books memory before_ = _books();
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit IPoolTypes.HarvestShortfall(owed, owed + 3);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.ForeignCaptured(listingId, tokenId, owed, true);
+        assertTrue(pool.harvest());
+
+        Books memory after_ = _books();
+        assertEq(address(controller).balance, owed, "the controller receives what FWA paid");
+        assertEq(controller.callAt(0).proceeds, owed);
+        assertEq(after_.balance, before_.balance + owed - owed, "pool balance delta = harvest received - controller payout");
+        assertEq(after_.cash, before_.cash, "cash is not used");
+        assertEq(after_.maintenance, before_.maintenance);
+        assertEq(after_.fund, before_.fund);
+        _assertI1();
+    }
+
+    function test_twoDuesInOneHarvestAreBothPaid() public {
+        TestController other = new TestController(address(pool));
+        (uint256 firstToken, uint256 firstListing) = _register(0, address(controller), PRICE);
+        (uint256 secondToken, uint256 secondListing) = _register(1, address(other), PRICE + 1 ether);
+        _activate();
+        warpPastCooldown(clone);
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 2);
+        fulfill(clone, ids[0], wordFor(clone, firstListing));
+        fulfill(clone, ids[1], wordFor(clone, secondListing));
+        uint256 owed = clone.ownerProceeds();
+        Books memory before_ = _books();
+
+        vm.recordLogs();
+        vm.prank(keeper);
+        pool.settle(20);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 captured;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.ForeignCaptured.selector) ++captured;
+        }
+        assertEq(captured, 2, "two ForeignCaptured events");
+        assertEq(controller.callCount(), 1);
+        assertEq(other.callCount(), 1);
+        assertEq(controller.callAt(0).tokenId, firstToken);
+        assertEq(other.callAt(0).tokenId, secondToken);
+        assertEq(address(controller).balance + address(other).balance, owed, "both dues paid from the harvest");
+        assertEq(_books().balance, before_.balance, "the pool balance is unchanged");
+        assertEq(_books().cash, before_.cash);
+        _assertI1();
+    }
+
+    function test_twoFailedDuesSplitTheMarginOnce() public {
+        TestController other = new TestController(address(pool));
+        (, uint256 firstListing) = _register(0, address(controller), PRICE);
+        (, uint256 secondListing) = _register(1, address(other), PRICE + 1 ether);
+        _activate();
+        controller.setRejects(true);
+        other.setRejects(true);
+        warpPastCooldown(clone);
+        uint256[] memory ids = acquirePooled(address(pool), clone, player, 2);
+        fulfill(clone, ids[0], wordFor(clone, firstListing));
+        fulfill(clone, ids[1], wordFor(clone, secondListing));
+        uint256 owed = clone.ownerProceeds();
+        Books memory before_ = _books();
+
+        vm.recordLogs();
+        vm.prank(keeper);
+        pool.settle(20);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 splits;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pool) && logs[i].topics[0] == IPoolTypes.MarginSplit.selector) ++splits;
+        }
+        assertEq(splits, 1, "one MarginSplit for both failed dues");
+        Books memory after_ = _books();
+        assertEq(after_.balance, before_.balance + owed, "the pool kept both proceeds");
+        assertEq(
+            after_.cash + after_.maintenance + after_.fund,
+            before_.cash + before_.maintenance + before_.fund + owed,
+            "the proceeds joined the buckets"
+        );
+        _assertI1();
+    }
+
+    // ---------------------------------------------------------------- adminCall
+
+    function test_revert_adminCallOfWithdrawOwnerProceedsOnTheFwaPool() public {
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        _fulfillOnly(listingId);
+        uint256 owed = clone.ownerProceeds();
+        assertGt(owed, 0);
+
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.AdminCallDenied.selector);
+        _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.withdrawOwnerProceeds, ()), 0);
+        assertEq(clone.ownerProceeds(), owed, "the proceeds stay at FWA until the harvest");
+
+        // Other calls to the FWA pool pass the filter.
+        vm.prank(admin);
+        _ip().adminCall(address(clone), abi.encodeCall(IFWAClone.ownerProceeds, ()), 0);
+    }
+
+    // ---------------------------------------------------------------- register bounds
+
+    function test_revert_registerOverTheProbabilityCap() public {
+        uint256 id = _punk(0);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.ProbCapExceeded.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), 0.0001 ether);
+        assertEq(_ip().foreignListings().length, 0);
+    }
+
+    function test_theCapAtRegistrationCountsTheOtherForeignListings() public {
+        _register(0, address(controller), 0.00125 ether);
+        _activate();
+        uint256 id = _punk(1);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.ProbCapExceeded.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), 0.00125 ether);
+    }
+
+    function test_revert_registerOrRepriceOutOfRange() public {
+        uint256 id = _punk(0);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.PriceOutOfRange.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), 0);
+        vm.prank(admin);
+        vm.expectRevert(IPoolTypes.PriceOutOfRange.selector);
+        _ip().registerForeign(WPUNKS, id, address(controller), 1e36 + 1);
+
+        (, uint256 listingId) = _register(1, address(controller), PRICE);
+        _activate();
+        vm.expectRevert(IPoolTypes.PriceOutOfRange.selector);
+        controller.reprice(listingId, 0);
+        vm.expectRevert(IPoolTypes.PriceOutOfRange.selector);
+        controller.reprice(listingId, 1e36 + 1);
+    }
+
+    // ---------------------------------------------------------------- reprice limits
+
+    function test_revert_repriceByLessThanOnePercent() public {
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        vm.expectRevert(IPoolTypes.RepriceTooSmall.selector);
+        controller.reprice(listingId, PRICE);
+        vm.expectRevert(IPoolTypes.RepriceTooSmall.selector);
+        controller.reprice(listingId, PRICE + PRICE / 100 - 1);
+        vm.expectRevert(IPoolTypes.RepriceTooSmall.selector);
+        controller.reprice(listingId, PRICE - PRICE / 100 + 1);
+        controller.reprice(listingId, PRICE - PRICE / 100);
+        assertEq(_priceOf(listingId), PRICE - PRICE / 100, "exactly 1 percent is accepted");
+    }
+
+    function test_revert_repriceInsideTheInterval() public {
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        controller.reprice(listingId, 0.8 ether);
+        uint256 at = block.timestamp;
+        assertEq(_ip().foreignListings()[0].lastRepriceAt, at);
+
+        vm.expectRevert(IPoolTypes.RepriceTooSoon.selector);
+        controller.reprice(listingId, 0.6 ether);
+        vm.warp(at + pool.rotateInterval() - 1);
+        vm.expectRevert(IPoolTypes.RepriceTooSoon.selector);
+        controller.reprice(listingId, 0.6 ether);
+        vm.warp(at + pool.rotateInterval());
+        controller.reprice(listingId, 0.6 ether);
+        assertEq(_priceOf(listingId), 0.6 ether);
+    }
+
+    function test_aWithdrawalClearsTheRepriceClock() public {
+        (uint256 tokenId, uint256 listingId) = _register(0, address(controller), PRICE);
+        _activate();
+        controller.reprice(listingId, 0.8 ether);
+        controller.withdraw(listingId, admin);
+        vm.prank(admin);
+        IERC721(WPUNKS).approve(address(pool), tokenId);
+        vm.prank(admin);
+        _ip().registerForeign(WPUNKS, tokenId, address(controller), PRICE);
+        IPoolTypes.ForeignListing memory f = _ip().foreignListings()[0];
+        assertEq(f.lastRepriceAt, 0);
+        _activate();
+        controller.reprice(f.listingId, 0.8 ether);
+    }
+
+    // ---------------------------------------------------------------- lens
+
+    function test_lensWeightIsZeroWhileTheListingIsStaged() public {
+        warpPastCooldown(clone);
+        acquirePooled(address(pool), clone, player, 1);
+        (, uint256 listingId) = _register(0, address(controller), PRICE);
+        assertEq(uint8(_status(listingId)), uint8(IFWAClone.ListingStatus.Staged));
+        Lens lens = new Lens(Pool(payable(address(pool))));
+        assertEq(lens.foreign()[0].weightBps, 0, "Staged");
+        assertEq(lens.foreign()[0].notional, PRICE);
+    }
+
+    // ---------------------------------------------------------------- exit with a failing release
+
+    function test_exitContinuesWhenAForeignTransferFailsAndTheTokenCanBeSwept() public {
+        BlockableCollection coll = new BlockableCollection();
+        coll.mint(admin, 7);
+        vm.prank(admin);
+        coll.approve(address(pool), 7);
+        vm.prank(admin);
+        _ip().registerForeign(address(coll), 7, address(controller), PRICE);
+        uint256 blockedListing = _ip().foreignListings()[0].listingId;
+        (uint256 punk, uint256 punkListing) = _register(0, address(controller), PRICE + 1 ether);
+        _activate();
+        coll.setBlocked(address(controller));
+
+        vm.prank(admin);
+        _ip().startExit(address(pool));
+        // The last entry is released first: the punk transfers, then the blocked token fails.
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit IPoolTypes.ForeignWithdrawn(punkListing, WPUNKS, punk, address(controller));
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit IPoolTypes.ForeignReleaseFailed(blockedListing, 7);
+        for (uint256 i; i < 40 && !_ip().exportStep(50); ++i) {}
+
+        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Exported), "the export completed");
+        assertEq(IERC721(WPUNKS).ownerOf(punk), address(controller));
+        assertEq(coll.ownerOf(7), address(pool), "the failed token stays in the pool");
+        assertEq(_ip().foreignListings().length, 0);
+        assertFalse(_ip().registered(address(coll), 7));
+        assertTrue(_status(blockedListing) != IFWAClone.ListingStatus.Active);
+
+        vm.prank(admin);
+        _ip().sweep(address(coll), 7, admin);
+        assertEq(coll.ownerOf(7), admin, "sweep sends the token out");
         _assertI1();
     }
 

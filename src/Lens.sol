@@ -285,14 +285,19 @@ contract Lens {
     // ------------------------------------------------------------------ foreign listings
 
     /// @notice Every foreign listing with its share of the FWA selection weight. The share is zero
-    ///         while the token is held unlisted.
+    ///         unless the FWA listing is Active.
     function foreign() external view returns (ForeignView[] memory v) {
         IPoolTypes.ForeignListing[] memory items = _ip().foreignListings();
         v = new ForeignView[](items.length);
-        uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
+        IFWAClone fwa = pool.fwaPool();
+        uint256 total = address(fwa) == address(0) ? 0 : fwa.totalWeight();
         for (uint256 i; i < items.length; ++i) {
             IPoolTypes.ForeignListing memory f = items[i];
-            uint256 weightBps = f.notional != 0 && total != 0 ? PricingLib.weightOf(f.notional) * BPS / total : 0;
+            uint256 weightBps;
+            if (f.notional != 0 && total != 0) {
+                (,,,,,,, IFWAClone.ListingStatus status) = fwa.listings(f.listingId);
+                if (status == IFWAClone.ListingStatus.Active) weightBps = PricingLib.weightOf(f.notional) * BPS / total;
+            }
             v[i] = ForeignView(f.collection, f.tokenId, f.controller, f.listingId, f.notional, weightBps);
         }
     }

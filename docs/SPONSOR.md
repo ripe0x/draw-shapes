@@ -31,8 +31,11 @@ Set as the Shapes mint fee recipient (`Shapes.setFeeRecipient`). Receives every 
 - `receive()`: while `paidWei < capWei` and `prize.active()` is true, credit `sponsorBalance` up to the
   remaining cap and `paidWei`; the rest credits `ownerBalance`.
 - `withdraw()`: the caller takes their balance.
-- `setPrize(address)` and `setSponsor(address, capWei)`: owner, only while `paidWei == 0` and no prize
-  is active. A new deal reuses the contract.
+- `setPrize(address)`: owner, only while `paidWei == 0` and no prize is active.
+- `setSponsor(address, capWei)`: owner, while no prize is active. Sets `paidWei` to zero, which starts a new
+  deal on the same contract; `ownerBalance` and `sponsorBalance` keep their values. A different sponsor
+  needs `sponsorBalance == 0`, so the previous sponsor withdraws first. A new deal calls `setSponsor`
+  before `setPrize`.
 - `paidWei` and `capWei` are public.
 
 ### `SponsoredPrize`
@@ -79,7 +82,11 @@ One per deal. Implements `IForeignController`.
    forwards the accrued fees to `FeeSplit.receive()`, which applies the routing at that moment.
 3. Sponsor transfers the punk to the admin. Admin calls `pool.registerForeign(wpunks, id, prize, 30 ether)`.
 4. Owner calls `prize.start(listingId)`.
-5. Keeper adds `prize.tick()` to each pass once Hot; it is a no-op before.
+5. Keeper (`script/keeper.sh`) with `SPONSOR_PRIZE`, `SHAPES` and `FEE_SPLIT` set runs two more steps on each
+   pass. It calls `Shapes.withdrawFees(feeSplit)` when `Shapes.feesOwedTo(feeSplit)` is nonzero, so accrued
+   fees reach `FeeSplit.receive()` while the prize is active. It calls `prize.tick()` while `prize.active()`
+   is true and `prize.phase()` is Hot. The pool accepts one reprice per `rotateInterval`; a `tick` inside
+   the interval leaves the price unchanged and the next `tick` retries.
 6. On capture the pool pays the prize contract, which forwards to the GRAIL fund.
 
 ## Tests

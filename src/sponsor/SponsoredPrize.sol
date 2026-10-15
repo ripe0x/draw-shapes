@@ -111,8 +111,8 @@ contract SponsoredPrize is IForeignController {
 
     /// @notice Lowers the listing price to `max(floorWei, parkedPriceWei - decayWeiPerPull * pullsSinceHot)`
     ///         when that is at least 1 percent below the current price, or the floor itself. Does nothing
-    ///         in Parked. A pool revert with `FwaBusy`, `ProbCapExceeded` or `ListingNotActive` leaves the
-    ///         price unchanged and is retried by the next call.
+    ///         in Parked. A pool revert with `FwaBusy`, `ProbCapExceeded`, `ListingNotActive`, `RepriceTooSoon` or
+    ///         `RepriceTooSmall` leaves the price unchanged and is retried by the next call.
     function tick() external {
         if (!active() || phase() != Phase.Hot) return;
         uint64 pulls = pool.grail().pulls;
@@ -131,7 +131,8 @@ contract SponsoredPrize is IForeignController {
             bytes4 sel = bytes4(err);
             if (
                 sel != IPoolTypes.FwaBusy.selector && sel != IPoolTypes.ProbCapExceeded.selector
-                    && sel != IPoolTypes.ListingNotActive.selector
+                    && sel != IPoolTypes.ListingNotActive.selector && sel != IPoolTypes.RepriceTooSoon.selector
+                    && sel != IPoolTypes.RepriceTooSmall.selector
             ) {
                 assembly ("memory-safe") {
                     revert(add(err, 0x20), mload(err))

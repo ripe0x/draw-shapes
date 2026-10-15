@@ -17,6 +17,7 @@ contract FeeSplit {
     error ZeroAddress();
     error DealLocked();
     error NothingToWithdraw();
+    error SponsorBalanceUnpaid();
 
     event Routed(uint256 sponsorWei, uint256 ownerWei);
     event PrizeSet(address indexed prize);
@@ -77,14 +78,18 @@ contract FeeSplit {
         emit PrizeSet(prize_);
     }
 
-    /// @notice Sets the sponsor and the cap in wei. Owner only, while `paidWei == 0` and the current
-    ///         prize is not active.
+    /// @notice Sets the sponsor and the cap in wei and resets `paidWei` to zero, which starts a new deal.
+    ///         Owner only, while the current prize is not active. `ownerBalance` and `sponsorBalance`
+    ///         keep their values. A different sponsor needs `sponsorBalance == 0` (`SponsorBalanceUnpaid`),
+    ///         so the previous sponsor's balance is withdrawn by that sponsor.
     function setSponsor(address sponsor_, uint256 capWei_) external {
         _requireOwner();
         if (sponsor_ == address(0)) revert ZeroAddress();
-        if (paidWei != 0 || _prizeActive()) revert DealLocked();
+        if (_prizeActive()) revert DealLocked();
+        if (sponsor_ != sponsor && sponsorBalance != 0) revert SponsorBalanceUnpaid();
         sponsor = sponsor_;
         capWei = capWei_;
+        paidWei = 0;
         emit SponsorSet(sponsor_, capWei_);
     }
 

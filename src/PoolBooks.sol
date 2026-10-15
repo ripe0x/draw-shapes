@@ -168,27 +168,26 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Removes the foreign listing at `index` after its capture. `proceeds` is booked as
-    ///      `_foreignReceivable` and paid to the controller by the next harvest, which is when the
-    ///      ETH reaches the pool. Zero proceeds are reported to the controller at once. Nothing else
-    ///      is booked.
+    ///      `_foreignReceivable` and, with a due of the same value, reported to the controller by the
+    ///      next harvest, which is when the ETH reaches the pool. A due with zero proceeds is
+    ///      reported the same way.
     function _closeForeign(uint256 index, uint256 proceeds) internal {
         ForeignListing memory f = _removeForeign(index);
-        if (proceeds == 0) {
-            emit ForeignCaptured(f.listingId, f.tokenId, 0, _callController(f.controller, f.listingId, f.tokenId, 0));
-            return;
-        }
         _foreignReceivable += proceeds;
         _foreignDue.push(ForeignDue(f.controller, f.listingId, f.tokenId, proceeds));
     }
 
-    /// @dev Pays the captured foreign listings their proceeds, which the harvest has just withdrawn
-    ///      from FWA. A controller call that fails books its proceeds as `receivable` and `margin`.
+    /// @dev Reports the captured foreign listings to their controllers and pays them their proceeds,
+    ///      which the harvest has just withdrawn from FWA. Each due is paid in order, capped by what
+    ///      remains of `_foreignReceivable` after any write-down. The proceeds of a call that fails
+    ///      are booked as `receivable` and `margin`, and the margin is split once after the last due.
     function _payForeign() internal {
         ForeignDue[] memory due = _foreignDue;
         if (due.length == 0) return;
         uint256 available = _foreignReceivable;
         delete _foreignDue;
         _foreignReceivable = 0;
+        bool failed;
         for (uint256 i; i < due.length; ++i) {
             ForeignDue memory d = due[i];
             uint256 amount = d.proceeds < available ? d.proceeds : available;
@@ -197,18 +196,21 @@ abstract contract PoolBooks is PoolStorage {
             if (!delivered) {
                 receivable += amount;
                 _margin += SafeCastLib.toInt256(amount);
-                _splitMargin();
+                failed = true;
             }
             emit ForeignCaptured(d.listingId, d.tokenId, amount, delivered);
         }
+        if (failed) _splitMargin();
     }
 
     /// @dev Calls `onForeignCapture` on `controller` with `amount` wei, forwarding `FOREIGN_CALL_GAS`
-    ///      and ignoring the return data. Returns whether the call succeeded.
+    ///      and ignoring the return data. Returns whether the call succeeded. Reverts
+    ///      `InsufficientGas` when the remaining gas could not fund the full forwarded amount.
     function _callController(address controller, uint256 listingId, uint256 tokenId, uint256 amount)
         internal
         returns (bool ok)
     {
+        _requireCallGas();
         bytes4 selector = IForeignController.onForeignCapture.selector;
         uint256 gasLimit = FOREIGN_CALL_GAS;
         assembly ("memory-safe") {
@@ -307,13 +309,15 @@ abstract contract PoolBooks is PoolStorage {
     }
 
     /// @dev Withdraws FWA owner proceeds and credits them to the buckets. Returns false when
-    ///      the booking walk is behind FWA's processing queue or no proceeds are held. Proceeds
+    ///      the booking walk is behind FWA's processing queue, or when no proceeds are held and no
+    ///      foreign due is waiting. Proceeds
     ///      above the booked receivables enter as margin through `_bookSurplus`. Proceeds below them
     ///      emit `HarvestShortfall` and the gap is written down through `_writeDownReceivables`.
     function _harvest() internal returns (bool) {
-        if (nextSequenceToBook < _nextToProcess() || _ownerProceeds() == 0) return false;
+        uint256 held = _ownerProceeds();
+        if (nextSequenceToBook < _nextToProcess() || (held == 0 && _foreignDue.length == 0)) return false;
 
-        uint256 received = _call(address(fwaPool), IFWAClone.withdrawOwnerProceeds.selector, 0, 0);
+        uint256 received = held == 0 ? 0 : _call(address(fwaPool), IFWAClone.withdrawOwnerProceeds.selector, 0, 0);
         uint256 expected = _bookedReceivables();
         if (received < expected) {
             _writeDownReceivables(expected - received);

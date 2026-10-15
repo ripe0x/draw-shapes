@@ -178,6 +178,11 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         revert("no entry");
     }
 
+    /// @dev Warps one `rotateInterval`, after which the pool accepts another foreign reprice.
+    function _nextInterval() internal {
+        vm.warp(block.timestamp + _ip().rotateInterval());
+    }
+
     function _hot() internal {
         _payFees(3);
         assertEq(feeSplit.paidWei(), CAP);
@@ -274,6 +279,39 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         feeSplit.setSponsor(stranger, 1 ether);
     }
 
+    function test_setSponsorAfterAPaidDealResetsPaidWeiAndKeepsBalances() public {
+        _hot();
+        _payFees(2);
+        uint256 sponsorBalance = feeSplit.sponsorBalance();
+        uint256 ownerBalance = feeSplit.ownerBalance();
+        assertEq(sponsorBalance, CAP);
+        assertGt(ownerBalance, 0);
+        _capture();
+        assertFalse(prize.active());
+
+        vm.startPrank(dealOwner);
+        vm.expectRevert(FeeSplit.SponsorBalanceUnpaid.selector);
+        feeSplit.setSponsor(stranger, 2 * CAP);
+        vm.expectRevert(FeeSplit.DealLocked.selector);
+        feeSplit.setPrize(address(0));
+
+        feeSplit.setSponsor(sponsor, 2 * CAP);
+        vm.stopPrank();
+
+        assertEq(feeSplit.paidWei(), 0, "paidWei reset");
+        assertEq(feeSplit.capWei(), 2 * CAP);
+        assertEq(feeSplit.sponsorBalance(), sponsorBalance, "sponsor balance kept");
+        assertEq(feeSplit.ownerBalance(), ownerBalance, "owner balance kept");
+
+        vm.prank(sponsor);
+        feeSplit.withdraw();
+        vm.prank(dealOwner);
+        feeSplit.setSponsor(stranger, 3 * CAP);
+        assertEq(feeSplit.sponsor(), stranger);
+        assertEq(feeSplit.paidWei(), 0);
+        assertEq(feeSplit.ownerBalance(), ownerBalance, "owner balance kept");
+    }
+
     // ---------------------------------------------------------------- decay
 
     function test_theCapFlipsThePhaseAndTickDecaysToTheFloorAndStops() public {
@@ -285,19 +323,23 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         assertEq(prize.hotFromPull(), expectedPulls);
 
         _pull();
+        _nextInterval();
         prize.tick();
         assertEq(_price(), PARKED_PRICE - decay * (_pulls() - prize.hotFromPull()), "one pull of decay");
         assertEq(_price(), 20 ether);
 
         _pull();
+        _nextInterval();
         prize.tick();
         assertEq(_price(), 10 ether);
 
         _pull();
+        _nextInterval();
         prize.tick();
         assertEq(_price(), FLOOR, "stops at the floor");
 
         _pull();
+        _nextInterval();
         prize.tick();
         assertEq(_price(), FLOOR, "no change below the floor");
         _assertI1();
@@ -324,6 +366,24 @@ contract SponsorForkTest is ForkBase, PoolFixture {
         _pull();
         slow.tick();
         assertEq(_priceOf(lid), PARKED_PRICE - 0.3 ether, "0.3 ETH is exactly 1 percent");
+    }
+
+    function test_tickInsideTheRepriceIntervalKeepsThePriceAndTheNextIntervalRetries() public {
+        _hot();
+        prize.tick();
+        _pull();
+        _nextInterval();
+        prize.tick();
+        assertEq(_price(), 20 ether);
+
+        _pull();
+        vm.expectCall(address(pool), abi.encodeCall(IPool.repriceForeign, (listingId, 10 ether)));
+        prize.tick();
+        assertEq(_price(), 20 ether, "one reprice per interval");
+
+        _nextInterval();
+        prize.tick();
+        assertEq(_price(), 10 ether, "retried after the interval");
     }
 
     function test_tickIsANoOpInParked() public {

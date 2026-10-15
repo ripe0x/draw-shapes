@@ -169,8 +169,9 @@ contract PoolAdmin is PoolBooks {
 
     /// @notice Calls `target` with `data` and `msg.value` as value, then requires I1 and I2.
     ///         `msg.value` must equal `value`, so the call is funded by the admin and not by the
-    ///         buckets. Reverts with the target's revert data and `InvariantBroken` when a check
-    ///         fails.
+    ///         buckets. Reverts `AdminCallDenied` for `withdrawOwnerProceeds` on the FWA pool, which
+    ///         `harvest` alone performs. Reverts with the target's revert data and `InvariantBroken`
+    ///         when a check fails.
     function adminCall(address target, bytes calldata data, uint256 value)
         external
         payable
@@ -179,6 +180,10 @@ contract PoolAdmin is PoolBooks {
         nonReentrant
     {
         if (msg.value != value) revert AdminValueMismatch();
+        if (
+            target == address(fwaPool) && data.length >= 4
+                && bytes4(data[:4]) == IFWAClone.withdrawOwnerProceeds.selector
+        ) revert AdminCallDenied();
         (bool ok, bytes memory ret) = target.call{value: value}(data);
         if (!ok) {
             assembly ("memory-safe") {
@@ -221,7 +226,7 @@ contract PoolAdmin is PoolBooks {
         emit ExitStarted(dest);
     }
 
-    /// @notice Withdraws every foreign listing to its controller, then moves up to `maxItems` ordinary
+    /// @notice Releases every foreign listing to its controller, then moves up to `maxItems` ordinary
     ///         listings, held items and the GRAIL estate out of the
     ///         pool, then settles the exit. Ordinary items are redeemed into `cash` on retirement.
     ///         On migration they go to the successor while `cash` covers `claims` and the successor
@@ -230,7 +235,9 @@ contract PoolAdmin is PoolBooks {
     ///         the last item folds `maintenance` into `cash`, records `exportedShares` and
     ///         `exportedNav`, sends `cash - claims` to the successor, sets Exported, retires the FWA
     ///         pool and finalizes the import. Reverts `FwaBusy` while FWA holds unsettled
-    ///         acquisitions or the booking walk is behind. Returns whether the export is complete.
+    ///         acquisitions or the booking walk is behind, and `InsufficientGas` when a release
+    ///         could not be given its gas. A foreign release that fails emits `ForeignReleaseFailed`
+    ///         and the export continues. Returns whether the export is complete.
     function exportStep(uint256 maxItems) external onlyDelegated nonReentrant returns (bool) {
         if (lifecycle != Lifecycle.Exiting) revert NotExiting();
         _processAndSettle(MAX_SETTLE_ITEMS);
@@ -238,7 +245,7 @@ contract PoolAdmin is PoolBooks {
         _harvest();
 
         while (_foreign.length != 0) {
-            _releaseForeign(_foreign.length - 1, _foreign[_foreign.length - 1].controller);
+            _releaseForeignOrHold(_foreign.length - 1);
         }
 
         address dest = exitDest;
@@ -300,6 +307,50 @@ contract PoolAdmin is PoolBooks {
         }
         emit Exported(shares, exported);
         return true;
+    }
+
+    /// @dev Removes the foreign listing at `index` and unregisters its token. Withdraws the FWA listing
+    ///      when it is listed, then transfers the token to the entry's controller, forwarding at most
+    ///      `FOREIGN_CALL_GAS` to the collection. A failed step emits `ForeignReleaseFailed` and leaves
+    ///      the token where it is. A token that reached the pool is then sent by `sweep`.
+    function _releaseForeignOrHold(uint256 index) internal {
+        ForeignListing memory f = _removeForeign(index);
+        bool ok = true;
+        if (f.notional != 0) {
+            _requireCallGas();
+            ok = _tryTransferCall(
+                address(fwaPool), IFWAClone.withdrawListingTo.selector, f.listingId, uint160(address(this)), 0, gasleft()
+            );
+        }
+        if (ok) {
+            _requireCallGas();
+            ok = _tryTransferCall(
+                f.collection,
+                IERC721.transferFrom.selector,
+                uint160(address(this)),
+                uint160(f.controller),
+                f.tokenId,
+                FOREIGN_CALL_GAS
+            );
+        }
+        if (ok) emit ForeignWithdrawn(f.listingId, f.collection, f.tokenId, f.controller);
+        else emit ForeignReleaseFailed(f.listingId, f.tokenId);
+    }
+
+    /// @dev Calls `selector` on `target` with three word arguments, forwarding at most `gasLimit`.
+    ///      Returns whether the call succeeded and ignores the return data.
+    function _tryTransferCall(address target, bytes4 selector, uint256 a, uint256 b, uint256 c, uint256 gasLimit)
+        internal
+        returns (bool ok)
+    {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), a)
+            mstore(add(m, 0x24), b)
+            mstore(add(m, 0x44), c)
+            ok := call(gasLimit, target, 0, m, 0x64, 0, 0)
+        }
     }
 
     /// @notice Sends the GRAIL fund and every GRAIL item to `to` and empties the estate. Callable

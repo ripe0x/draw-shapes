@@ -343,30 +343,48 @@ A captured intermediate does not stop the cycle; the recipe waits for new inputs
 
 Foreign listings. A prize the pool did not mint, owned by a controller contract that holds every rule about it.
 Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `tokenId`, `controller`, `listingId`,
-`notional`, keyed by the FWA `listingId`. A foreign item is outside `backing`, ordinary NAV and the GRAIL fund.
+`notional`, `lastRepriceAt`, keyed by the FWA `listingId`. A foreign item is outside `backing`, ordinary NAV and the GRAIL fund.
 - `registerForeign(collection, tokenId, controller, priceWei)`: admin, Live only. Transfers the ERC-721 from the
   admin to the pool (the admin approves the pool first), approves and lists it on the FWA pool at `priceWei`, records
   the entry and marks the token registered, so `sweep` and `importItem` refuse it. Reverts `NotLive`, `ForeignFull`,
-  `AlreadyRegistered` and `ZeroAddress` for a zero `collection` or `controller`.
+  `AlreadyRegistered`, `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` and
+  `ProbCapExceeded`. The price needs a selection weight: `priceWei` is nonzero and at most `1e36`, so `PricingLib.weightOf`
+  is defined for it. The Active GRAIL and foreign weight plus the weight of the new listing at `priceWei` stays within
+  `grailProbCapBps` of the FWA selection weight including that listing.
 - `repriceForeign(listingId, priceWei)`: the entry's controller only (`NotController`), while the listing is Active
   (`ListingNotActive`) and FWA holds no unsettled acquisition and the booking walk is level (`FwaBusy`). Calls
-  `updatePrice` and stores `notional`. A price that raises the entry's selection weight is refused (`ProbCapExceeded`)
-  when the Active GRAIL and foreign weight at `priceWei` would pass `grailProbCapBps` of the FWA selection weight. The
-  GRAIL decay in `grailReprice` counts the Active foreign weight under the same cap.
+  `updatePrice` and stores `notional` and `lastRepriceAt`. `priceWei` has a selection weight (`PriceOutOfRange`, as in
+  `registerForeign`) and differs from `notional` by at least 1 percent of `notional` (`RepriceTooSmall`). The entry
+  takes one reprice per `rotateInterval` (`RepriceTooSoon`); the first reprice of an entry is accepted at once, and a
+  withdrawal removes the entry with its `lastRepriceAt`. A price that raises the entry's selection weight is refused
+  (`ProbCapExceeded`) when the Active GRAIL and foreign weight at `priceWei` would pass `grailProbCapBps` of the FWA
+  selection weight. The GRAIL decay in `grailReprice` counts the Active foreign weight under the same cap. Every
+  stored foreign `notional` has a selection weight, so `grailReprice` and `settle` compute the weight of every foreign entry.
 - `withdrawForeign(listingId, to)`: the entry's controller only. Withdraws the listing, transfers the token to `to`,
   removes the entry. A listed entry needs FWA to hold no unsettled acquisition and the walk to be level (`FwaBusy`).
 - Capture: in the booking walk a Fulfilled foreign listing removes the entry and books `proceeds` as a foreign
   receivable, which is part of the booked receivables and stays at FWA as owner proceeds. The next harvest withdraws the
   proceeds from FWA and sends them to `controller.onForeignCapture(listingId, tokenId, proceeds)` by a plain call with
-  the ETH value, forwarding at most `FOREIGN_CALL_GAS` (200,000). Zero proceeds are reported at once. When the call
-  fails the proceeds are booked as `receivable` and `margin` and split as any margin. `ForeignCaptured(listingId,
-  tokenId, proceeds, delivered)` reports the result. A request opened directly at the FWA pool
-  books zero proceeds (section 9, step 1), so its owner proceeds arrive as surplus.
+  the ETH value, forwarding at most `FOREIGN_CALL_GAS` (200,000). The harvest is the only place the pool calls a
+  controller. A capture with zero proceeds queues a due of zero value, which the harvest reports like any other due,
+  and a harvest runs while a due waits even when FWA holds no owner proceeds. A harvest that finds FWA holding less than
+  the booked receivables writes the gap down in the order `receivable`, `maintenanceReceivable`, GRAIL receivable,
+  foreign receivable, and pays each due in queue order from the withdrawn proceeds, up to the foreign receivable that
+  remains. The call needs `gasleft() >= FOREIGN_CALL_GAS * 64 / 63 + 20,000`, and the pool reverts `InsufficientGas`
+  (`settle`, `deposit`, `withdraw`, `acquire`, `exportStep`) otherwise. When the call fails the proceeds are booked as
+  `receivable` and `margin`, and the margin of all failed dues of one harvest is split once after the last due.
+  `ForeignCaptured(listingId, tokenId, proceeds, delivered)` reports the result. A request opened directly at the FWA
+  pool books zero proceeds (section 9, step 1), so its owner proceeds arrive as surplus.
 - Refunded delivery: the token returns to the pool unlisted and the entry stays under its `listingId` with `notional`
   zero. The controller may `withdrawForeign` it, and the admin may then `registerForeign` it again. A DeliveryPending
   listing removes the entry and reports `ForeignCaptured` with zero proceeds.
-- Exit: `exportStep` withdraws every foreign listing to its controller before the GRAIL estate moves.
-- Lens: `foreign()` returns every entry with its selection weight in bps.
+- Exit: `exportStep` releases every foreign listing to its controller before the GRAIL estate moves: it withdraws the
+  FWA listing when the entry is listed and transfers the token, forwarding at most `FOREIGN_CALL_GAS` to the
+  collection. A step that fails removes the entry, clears the token's registration so `sweep` can send it once the pool
+  holds it, emits `ForeignReleaseFailed(listingId, tokenId)` and the export continues. `withdrawForeign` reverts on a
+  failed withdrawal or transfer.
+- Lens: `foreign()` returns every entry with its selection weight in bps, which is zero unless the FWA listing is
+  Active.
 The pool holds no term of any deal. A controller decides prices, phases, reclaim rights and where capture proceeds go.
 
 Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
@@ -385,7 +403,8 @@ replacement row for a fulfilled request.
 
 `sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item, a GRAIL
 item or a foreign listing). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
-the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. The admin is trusted: on the old pool,
+the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. A call to the FWA pool with the selector
+of `withdrawOwnerProceeds` reverts `AdminCallDenied`: FWA owner proceeds leave FWA through the harvest. The admin is trusted: on the old pool,
 `adminCall` can reach the successor's import functions, and a forged `finalizeImport` argument misprices a migration.
 
 ## 13. Exit: retirement and migration

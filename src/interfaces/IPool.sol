@@ -75,13 +75,15 @@ interface IPoolTypes {
 
     /// @dev A foreign listing: a token the pool did not mint, listed on the FWA pool for `controller`.
     ///      `listingId` is the FWA listing id the entry is keyed by. `notional` is the list price and
-    ///      is zero while the token is held unlisted after a refunded delivery.
+    ///      is zero while the token is held unlisted after a refunded delivery. `lastRepriceAt` is the
+    ///      timestamp of the last `repriceForeign`, zero before the first.
     struct ForeignListing {
         address collection;
         uint256 tokenId;
         address controller;
         uint256 listingId;
         uint256 notional;
+        uint64 lastRepriceAt;
     }
 
     /// @dev Proceeds of a captured foreign listing, booked in `foreignReceivable` and paid to
@@ -214,6 +216,11 @@ interface IPoolTypes {
     error NotController();
     error ListingNotActive(uint256 listingId);
     error ProbCapExceeded();
+    error InsufficientGas();
+    error PriceOutOfRange();
+    error RepriceTooSmall();
+    error RepriceTooSoon();
+    error AdminCallDenied();
 
     event Deposited(address indexed to, uint256 value, uint256 contribution, uint256 shares);
     event Withdrawn(address indexed from, uint256 shares, uint256 paidNow, uint256 enqueued);
@@ -271,6 +278,9 @@ interface IPoolTypes {
     ///      `proceeds` joined `cash` as margin. `proceeds` is zero for a capture whose request was
     ///      opened directly at the FWA pool and for a write-off of a pending delivery.
     event ForeignCaptured(uint256 indexed listingId, uint256 tokenId, uint256 proceeds, bool delivered);
+    /// @dev `exportStep` could not withdraw or transfer the token of a foreign listing. The entry is
+    ///      removed and the token is unregistered, so `sweep` can send it once the pool holds it.
+    event ForeignReleaseFailed(uint256 indexed listingId, uint256 tokenId);
     event ExitStarted(address indexed dest);
     /// @dev `nav` is `exportedNav`, `shares` is `exportedShares`.
     event Exported(uint256 shares, uint256 nav);
