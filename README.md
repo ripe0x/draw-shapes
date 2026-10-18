@@ -2,6 +2,8 @@
 
 A pooled prize vault on Shapes and one FWA V2 custom pool. Specification: `docs/SPEC.md`.
 
+Agent guidance: [AGENTS.md](AGENTS.md), alongside your global working agreements.
+
 ```
 src/            Pool.sol, Lens.sol, interfaces
 test/unit       mock based unit tests
