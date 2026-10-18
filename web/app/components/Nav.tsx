@@ -7,6 +7,7 @@ import { WalletMenu } from "./WalletMenu";
 const LINKS = [
   ["/pull", "Pull"],
   ["/deposit", "Deposit"],
+  ["/sponsor", "Sponsor"],
   ["/protocol", "Protocol"],
 ] as const;
 

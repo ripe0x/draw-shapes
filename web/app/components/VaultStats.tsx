@@ -10,7 +10,7 @@ export function VaultStats() {
   const pool = usePool().data;
   const quote = useQuote(1).data;
   if (!pool) return null;
-  const odds = drawOdds(pool.board, pool.grail);
+  const odds = drawOdds(pool.board, pool.grail, pool.foreign);
   const p = pool.params;
   const returnBps = quote && quote.fee > 0n ? (odds.averageBackingWei * 10_000n) / quote.fee : undefined;
   return (

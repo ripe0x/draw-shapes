@@ -10,7 +10,7 @@ import { TokenArt } from "./TokenArt";
 export function GrailBoard({ detail = false }: { detail?: boolean }) {
   const pool = usePool().data;
   if (!pool) return null;
-  const odds = drawOdds(pool.board, pool.grail);
+  const odds = drawOdds(pool.board, pool.grail, pool.foreign);
   return (
     <>
       <CycleCard g={pool.grail} detail={detail} />

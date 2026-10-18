@@ -60,6 +60,7 @@ Keeper log, one line per transaction:
 `refundWei` is read from the `Settled` or `Rotated` event. A `rotate` that leaves inventory
 unchanged keeps `rotateDue()` nonzero, so the keeper waits one `rotateInterval` before the next
 attempt. A `skipped: simulation reverts` line means the call would revert and no gas was spent.
+With `SPONSOR_PRIZE`, `SHAPES` and `FEE_SPLIT` set, each pass also sends `withdrawFees` to Shapes and `tick` to the prize (docs/SPONSOR.md, Operations).
 
 ## Live launch
 

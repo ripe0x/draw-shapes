@@ -661,7 +661,7 @@ contract PoolAdminForkTest is ForkBase, PoolFixture {
 
     function test_adminCallBubblesTheTargetsRevert() public {
         _openReady();
-        bytes memory data = abi.encodeCall(IFWAClone.updatePrice, (999_999, 1 ether));
+        bytes memory data = abi.encodeCall(IFWAClone.recoverRefundedNFT, (999_999));
         vm.prank(address(pool));
         (bool direct, bytes memory expected) = address(clone).call(data);
         assertFalse(direct);

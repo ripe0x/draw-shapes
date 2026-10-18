@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Keeper loop: settle, rotate and payClaims on the pool, one log line per sent transaction.
 # Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool), KEEPER, INTERVAL (default 15), ONCE=1 for one pass.
+# SPONSOR_PRIZE, SHAPES and FEE_SPLIT (all three) add two steps to each pass: Shapes.withdrawFees(FEE_SPLIT)
+# when feesOwedTo(FEE_SPLIT) is nonzero, and SponsoredPrize.tick() while the prize is active, Hot and not atFloor.
+# SPONSOR_OFFER and SHAPES add the same fee step for the standing offer: Shapes.withdrawFees(SPONSOR_OFFER) when owed,
+# and tick(id) for every deal whose phase is Hot and not atFloor.
 # LOCAL_VRF=1 runs `script/local.sh fulfill` at the start of every pass (anvil only).
 # WALLET_MODE=anvil sends with --unlocked --from $KEEPER. WALLET_MODE=keystore sends with
 # --account $KEYSTORE_ACCOUNT and --password-file $KEYSTORE_PASSWORD_FILE (shell only, never a key in argv).
@@ -28,14 +32,14 @@ ROTATE_AFTER=0
 LAST_DATA=
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
-# send <label> <event topic or ""> <signature> [args...]: simulate with eth_call, then send.
+# send <label> <event topic or ""> <signature> [args...]: simulate with eth_call, then send to $TARGET (default $POOL).
 send() {
-  local label=$1 topic=$2; shift 2
-  if ! cast call --rpc-url "$RPC_URL" --from "$KEEPER" "$POOL" "$@" >/dev/null 2>&1; then
+  local label=$1 topic=$2 to=${TARGET:-$POOL}; shift 2
+  if ! cast call --rpc-url "$RPC_URL" --from "$KEEPER" "$to" "$@" >/dev/null 2>&1; then
     log "$label skipped: simulation reverts"; return 0
   fi
   local out
-  if ! out=$(cast send --json --rpc-url "$RPC_URL" "${WALLET[@]}" "$POOL" "$@" 2>&1); then
+  if ! out=$(cast send --json --rpc-url "$RPC_URL" "${WALLET[@]}" "$to" "$@" 2>&1); then
     log "$label failed: $(tr '\n' ' ' <<<"$out" | cut -c1-200)"; return 0
   fi
   local tx gas refund=n/a data
@@ -71,6 +75,32 @@ pass() {
   cash=$(cast call --rpc-url "$RPC_URL" "$POOL" 'cash()(uint256)' | awk '{print $1}')
   if [[ "$cash" != "0" ]] && cast call --rpc-url "$RPC_URL" "$POOL" 'claimQueue(uint256)(address,uint64,uint256)' "$head" >/dev/null 2>&1; then
     send "payClaims head=$head" "" 'payClaims()'
+  fi
+  if [[ -n "${SPONSOR_PRIZE:-}" && -n "${SHAPES:-}" && -n "${FEE_SPLIT:-}" ]]; then
+    local fees
+    fees=$(cast call --rpc-url "$RPC_URL" "$SHAPES" 'feesOwedTo(address)(uint256)' "$FEE_SPLIT" | awk '{print $1}')
+    [[ "$fees" == "0" ]] || TARGET=$SHAPES send "withdrawFees($FEE_SPLIT) pendingWei=$fees" "" 'withdrawFees(address)' "$FEE_SPLIT"
+    # phase() is 1 in Hot. tick() does nothing in Parked, after a capture or once atFloor() is true.
+    if [[ "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'active()(bool)')" == "true" \
+       && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'atFloor()(bool)')" == "false" \
+       && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_PRIZE" 'phase()(uint8)')" == "1" ]]; then
+      TARGET=$SPONSOR_PRIZE send "tick" "" 'tick()'
+    fi
+  fi
+  if [[ -n "${SPONSOR_OFFER:-}" && -n "${SHAPES:-}" ]]; then
+    local ofees n id deal
+    ofees=$(cast call --rpc-url "$RPC_URL" "$SHAPES" 'feesOwedTo(address)(uint256)' "$SPONSOR_OFFER" | awk '{print $1}')
+    [[ "$ofees" == "0" ]] || TARGET=$SHAPES send "withdrawFees($SPONSOR_OFFER) pendingWei=$ofees" "" 'withdrawFees(address)' "$SPONSOR_OFFER"
+    # phase(id) is 1 in Hot. deal(id) is a static struct of 17 words; word 13 is atFloor.
+    n=$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'dealCount()(uint256)' | awk '{print $1}')
+    for ((id = 0; id < n; id++)); do
+      deal=$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'deal(uint256)' "$id")
+      if [[ "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'active(uint256)(bool)' "$id")" == "true" \
+         && "$(cast call --rpc-url "$RPC_URL" "$SPONSOR_OFFER" 'phase(uint256)(uint8)' "$id")" == "1" \
+         && "${deal:$((2 + 64 * 13 + 63)):1}" == "0" ]]; then
+        TARGET=$SPONSOR_OFFER send "tick($id)" "" 'tick(uint256)' "$id"
+      fi
+    done
   fi
 }
 
