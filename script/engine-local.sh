@@ -52,10 +52,12 @@ play() {
   local n="${1:-20}" pool lens fwa treasury
   pool=$(jq -r .pool "$RECORD"); lens=$(jq -r .lens "$RECORD"); fwa=$(jq -r .fwaPool "$RECORD"); treasury=$(jq -r .treasury "$RECORD")
   for (( i = 0; i < n; i++ )); do
-    read -r fee _ total < <(call "$fwa" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 | num | tr '\n' ' ')
+    read -r fee _ total <<<"$(call "$fwa" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 | num | tr '\n' ' ')"
     slip=$(call "$fwa" 'selectionSlippageBps()(uint16)' | num); ver=$(call "$fwa" 'inventoryVersion()(uint256)' | num)
     now=$(cast block --rpc-url "$RPC_URL" latest --field timestamp)
-    send --from "$PLAYER" --value "$total" "$pool" 'acquire(address,uint256,uint256,uint256,uint256,uint256)' "$PLAYER" "$fee" 0 "$slip" "$ver" $(( now + 3600 ))
+    # The FWA VRF fee is priced at tx.gasprice, which an eth_call quote sees as 0: send 0.01 ETH extra;
+    # the pool refunds overpayment.
+    send --from "$PLAYER" --value "$(echo "$total + 10000000000000000" | bc)" "$pool" 'acquire(address,uint256,uint256,uint256,uint256,uint256)' "$PLAYER" "$fee" 0 "$slip" "$ver" $(( now + 3600 ))
     fulfill
     send --from "$KEEPER" "$pool" 'settle(uint256)' 20
   done

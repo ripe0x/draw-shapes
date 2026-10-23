@@ -44,17 +44,17 @@ settlement, replacement, GRAIL merges and exit (thousands of lines already teste
 
 **Why:** In every scenario the treasury reserve was never needed to refill the pool (0 ETH refilled at
 p90 across all stress rows), and the extra capital of a 25 or 30 ETH round only enlarges the opening
-GRAIL fund, which made no measurable difference within a year once trading boosts the GRAIL (wins 11 vs
-10 vs 11, largest win 25 ETH in each). Founders reach 1.0x sooner with less capital at risk.
+GRAIL fund, which made no measurable difference within a year once trading boosts the GRAIL (wins 11, 10
+and 10 a year, largest win 25 ETH in each). Founders reach 1.0x sooner with less capital at risk.
 
 **Tradeoff:** A smaller opening GRAIL fund (9.5 ETH vs 14.5 ETH): the opening five (5 ETH) plus four
 1 ETH pieces, instead of enough for a 10 ETH GRAIL within hours. Founders' maximum payout is 24 ETH
 instead of 30 ETH.
 
-**Example:** 100 draws and 5 ETH of trading a day: 1.0x at day 113 for 20 ETH, day 140 for 25 ETH,
-day 168 for 30 ETH; game earnings 24.2 / 23.9 / 24.1 ETH a year.
+**Example:** 100 draws and 5 ETH of trading a day: 1.0x at day 107 for 20 ETH, day 133 for 25 ETH,
+day 158 for 30 ETH; game earnings 32.2 / 32.6 / 32.7 ETH a year; GRAIL wins 11 / 10 / 10.
 
-**Alternative rejected:** 25 ETH. Same game, 5 ETH more founder capital at risk, 27 days slower to 1.0x.
+**Alternative rejected:** 25 ETH. Same game, 5 ETH more founder capital at risk, 26 days slower to 1.0x.
 The deploy path takes any target (`ROUND_TARGET_WEI`), so the owner can choose 25 without code changes.
 
 **Where:** `script/env/engine.mainnet.env`, `script/EngineDeployer.sol` (`_treasuryConfig`).
@@ -69,15 +69,16 @@ The deploy path takes any target (`ROUND_TARGET_WEI`), so the owner can choose 2
 GRAIL fund, of which 5.005 ETH forms the 5 ETH opening GRAIL at `open()`.
 
 **Why:** 6 ETH is the board depth that keeps a ticket near 0.02 ETH while leaving the GRAIL meaningful
-odds (D8 table: 3.5 ETH pool lifts the ticket to 0.0217, 14 ETH cuts GRAIL wins to 4 a year). A 4 ETH
+odds (model: a 3.5 ETH pool lifts the ticket to 0.0214, a 9 ETH pool cuts GRAIL wins to 6 a year). A 4 ETH
 reserve covers two thirds of the pool's NAV, against a modeled worst drawdown that never reached the
 80 percent refill line.
 
 **Tradeoff:** Founder capital in the GRAIL fund is prize money: if the GRAIL is won it is gone, and only
 an unwon GRAIL fund returns to founders in a wind-down.
 
-**Example:** Fork, block 26,240,000: after activation and `open()` the board listed 150 items, NAV
-5.736 ETH (0.264 ETH of opening mint fees), one 5 ETH GRAIL listed, quote 0.01825 ETH per draw.
+**Example:** Fork, block 26,240,000, final launch values: after activation and `open()` the board
+listed 168 items, NAV 5.743 ETH (0.257 ETH of opening mint fees), one 5 ETH GRAIL listed, quote
+0.016934 ETH per draw (VRF fee 0).
 
 **Alternative rejected:** Holding 13.5 ETH as reserve (the 25 ETH first draft): idle, never touched in
 any simulated year, exactly the "cash under a discretionary reserve label" the brief warns against.
@@ -92,13 +93,13 @@ and opening), modeled (sizing).
 **Decision:** 1.2x (`capBps` 12,000), a ceiling on cumulative payments including principal, pro rata,
 pull claims, not guaranteed.
 
-**Why:** At the base case the cap is reached in about 5 months; 1.3x adds 15 days of diverted cash flow
-for 2.5 ETH more per 25 ETH; 1.1x pays too little for risk capital that can lose its GRAIL share and
+**Why:** At the base case the cap is reached in about 4 months; 1.3x adds 10 days of diverted cash flow
+for 2 ETH more per 20 ETH; 1.1x pays too little for risk capital that can lose its GRAIL share and
 depends on unproven demand.
 
-**Tradeoff:** Each 0.1x costs coin buybacks and prizes roughly 2.5 ETH per 25 ETH raised.
+**Tradeoff:** Each 0.1x costs coin buybacks and prizes roughly 2 ETH per 20 ETH raised.
 
-**Example:** 25 ETH, 100 draws, 5 ETH trading: cap reached day 155 (1.1x), 168 (1.2x), 183 (1.3x).
+**Example:** 20 ETH, 100 draws, 5 ETH trading: cap reached day 117 (1.1x), 128 (1.2x), 138 (1.3x).
 
 **Alternative rejected:** 1.3x, which delays the switch to full buybacks without a measurable recovery
 benefit at low volumes (none reach 1.0x at 10 draws and no trading under any cap).
@@ -114,15 +115,15 @@ unresolved (D25).
 (and the sponsor share), game earnings 100 percent to buybacks.
 
 **Why:** Founders are paid from both flows, so a working game with dead trading still repays them (300
-draws a day, no trading: cap reached day 269) and a dead game with live trading also repays them (no
-draws, 5 ETH trading: day 170). Raising either share speeds repayment modestly and costs prizes or
+draws a day, no trading: cap reached day 182) and a dead game with live trading also repays them (no
+draws, 5 ETH trading: 1.0x at day 136). Raising either share speeds repayment modestly and costs prizes or
 burns one for one; lowering them extends the founder term by months.
 
 **Tradeoff:** While founders are owed, prizes get 35 percent of net trading receipts and buybacks 50
 percent of earnings.
 
-**Example:** 100 draws, 5 ETH trading: trading 50 percent gives 1.0x at day 172, 65 percent day 140,
-80 percent day 118; earnings 25 / 50 / 75 percent give day 154 / 140 / 130.
+**Example:** 100 draws, 5 ETH trading: trading 50 percent gives 1.0x at day 129, 65 percent day 107,
+80 percent day 90; earnings 25 / 50 / 75 percent give day 120 / 107 / 97.
 
 **Alternative rejected:** Founders paid only from trading receipts (the earlier proposal): with 0 ETH
 trading founders would receive nothing at any draw volume.
@@ -143,11 +144,12 @@ anything is distributed.
 half of the edge, keeper refunds (maintenance share) and the GRAIL feed before premium accrues to NAV.
 New financing raises `basis`, so it is never earnings.
 
-**Tradeoff:** Distributions start late: the 0.264 ETH of opening mint fees took about 600 fork draws to
-recover before the first earnings.
+**Tradeoff:** Distributions start late: the opening mint fees (0.257 ETH) are earned back first; on the
+fork the first harvestable earnings appeared after 200 to 700 draws depending on the draw sequence.
 
-**Example:** Fork, 1,050 draws: NAV 5.736 to 6.070 ETH, 0.070 ETH harvested as earnings, 50 percent to
-founders. Model: about 0.00066 ETH of earnings per draw (2.9 percent of the ticket).
+**Example:** Fork, premium 200 draft, 1,050 draws: NAV 5.736 to 6.070 ETH, 0.070 ETH harvested, 50
+percent to founders. Model at launch values: about 0.00088 ETH of earnings per draw (4.3 percent of a
+0.0203 ETH ticket).
 
 **Alternative rejected:** Counting the premium share per capture as earnings. It ignores write-offs,
 negative margin carries and the opening mint fee loss.
@@ -162,15 +164,15 @@ negative margin carries and the opening mint fee loss.
 pool maintenance below 0.15 ETH (back to 0.5 ETH) and ordinary NAV below 80 percent of the pool target
 (back to the target). Maintenance subsidy that earnings have not repaid is capped at 4 x 0.5 ETH.
 
-**Why:** At 30 gwei the keeper refunds of listing replacements exceed the maintenance share; without the
-cap the reserve drained into gas and the coverage-first refill then took every receipt, paying founders
-0.29 ETH in a year. With the cap founders were paid in full by day 179.
+**Why:** A listed item costs about 1M gas (measured, D28). Above about 0.5 gwei keeper refunds exceed the
+maintenance share; without the cap the reserve drained into gas and the coverage-first refill then took
+every receipt (first draft: founders paid 0.29 ETH in a year). With the cap founders are paid in full at
+1, 5 and 30 gwei (1.0x by day 139 to 145).
 
 **Tradeoff:** In a sustained high gas regime keepers stop being refunded once the subsidy cap binds. The
 owner's remedy is a higher `maintenanceBps` through `poolCall(setFeeSplit)` (premium floor enforced).
 
-**Example:** Stress row "high gas 30 gwei": founders 30.00 ETH, 1.0x at day 179, lowest reserve 2.71
-ETH (p10).
+**Example:** Stress row "gas 30 gwei": founders 24.00 ETH, 1.0x at day 145, lowest reserve 2.68 ETH (p10).
 
 **Alternative rejected:** An uncapped subsidy (starves founders) or no subsidy (the board stops
 replenishing whenever gas spikes).
@@ -205,35 +207,39 @@ and leaves the profit locked as "reserve" all the same.
 
 **Decision:** Move 12 points from packs to the 0.01 Shape: 50 / 22 / 13 / 10 / 4 / 1.
 
-**Why:** The ticket falls from 0.0228 to 0.0204 ETH and the player's expected return stays at 86.9
-percent; creator mint fees fall 11 percent because fewer multi-Shape packs are replaced.
+**Why:** The ticket falls from 0.0226 to 0.0203 ETH (the brief targets below 0.02) and the player's
+expected return is unchanged (85.4 vs 85.3 percent); creator mint fees fall 11 percent because fewer
+multi-Shape packs are replaced.
 
-**Tradeoff:** Game earnings fall about 13 percent (27.6 to 23.9 ETH a year at 100 draws), and GRAIL wins
-fall from 12 to 10 a year (cheaper tickets, fewer pulls of value).
+**Tradeoff:** Game earnings fall about 12 percent (36.8 to 32.2 ETH a year at 100 draws).
 
 **Example:** Ordinary mix table in `docs/ECONOMIC_VALIDATION.md`.
 
-**Alternative rejected:** "No 3-packs" 50/30/0/14/5/1, equal on ticket (0.0203) and return (87.3) but
-removes the 0.03 outcome players see as a middle prize; "heavier top" 30/25/20/16/7/2 raises the ticket
-to 0.0272.
+**Alternative rejected:** "No 3-packs" 50/30/0/14/5/1, equal on ticket but removes the 0.03 middle
+prize; "heavier top" 30/25/20/16/7/2 raises the ticket to 0.027.
 
 **Where:** `EngineDeployer._mix`. **Confidence:** modeled.
 
-## D10. Fee split and premium floor
+## D10. Fee split: premium 300 bps, floor 200
 
 **Question:** Keep premium 200 / maintenance 100 / feed 400 bps?
 
-**Decision:** Keep it, and let the treasury refuse any `setFeeSplit` with `premiumBps` below 200.
+**Decision:** Premium 300, maintenance 100, feed 400. The treasury refuses any `setFeeSplit` with
+`premiumBps` below 200.
 
-**Why:** Premium 300 would add about 9 ETH of earnings a year at 100 draws for 0.6 points of player
-return; the owner set 200 deliberately for the player proposition. The floor stops the owner from
-zeroing game earnings, which feed founders and buybacks.
+**Why:** In the engine the premium is the game's earnings, which pay founders and buybacks. 300 bps adds
+37 percent to earnings for a 0.5 percent higher ticket, with no measurable change in the player's
+expected return across 12 seeds. The floor stops the owner from zeroing earnings.
 
-**Tradeoff:** Lower earnings than 300 or 400 bps.
+**Tradeoff:** Ordinary list prices rise about 1 percent of backing, so the true player cost is about one
+point of return even where 12 seeds cannot resolve it.
 
-**Example:** Premium 200 / 300 / 400: earnings 23.9 / 33.1 / 41.8 ETH; return 86.9 / 86.3 / 85.1 percent.
+**Example:** Premium 200 / 300 / 400 at 100 draws: earnings 23.5 / 32.2 / 41.0 ETH a year; ticket
+0.0202 / 0.0203 / 0.0205; return 85.2 / 85.3 / 85.6 percent (within seed noise); founders at 1.0x on day
+113 / 107 / 101.
 
-**Alternative rejected:** 400 bps: faster repayment by 15 days, two points of player return lost.
+**Alternative rejected:** 400 bps: a further 6 days to 1.0x for another point of player return; and
+200 (the depositor-era value), which leaves a third of the engine's earnings on the table.
 
 **Where:** `EngineDeployer._poolParams`, `EngineTreasury.poolCall`. **Confidence:** modeled.
 
@@ -337,15 +343,17 @@ at most 50 percent of the trading receipts left after founders; an early win end
 keeps what was paid); reclaim after 30 days only while unwon, short of the cap and with no draw pending;
 reaching the cap hands the NFT to the treasury. Ticket proceeds of a win go to the GRAIL fund.
 
-**Why:** The previous design parked the punk at 30 ETH until fully paid, which made it nearly
-unwinnable while the sponsor was paid (2 of 12 simulated years saw a win). At 8 ETH 3 of 12 years see a
-win at 100 draws a day and every year at 300 draws a day.
+**Why:** The previous design parked the punk at 30 ETH until fully paid: about one draw in 320,000 on this
+board, a decoration rather than a prize. Odds scale with 1 / list price, so 8 ETH is about four times as
+winnable.
 
 **Tradeoff:** The sponsor carries real risk of losing the NFT early; their compensation must price that.
 The game never owes the NFT's market value, and its value is never counted as backing.
 
-**Example:** Sponsor table: listed at 8 ETH, 100 draws, 5 ETH trading, cap 36 ETH: sponsor paid 28.5 ETH
-(median), won in 3 of 12 years.
+**Example:** Sponsor table, cap 36 ETH: at 100 draws and 5 ETH trading the sponsor is paid 31.6 ETH
+(median) in a year and the punk is won in 2 or 3 of 12 years whether listed at 8 or 30 ETH (too few
+draws to separate them); at 300 draws and 25 ETH trading the 8 ETH punk is won in 8 of 12 years (4 after
+the sponsor was paid in full). Fork: one draw in 85,574 at 8 ETH on the opening board.
 
 **Alternative rejected:** `SponsoredPrize` with Shapes mint fees as compensation (`FeeSplit`): redirects
 the creator's mint fee, which the brief forbids; `SponsorOffer` (standing multi-sponsor offer): more
@@ -460,10 +468,42 @@ See `docs/V4_HOOK_OPPORTUNITIES.md`. **Confidence:** verified (interfaces), mode
 ## D26. Price of a draw
 
 **Decision:** Report three numbers separately: FWA fee (the base game price including FWA's 5 percent
-edge), VRF fee (0 at block 26,240,000, read live), and wallet gas (not included anywhere).
+edge), VRF fee (priced at the transaction's gas price: `1,500,000 gas x 1.3 x tx.gasprice`, so quotes
+must be read with the intended gas price), and wallet gas (not included anywhere).
 
-**Example:** Fork at opening: fee 0.018250 ETH, VRF 0, total 0.018250 ETH. Model average over a year:
-0.0204 ETH, rising as GRAIL items join the board (each listed GRAIL item lifts the harmonic mean).
+**Example:** Fork at opening with launch values: fee 0.016934 ETH. VRF fee 0.000096 ETH at the 0.049 gwei
+gas price of the live read, 0.000195 ETH at 0.1 gwei, 0.00195 ETH at 1 gwei. Total at 0.1 gwei:
+0.017129 ETH. Model
+average over a year: 0.0203 ETH, rising as GRAIL items join the board (each listed GRAIL item lifts the
+harmonic mean).
 
 **Confidence:** verified (opening quote), modeled (year average). The brief's "below 0.02 ETH" holds at
-opening and is about 2 percent above it on average over the modeled year.
+opening (fee plus VRF up to about 1.5 gwei) and the FWA fee alone is about 1.5 percent above it on
+average over the modeled year, before VRF and wallet gas.
+
+## D27. Listing batches sized for the EIP-7825 transaction gas cap
+
+**Question:** Mainnet now rejects transactions above 16,777,216 gas. Do the pool's batches fit?
+
+**Decision:** No; they were reduced. `open`, `settle` and `rotate` list at most 12 items (was 20, 25 and
+20), launch `batchMin` 12.
+
+**Why:** Measured on the fork, a settle listing 25 items used 24.3M gas and an `open()` 13.5M; the anvil
+rehearsal (Fusaka rules) left those transactions pending forever. After the change the worst cases are
+settle 12.4M, open 10.8M, wind-down step 6.7M, GRAIL merge 3.5M (`EngineGas.t.sol`).
+
+**Tradeoff:** More, smaller keeper transactions; the opening board takes about 15 `open`/`settle` calls.
+
+**Where:** `src/Pool.sol`, `src/PoolStorage.sol`. **Confidence:** verified.
+
+## D28. Keeper economics at the measured gas cost
+
+**Decision:** Model and document keeper costs at the measured ~1,000,000 gas per listed item (the lab
+assumed 150,000). Keep `maintenanceBps` 100 at launch.
+
+**Why:** At the base fee observed while building (0.01 to 0.06 gwei) a replacement costs at most 0.00006
+ETH, well inside the maintenance share. Above about 0.5 gwei it is not; D7's subsidy cap then protects
+founders and the owner raises `maintenanceBps`.
+
+**Where:** `sim/engine.mjs` (`GAS_PER_ITEM`), `docs/RUNBOOK.md` (Watch). **Confidence:** verified (gas),
+modeled (economics).
