@@ -300,3 +300,11 @@
 .row-actions {
   margin-top: 16px;
 }
+
+/* Headline prizes grid (player views). Mirrors .two-col. */
+.headline-prizes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 28px;
+  margin: 28px 0;
+}

@@ -23,10 +23,13 @@ const emit = (file, constName, abi, source) => {
 
 emit("pool.ts", "poolAbi", abiOf("IPool"), "out/IPool.sol/IPool.json");
 emit("lens.ts", "lensAbi", abiOf("Lens"), "out/Lens.sol/Lens.json");
+emit("treasury.ts", "treasuryAbi", abiOf("EngineTreasury"), "out/EngineTreasury.sol/EngineTreasury.json");
+emit("round.ts", "roundAbi", abiOf("FoundingRound"), "out/FoundingRound.sol/FoundingRound.json");
+emit("sponsorship.ts", "sponsorshipAbi", abiOf("PrizeSponsorship"), "out/PrizeSponsorship.sol/PrizeSponsorship.json");
 emit(
   "external.ts",
   "fwaCloneAbi",
-  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion", "quoteAcquisitionPrice", "acquisitions", "listings", "nextListingId", "activeListingCount", "processAcquisitions"]),
+  keep(abiOf("IFWAClone"), ["selectionSlippageBps", "inventoryVersion", "quoteAcquisitionPrice", "acquisitions", "listings", "nextListingId", "activeListingCount", "processAcquisitions", "totalWeight", "acquisitionRefundCredit", "withdrawAcquisitionRefund"]),
   "out/IFWAClone.sol/IFWAClone.json",
 );
 // The Shapes fragment is appended to the same file.
@@ -41,10 +44,33 @@ const tokenURI = {
 const shapes = [...keep(abiOf("IShapes"), ["balanceOf", "ownerOf", "backingOf", "isApprovedForAll", "setApprovalForAll"]), tokenURI];
 const packs = [...keep(abiOf("IShapePacks"), ["valueOf", "contentsOf"]), tokenURI];
 const file = join(outDir, "external.ts");
+// Minimal ERC-20 view fragment for the ENGINE coin (the Artcoins token exposes no name/symbol/decimals
+// in the repo interface, but every ERC-20 declares them). Hand-written, not from an artifact.
+const view = (name, type) => ({
+  type: "function",
+  name,
+  inputs: [],
+  outputs: [{ name: "", type, internalType: type }],
+  stateMutability: "view",
+});
+const erc20 = [
+  view("name", "string"),
+  view("symbol", "string"),
+  view("decimals", "uint8"),
+  view("totalSupply", "uint256"),
+  {
+    type: "function",
+    name: "balanceOf",
+    inputs: [{ name: "account", type: "address", internalType: "address" }],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+];
 writeFileSync(
   file,
   readFileSync(file, "utf8") +
     `\n// From out/IShapes.sol/IShapes.json.\nexport const shapesAbi = [\n${shapes.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n` +
-    `\n// From out/IShapePacks.sol/IShapePacks.json.\nexport const packsAbi = [\n${packs.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n`,
+    `\n// From out/IShapePacks.sol/IShapePacks.json.\nexport const packsAbi = [\n${packs.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n` +
+    `\n// Minimal ERC-20 view fragment, hand-written in web/scripts/abi.mjs.\nexport const erc20Abi = [\n${erc20.map((e) => `  ${JSON.stringify(e)},`).join("\n")}\n] as const;\n`,
 );
-console.log(`external.ts: shapes ${shapes.length} entries`);
+console.log(`external.ts: shapes ${shapes.length} entries, erc20 ${erc20.length} entries`);

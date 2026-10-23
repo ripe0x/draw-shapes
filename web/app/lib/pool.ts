@@ -33,6 +33,7 @@ export function usePool() {
       { ...lens, functionName: "admission" },
       { ...lens, functionName: "board" },
       { ...lens, functionName: "grail" },
+      { ...lens, functionName: "foreign" },
       { ...lens, functionName: "reopenStatus" },
       { ...lens, functionName: "settleDue" },
       { ...lens, functionName: "rotateDue" },
@@ -46,11 +47,12 @@ export function usePool() {
       { ...pool, functionName: "maintenanceReceivable" },
       { ...pool, functionName: "listedCount" },
       { ...pool, functionName: "heldCount" },
+      { ...pool, functionName: "boardNavCap" },
     ],
     query: {
       enabled: dep.present,
       refetchInterval: POLL_MS,
-      select: ([nav, sharePrice, params, admission, board, grail, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount]) => ({
+      select: ([nav, sharePrice, params, admission, board, grail, foreign, reopen, settleDue, rotateDue, position, claims, totalShares, cash, backing, receivable, maintenance, maintenanceReceivable, listedCount, heldCount, boardNavCap]) => ({
         nav,
         sharePrice,
         params,
@@ -59,6 +61,8 @@ export function usePool() {
         board,
         /** GRAIL fund, cycle, parameters and every GRAIL item. */
         grail,
+        /** Foreign listings (sponsored NFT, treasury collectibles) with FWA weight share. */
+        foreign,
         reopen,
         settleDue,
         rotateDue,
@@ -73,9 +77,33 @@ export function usePool() {
         maintenanceReceivable,
         listedCount,
         heldCount,
+        /** The cap FWA weighting counts ordinary NAV against (engine `poolTarget`). */
+        boardNavCap,
       }),
     },
   });
+}
+
+/** FWA `totalWeight()` of the pool's FWA clone, polled. Needed for exact "1 in N" odds that the
+ *  Lens bps share rounds to zero for rare items. */
+export function useFwaTotalWeight() {
+  const dep = useDeployment();
+  return useReadContracts({
+    allowFailure: false,
+    contracts: [{ chainId: dep.chainId, address: dep.fwaPool ?? zeroAddress, abi: fwaCloneAbi, functionName: "totalWeight" }],
+    query: { enabled: dep.present && !!dep.fwaPool, refetchInterval: POLL_MS, select: ([w]) => w },
+  });
+}
+
+/** Exact "1 in N draws" for a listing of list price `listPriceWei`, from FWA's raw weights
+ *  (weight = 1e36 / listPrice, probability = weight / totalWeight). Returns undefined when it cannot
+ *  be computed (no weight yet, or the item is unlisted). */
+export function oneInFromWeight(listPriceWei: bigint, totalWeight: bigint | undefined): string | undefined {
+  if (!totalWeight || totalWeight === 0n || listPriceWei === 0n) return undefined;
+  const weight = weightOf(listPriceWei);
+  if (weight === 0n) return undefined;
+  const n = Number(totalWeight) / Number(weight);
+  return `1 in ${Math.round(n).toLocaleString("en-US")}`;
 }
 
 /** Lens `claims()`: the unpaid claim queue from `claimHead`, read on the pages that list it. */

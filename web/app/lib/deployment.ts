@@ -12,6 +12,16 @@ export interface Deployment {
   drawPacks: Address;
   /** Absent until the admin creates the FWA pool. */
   fwaPool?: Address;
+  // Engine contracts. Each is absent when its record key is missing or the zero address, so a page
+  // that needs one renders the "not deployed yet" state rather than reading a dead address.
+  treasury?: Address;
+  round?: Address;
+  coin?: Address;
+  sponsorship?: Address;
+  poolManager?: Address;
+  adminModule?: Address;
+  listingModule?: Address;
+  gitCommit?: string;
   openingDeadlineAt?: number;
   /** Block the pool was deployed in; event scans start here. */
   blockNumber: number;
@@ -24,11 +34,15 @@ function missing(chainId: number): Deployment {
   return { present: false, chainId, pool: ZERO, lens: ZERO, shapes: ZERO, drawPacks: ZERO, blockNumber: 0 };
 }
 
+/** A record address, or undefined when it is missing or the zero placeholder. */
+const addr = (v: unknown): Address | undefined => (typeof v === "string" && v !== ZERO ? (v as Address) : undefined);
+
 /**
  * `NEXT_PUBLIC_DEPLOYMENT` is a JSON object or a path (relative to `web/`) to a record written by
- * `script/deploy.sh`. Without it the app reads `../deployments/<NEXT_PUBLIC_CHAIN_ID>.json`
- * (default 31337; 11155111 and 1 are the other chains). Read per request, so a record written
- * after the build is picked up.
+ * `script/deploy.sh` or `script/EngineDeployer`. Without it the app reads
+ * `../deployments/<NEXT_PUBLIC_CHAIN_ID>.json` (default 31337; 11155111 and 1 are the other chains).
+ * Read per request, so a record written after the build is picked up. The engine record adds the
+ * treasury, round, coin, sponsorship and module keys; the older pool-only record still works.
  */
 export function getDeployment(): Deployment {
   const source = process.env.NEXT_PUBLIC_DEPLOYMENT?.trim();
@@ -43,7 +57,6 @@ export function getDeployment(): Deployment {
     const text = source?.startsWith("{") ? source : readFileSync(/*turbopackIgnore: true*/ file, "utf8");
     const r = JSON.parse(text);
     if (!r.pool || !r.lens) return missing(chainId);
-    const fwaPool = r.fwaPool && r.fwaPool !== ZERO ? (r.fwaPool as Address) : undefined;
     return {
       present: true,
       chainId: Number(r.chainId ?? chainId),
@@ -51,7 +64,15 @@ export function getDeployment(): Deployment {
       lens: r.lens,
       shapes: r.shapes,
       drawPacks: r.drawPacks,
-      fwaPool,
+      fwaPool: addr(r.fwaPool),
+      treasury: addr(r.treasury),
+      round: addr(r.round),
+      coin: addr(r.coin),
+      sponsorship: addr(r.sponsorship),
+      poolManager: addr(r.poolManager),
+      adminModule: addr(r.adminModule),
+      listingModule: addr(r.listingModule),
+      gitCommit: typeof r.gitCommit === "string" ? r.gitCommit : undefined,
       blockNumber: Number(r.blockNumber ?? 0),
       openingDeadlineAt: r.openingDeadlineAt ? Number(r.openingDeadlineAt) : undefined,
     };

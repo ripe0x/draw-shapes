@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { HeadlinePrize } from "../components/HeadlinePrize";
 import { OddsGlance } from "../components/OddsGlance";
 import { PayWithShapes } from "../components/PayWithShapes";
 import { PullCard } from "../components/PullCard";
 import { Pulls } from "../components/Pulls";
 import { PullTicket } from "../components/PullTicket";
+import { Refunds } from "../components/Refunds";
 
 /** `/pull`: the pull card with batch size and price, pay with Shapes, the price breakdown, what a pull
  *  can draw, and the wallet's pulls with their reveal. */
@@ -20,6 +22,7 @@ export default function PullPage() {
           inverse of its list price, and delivers it to your wallet.
         </p>
       </section>
+      <HeadlinePrize />
       <section className="vault-section two-col">
         <div>
           <div className="card">
@@ -27,6 +30,7 @@ export default function PullPage() {
             <PullCard variant="panel" count={count} onCount={setCount} />
           </div>
           <PayWithShapes count={count} />
+          <Refunds />
         </div>
         <div>
           <PullTicket count={count} />

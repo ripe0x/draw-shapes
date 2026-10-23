@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { drawOdds, usePool } from "./lib/pool";
-import { eth, pct } from "./lib/format";
+import { eth } from "./lib/format";
 import { CardFan } from "./components/CardFan";
 import { GrailBoard } from "./components/GrailBoard";
+import { HeadlinePrize } from "./components/HeadlinePrize";
 import { OddsGlance } from "./components/OddsGlance";
 import { PoolGrid } from "./components/PoolGrid";
 import { PullCard } from "./components/PullCard";
@@ -33,6 +34,8 @@ export default function Landing() {
         <CardFan />
         <PullCard variant="hero" />
       </section>
+
+      <HeadlinePrize />
 
       <div className="landing-facts">
         <div className="landing-fact">
@@ -70,15 +73,14 @@ export default function Landing() {
 
       <div className="landing-supply-band">
         <div>
-          <div className="landing-supply-title">Fund the board</div>
+          <div className="landing-supply-title">Fund the engine</div>
           <div className="landing-supply-sub">
-            Depositors own ordinary NAV and keep the premium share of every settled pull&apos;s margin
-            {pool ? `: a ${pct(pool.params.feeSplit.premiumBps)} markup on each item's backing in its list price` : ""}. A deposit mints shares
-            at NAV after an entry contribution to the GRAIL fund, and a withdrawal pays at NAV.
+            Founders fund a conditional escrow that becomes the game&apos;s opening bankroll. They are credited up to a capped
+            share of coin-trading receipts and game earnings, never guaranteed. Public deposits are closed.
           </div>
         </div>
-        <Link className="landing-supply-link" href="/deposit">
-          Deposit ETH
+        <Link className="landing-supply-link" href="/fund">
+          Fund the engine
         </Link>
       </div>
 

@@ -12,36 +12,27 @@ export function PullTicket({ count }: { count: number }) {
   const odds = drawOdds(pool.board, pool.grail);
   const atLeastTicketBps = odds.rows.filter((r) => r.backingWei >= q.fee).reduce((sum, r) => sum + r.chanceBps, 0n);
   const returnBps = q.fee > 0n ? (odds.averageBackingWei * 10_000n) / q.fee : 0n;
-  const s = pool.params.feeSplit;
   return (
     <div className="card">
-      <h3 className="vault-h2">Price</h3>
-      <Kv label="Ticket per pull" value={<Eth wei={q.fee} digits={5} />} strong />
+      <h3 className="vault-h2">Price of a draw</h3>
+      <Kv label="FWA fee per pull" value={<Eth wei={q.fee} digits={5} />} strong />
       <Kv label="VRF fee per pull" value={<Eth wei={q.vrf} digits={5} />} />
       <Kv label={`Total for ${count}`} value={<Eth wei={q.total} digits={5} />} strong />
       <Kv label="Sent with the pull, excess refunded" value={<Eth wei={sendValue(q)} digits={5} />} />
       <Kv label="VRF fee quoted at" value={`${(Number(q.gasPrice) / 1e9).toFixed(2)} gwei`} />
-
-      <h3 className="vault-h2" style={{ marginTop: 18 }}>
-        Ticket against redeemable value
-      </h3>
-      <Kv label="Average redeemable value per pull" value={<Eth wei={odds.averageBackingWei} digits={5} />} />
-      <Kv label="Average value as a share of the ticket" value={percent(returnBps)} />
-      <Kv label="Chance a draw redeems for at least the ticket" value={percent(atLeastTicketBps, 2)} />
       <p className="vault-note">
-        Ticket only: the VRF fee and gas are excluded. Each Shape and Draw Pack redeems at Shapes for its backing at face.
+        The FWA fee is the base game price and already includes FWA&apos;s edge. The VRF fee is read live and can be zero. Wallet
+        gas is extra and is never folded into these numbers, so there is no single all-in figure.
       </p>
 
       <h3 className="vault-h2" style={{ marginTop: 18 }}>
-        List price markups
+        FWA fee against redeemable value
       </h3>
-      <Kv label="Depositor premium" value={`${percent(s.premiumBps, 2)} of backing`} />
-      <Kv label="Maintenance" value={`${percent(s.maintenanceBps, 2)} of backing`} />
-      <Kv label="GRAIL feed" value={`${percent(s.feedBps, 2)} of backing`} />
+      <Kv label="Average redeemable value per pull" value={<Eth wei={odds.averageBackingWei} digits={5} />} />
+      <Kv label="Average value as a share of the fee" value={percent(returnBps)} />
+      <Kv label="Chance a draw redeems for at least the fee" value={percent(atLeastTicketBps, 2)} />
       <p className="vault-note">
-        Each list price is the item&apos;s backing plus these markups and its replacement mint fee. FWA pays the pool the ticket less half the
-        gap to the harmonic mean list price. The margin over the item&apos;s backing first repays the mint fee, then splits pro rata across
-        the three markups.
+        Each Shape and Draw Pack redeems at Shapes for its backing at face. FWA weighs each listing by the inverse of its list price.
       </p>
     </div>
   );

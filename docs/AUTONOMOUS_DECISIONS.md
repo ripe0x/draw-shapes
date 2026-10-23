@@ -432,7 +432,7 @@ review M1).
 | `SponsoredPrize` | Adapted into `PrizeSponsorship` | Kept stake, capture callback, reclaim and release; removed parking and mint fee payment; added capped trading-receipt payments and completion |
 | `SponsorOffer` | Rejected | Multi-sponsor standing offer not needed for one deal |
 | `DeploySponsor`, `DeployOffer`, sponsor env files | Rejected | Built for `FeeSplit`; replaced by `DeployEngine` step `sponsor` |
-| Sponsor web pages, punk art, `/sponsor-prev` | Partly reused in the web app (punk art); prev route dropped | |
+| Sponsor web pages, punk art, `/sponsor-prev` | Not ported | The new `/sponsor` page reads `PrizeSponsorship` directly; punk images are not rendered yet (collection and token id shown) |
 | `docs/SPONSOR.md`, `docs/PUNK_VALUE.md` | Superseded by D16 | |
 
 **Confidence:** verified.
