@@ -42,9 +42,12 @@ contract Pool is PoolBooks {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant MAX_CLAIM_ITEMS = 20;
-    uint256 internal constant MAX_LIST_PER_SETTLE = 25;
+    /// @dev A listed item costs about 1,000,000 gas (mint, pack and FWA listing; measured on the fork,
+    ///      `test/fork/engine/EngineGas.t.sol`). Batches stay well under the 16,777,216 gas
+    ///      per-transaction cap of EIP-7825.
+    uint256 internal constant MAX_LIST_PER_SETTLE = 12;
     /// @dev Queued replacements and held items listed by one `rotate`.
-    uint256 internal constant MAX_LIST_PER_ROTATE = 20;
+    uint256 internal constant MAX_LIST_PER_ROTATE = 12;
     /// @dev Listed items above `concurrency` below which `settleDue` returns `Thin`.
     uint256 internal constant THIN_MARGIN = 5;
     uint256 internal constant SETTLE_BUDGET = 3;
@@ -405,7 +408,7 @@ contract Pool is PoolBooks {
     }
 
     /// @notice Delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`,
-    ///         `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems` and `boardItems` to `listingModule` and every other call to
+    ///         `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `foreignListings`, `registerForeign`, `repriceForeign` and `withdrawForeign` to `listingModule` and every other call to
     ///         `adminModule`, and returns the module's return data or revert data.
     fallback() external payable {
         address module = adminModule;
@@ -416,6 +419,8 @@ contract Pool is PoolBooks {
                 || sig == IPool.grailReady.selector || sig == IPool.setGrail.selector
                 || sig == IPool.setGrailStep.selector || sig == IPool.setGrailTarget.selector
                 || sig == IPool.grail.selector || sig == IPool.grailItems.selector || sig == IPool.boardItems.selector
+                || sig == IPool.foreignListings.selector || sig == IPool.registerForeign.selector
+                || sig == IPool.repriceForeign.selector || sig == IPool.withdrawForeign.selector
                 || sig == IPool.rowCount.selector || sig == IPool.mixLength.selector
                 || sig == IPool.listedRowCount.selector || sig == IPool.mixRow.selector
                 || sig == IPool.batchMin.selector || sig == IPool.batchMaxAge.selector

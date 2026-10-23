@@ -17,7 +17,7 @@ fund (section 11). Depositors exit at NAV in ETH.
 | Depositor | `deposit`, `withdraw`, read position. |
 | Player | `acquire`, `acquireBatch`, `pullWithShapes`, `redeemAndDeposit`, claim FWA refunds at the FWA pool. |
 | Anyone | `settle`, `rotate`, `payClaims`, `exportStep`, `migrateHolder` on a successor. |
-| Admin | One address, transferable. `createFwaPool`, pause flags, parameter setters, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
+| Admin | One address, transferable. `createFwaPool`, pause flags, parameter setters, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`, `registerForeign`. |
 
 Shares are nontransferable. There is one admin role.
 
@@ -27,7 +27,7 @@ Shares are nontransferable. There is one admin role.
 | --- | --- |
 | `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `chooseRow` and the read-only getters of parameters, rows, queues, held Shapes and migration state to `listingModule` and every other selector to `adminModule`. |
 | `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import (including `importGrail`) and `canImport`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
-| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the setters `setGrail`, `setGrailStep` and `setGrailTarget`, and the views `grail()`, `grailItems()`, `boardItems()`, `chooseRow`, `rowCount`, `mixLength`, `listedRowCount`, `mixRow`, `heldCount`, `heldShapes`, `claimQueue`, `replacementQueue`, `oldestQueuedAt`, the parameter getters (`batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`, `reserveBps`, `listWhilePaused`, `openingDeadline`, `openingDeadlineAt`, `maxBatch`, `concurrency`, `grailProbCapBps`), `lastRefundAt`, `maintenanceReceivable`, `margin`, `mintLineOwed` and the export and import records (`exportedShares`, `exportedNav`, `importedShares`, `importedFromShares`, `migrated`, `registered`). Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
+| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the foreign listing functions `registerForeign`, `repriceForeign` and `withdrawForeign` (section 11), the view `grailReady()`, the setters `setGrail`, `setGrailStep` and `setGrailTarget`, and the views `grail()`, `grailItems()`, `foreignListings()`, `boardItems()`, `chooseRow`, `rowCount`, `mixLength`, `listedRowCount`, `mixRow`, `heldCount`, `heldShapes`, `claimQueue`, `replacementQueue`, `oldestQueuedAt`, the parameter getters (`batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`, `reserveBps`, `listWhilePaused`, `openingDeadline`, `openingDeadlineAt`, `maxBatch`, `concurrency`, `grailProbCapBps`), `lastRefundAt`, `maintenanceReceivable`, `margin`, `mintLineOwed` and the export and import records (`exportedShares`, `exportedNav`, `importedShares`, `importedFromShares`, `migrated`, `registered`). Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
 | `PoolBooks.sol`, `PoolStorage.sol` | Shared bases: settlement, harvest, margin split, row choice; storage layout, item registry, parameter validation. `interfaces/IPool.sol` holds the combined ABI, types, errors and events. |
 | `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
 | Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
@@ -37,7 +37,10 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 21,697 B, `PoolAdmin` 21,073 B, `PoolListing` 21,235 B, `Lens` 16,447 B (limit 24,576 B).
+Runtime sizes: `Pool` 23,778 B, `PoolAdmin` 24,158 B, `PoolListing` 24,400 B, `Lens` 17,848 B (limit 24,576 B).
+The engine contracts (section 17) are `EngineTreasury` 24,359 B (via_ir), `FoundingRound` 3,015 B and
+`PrizeSponsorship` 5,326 B. Every listing batch is sized for the 16,777,216 gas per-transaction cap of
+EIP-7825: one listed item costs about 1,000,000 gas, so `open`, `settle` and `rotate` list at most 12.
 
 ## 4. Buckets and invariants
 
@@ -49,6 +52,7 @@ Every wei the pool holds is in exactly one bucket.
 | `backing` | Sum of backing of ordinary Shapes and Draw Packs held or listed. |
 | `receivable` | FWA `ownerProceeds` booked and awaiting harvest. |
 | `maintenanceReceivable`, `grail.receivable` | Booked shares of `ownerProceeds`. Harvest credits them to `maintenance` and `grail.fund`. |
+| `foreignReceivable` | Booked proceeds of captured foreign listings. Harvest pays them to the controllers (section 11). |
 | `claims` | Unpaid withdrawal claims, FIFO. |
 | `maintenance` | Upkeep refunds. |
 | `grail.fund` | ETH for GRAIL piece mints. The GRAIL items (`grailItems`) hold the backing. |
@@ -91,6 +95,7 @@ Setters (admin, immediate effect, each emits `ParamSet(selector)`):
 | `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
 | `setBatch(batchMin, batchMaxAge)`, `setReplacement(surpriseBps, restoreK, bandBps)` | Both above zero. At most 10,000, 100 and 100,000. |
 | `setTip(tipWei)` | At most 0.01 ether. |
+| `setRegistrar(registrar)` | Any address. Zero clears it (section 11). |
 | `setMaxBatch(n)`, `setConcurrency(n)`, `setRotateInterval(seconds)`, `setAdmin(address)` | At most FWA's live values (`n` above zero for `setMaxBatch`). At least FWA's `inventoryChangeCooldown`. Nonzero. |
 
 Launch values: premium 200, maintenance 100, feed 400; entry fee floor 1,000,
@@ -115,7 +120,7 @@ the rest is listed on the board).
 
 - Opening: deposits open from deployment at NAV, which is pure cash, so every opening depositor receives shares 1:1.
   Pulls closed. Admin calls `createFwaPool(expectedFee)`, which starts the opening deadline. After the deadline anyone
-  calls `open()`, which enables FWA acquisitions and lists at most 20 items per call. The first call after which at
+  calls `open()`, which enables FWA acquisitions and lists at most 12 items per call. The first call after which at
   least `minItems` are listed, or which lists fewer than 20, sets Live. Once Live, the `Deep` settle trigger (section 9)
   lists the rest of the board up to `boardItems()`.
 - Live: all paths open subject to pause flags and reopen guards.
@@ -195,7 +200,9 @@ price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps +
 ## 9. Board, replacement, rotation
 
 The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The board
-depth is `boardItems() = max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`, where `meanRowCost` is the
+depth is `boardItems() = max(minItems, (nav' - nav' * reserveBps / 10_000) / meanRowCost)`, with `nav' = min(nav,
+boardNavCap)` when the admin set `boardNavCap` (`setBoardNavCap`, zero for no cap; the engine treasury sets it to its
+pool target so NAV above it stays in `cash`), where `meanRowCost` is the
 share-weighted backing plus replacement mint fee of the mix rows. Capital above the reserve goes on the board. The target
 depth of a row is `ceil(boardItems() * shareBps / 10_000)`. A row's count is its listed, held and queued items. A row
 above its target is not replaced after a capture until it is below it again; nothing is delisted when NAV falls.
@@ -213,6 +220,7 @@ the same for every capture in a batch.
    - Fulfilled GRAIL item (any entry of `grailItems`, a Shape or a Draw Pack): `grail.receivable += proceeds` and the
      item leaves `grailItems`. DeliveryRefunded: an ordinary token returns to held items and a GRAIL item stays in
      `grailItems` unlisted until the GrailStep lists it again. Any other status books nothing, and the walk advances past it.
+   - Fulfilled foreign listing: the entry leaves `foreignListings` and `foreignReceivable += proceeds` (section 11).
    - DeliveryPending: written off at once. The item leaves `backing`, its value is charged to `margin`, and no proceeds
      or replacement are booked. Owner proceeds of a delivery that completes later arrive as surplus (step 4). After a
      purchaser refund the admin recovers the token with `adminCall(recoverRefundedNFT)` and `sweep`.
@@ -244,7 +252,7 @@ mintCounts)` with one held Shape per rung that has one and a mint count for the 
 
 `settle(maxCount)` (anyone) books, harvests and calls `activateListings` when FWA holds no unsettled acquisition. When
 `settleDue()` is nonzero and the factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on, it lists at most
-`MAX_LIST_PER_SETTLE` (25) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
+`MAX_LIST_PER_SETTLE` (12) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
 and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
 held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
 replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
@@ -261,7 +269,7 @@ unless a reason holds. `lastRotateAt` moves when the call changed inventory. Rea
 `rotateDue()` returns the first reason that holds, and `None` before the spacing ends, outside Live and when no reason
 holds. A reason can hold while its work is blocked, such as Claim while FWA holds unsettled acquisitions; that call
 leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. Steps, each bounded: (1) settle and harvest; (2) pay
-claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 20 queued replacements
+claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 12 queued replacements
 and held items; (4) `activateListings` when FWA holds no unsettled acquisition and the walk is level; (5) GRAIL step: mint and merge
 (section 11); (6) refund the caller. `open()` queues each row's
 missing items against its target depth and runs step 3.
@@ -333,28 +341,84 @@ compose one 5 ETH Shape, list it at `notional = backing`. It is the first item o
 Decay, inside `settle` after the listing step and under the same listing condition, per listed item:
 `next = max(floor, notional - decayWeiPerPull * (grail.pulls - listedAtPull))`, with `floor = pieceFloorWei` for a piece
 and `floorWei` otherwise. The reprice runs when the listing is Active and `next` is at least 1 percent
-below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls
+below `notional`, and the listed GRAIL and foreign weight at `next` stays within `grailProbCapBps`. It calls
 `updatePrice` and sets `listedAtPull = grail.pulls`. There is no lift: when the cap binds, the item keeps its price.
 
 Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
 A captured intermediate does not stop the cycle; the recipe waits for new inputs.
+
+Foreign listings. A prize the pool did not mint, owned by a controller contract that holds every rule about it.
+Storage `foreignListings`: at most `MAX_FOREIGN` (8) entries of `collection`, `tokenId`, `controller`, `listingId`,
+`notional`, `lastRepriceAt`, keyed by the FWA `listingId`. A foreign item is outside `backing`, ordinary NAV and the GRAIL fund.
+- `registerForeign(collection, tokenId, controller, priceWei)`: admin or `registrar`, Live only. Transfers the
+  ERC-721 from the caller to the pool (the caller approves the pool first), approves and lists it on the FWA pool at `priceWei`, records
+  the entry and marks the token registered, so `sweep` and `importItem` refuse it. Reverts `NotLive`, `ForeignFull`,
+  `AlreadyRegistered`, `ZeroAddress` for a zero `collection` or `controller`, `PriceOutOfRange` and
+  `ProbCapExceeded`. The price needs a selection weight: `priceWei` is nonzero and at most `1e36`, so `PricingLib.weightOf`
+  is defined for it. The Active and Staged GRAIL and foreign weight plus the weight of the new listing at `priceWei`
+  stays within `grailProbCapBps` of the FWA selection weight including that listing and the Staged listings. A
+  Staged listing (made while FWA holds an unsettled acquisition) joins the FWA selection weight on activation, so
+  registers made before `activateListings` count each other.
+- `repriceForeign(listingId, priceWei)`: the entry's controller only (`NotController`), while the listing is Active
+  (`ListingNotActive`) and FWA holds no unsettled acquisition and the booking walk is level (`FwaBusy`). Calls
+  `updatePrice` and stores `notional` and `lastRepriceAt`. `priceWei` has a selection weight (`PriceOutOfRange`, as in
+  `registerForeign`) and differs from `notional` by at least 1 percent of `notional` (`RepriceTooSmall`). The entry
+  takes one reprice per `rotateInterval` (`RepriceTooSoon`); the first reprice of an entry is accepted at once, and a
+  withdrawal removes the entry with its `lastRepriceAt`. A price that raises the entry's selection weight is refused
+  (`ProbCapExceeded`) when the Active and Staged GRAIL and foreign weight at `priceWei` would pass `grailProbCapBps`
+  of the FWA selection weight. The GRAIL decay in `grailReprice` counts the Active and Staged foreign weight under the
+  same cap. Every
+  stored foreign `notional` has a selection weight, so `grailReprice` and `settle` compute the weight of every foreign entry.
+- `withdrawForeign(listingId, to)`: the entry's controller only. Withdraws the listing, transfers the token to `to`,
+  removes the entry. A listed entry needs FWA to hold no unsettled acquisition and the walk to be level (`FwaBusy`).
+- Capture: in the booking walk a Fulfilled foreign listing removes the entry and books `proceeds` as a foreign
+  receivable, which is part of the booked receivables and stays at FWA as owner proceeds. The next harvest withdraws the
+  proceeds from FWA and sends them to `controller.onForeignCapture(listingId, tokenId, proceeds)` by a plain call with
+  the ETH value, forwarding at most `FOREIGN_CALL_GAS` (200,000). The harvest is the only place the pool calls a
+  controller. A capture with zero proceeds queues a due of zero value, which the harvest reports like any other due,
+  and a harvest runs while a due waits even when FWA holds no owner proceeds. A harvest that finds FWA holding less than
+  the booked receivables writes the gap down in the order `receivable`, `maintenanceReceivable`, GRAIL receivable,
+  foreign receivable, and pays each due in queue order from the withdrawn proceeds, up to the foreign receivable that
+  remains. The call needs `gasleft() >= FOREIGN_CALL_GAS * 64 / 63 + 20,000`, and the pool reverts `InsufficientGas`
+  (`settle`, `deposit`, `withdraw`, `acquire`, `exportStep`) otherwise. When the call fails the proceeds are booked as
+  `receivable` and `margin`, and the margin of all failed dues of one harvest is split once after the last due.
+  `ForeignCaptured(listingId, tokenId, proceeds, delivered)` reports the result. A request opened directly at the FWA
+  pool books zero proceeds (section 9, step 1), so its owner proceeds arrive as surplus.
+- Refunded delivery: the token returns to the pool unlisted and the entry stays under its `listingId` with `notional`
+  zero. The controller may `withdrawForeign` it, and the admin may then `registerForeign` it again. A DeliveryPending
+  listing removes the entry and reports `ForeignCaptured` with zero proceeds.
+- Exit: `exportStep` releases every foreign listing to its controller before the GRAIL estate moves: it withdraws the
+  FWA listing when the entry is listed and transfers the token, forwarding at most `FOREIGN_CALL_GAS` to the
+  collection. A step that fails removes the entry, clears the token's registration, records the controller in
+  `heldFor[collection][tokenId]`, emits `ForeignReleaseFailed(listingId, tokenId)` and the export continues. `sweep`
+  of such a token sends it to the recorded controller whatever `to` is, then clears the record. `withdrawForeign` reverts on a
+  failed withdrawal or transfer.
+- Lens: `foreign()` returns every entry with its selection weight in bps, which is zero unless the FWA listing is
+  Active.
+`setRegistrar(address)`: admin. One address, zero to clear, that may call `registerForeign` besides the admin, so an
+offer contract can register a token a third party hands it without an admin signature. `registrar()` is a view.
+The pool holds no term of any deal. A controller decides prices, phases, reclaim rights and where capture proceeds go.
 
 Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
 lists at face and never decays; a merged item decays to 1 ETH and stays.
 
 ## 12. Admin
 
-`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`; `setGrail` and `setGrailTarget`
+`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip` and `setRegistrar`; `setGrail` and `setGrailTarget`
 live in `PoolListing` with `grail()` and `grailItems()`), `startExit`, `exportStep`,
 `transferGrailEstate(to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and `canImport`.
 `PoolListing` implements `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, which only `Pool` calls on itself,
+`registerForeign` (admin or `registrar`) and `repriceForeign` and `withdrawForeign` (the entry's controller),
 and the read-only getters of the replacement, batch and reserve parameters, row counts, mix rows, held Shapes by
 denomination, queue and claim entries and the GRAIL fund and items. `chooseRow(requestId, capturedRow)` returns the
 replacement row for a fulfilled request.
 
-`sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item or a GRAIL
-item). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
-the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. The admin is trusted: on the old pool,
+`sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item, a GRAIL
+item or a foreign listing; a token with a `heldFor` record goes to its controller). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
+the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. A call to the FWA pool with the selector
+of `withdrawOwnerProceeds` reverts `AdminCallDenied`: FWA owner proceeds leave FWA through the harvest. The selectors
+`withdrawListing`, `withdrawListingTo` and `updatePrice` on the FWA pool and any call whose target is the collection of
+a live foreign listing revert `AdminCallDenied` as well. The admin is trusted: on the old pool,
 `adminCall` can reach the successor's import functions, and a forged `finalizeImport` argument misprices a migration.
 
 ## 13. Exit: retirement and migration
@@ -364,7 +428,7 @@ deposits, rotation and GRAIL mints and merges. `dest` is the pool itself for ret
 has code, names this pool as `oldPool`, is Opening or Live, and uses the same Shapes and Draw Packs collections.
 
 `exportStep(maxItems)`: anyone, repeatable. Settles, requires FWA `unsettledAcquisitionCount == 0` and a caught-up walk
-(`FwaBusy`), then harvests. Moves, in order and bounded: ordinary listings via `withdrawListingTo`, held ordinary
+(`FwaBusy`), then harvests. Moves, in order and bounded: every foreign listing to its controller, ordinary listings via `withdrawListingTo`, held ordinary
 tokens, then the GRAIL estate (migration only, counted as one item). On retirement every ordinary item is redeemed into `cash`. On migration an
 item moves to `dest` while `cash >= claims` and `dest.canImport(token)` is true, and is redeemed into `cash` otherwise.
 The final call folds `maintenance` into `cash`, records `exportedShares = totalShares` and `exportedNav` (items already
@@ -394,7 +458,7 @@ imported tokens.
 
 ## 14. Lens
 
-Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail()`, `claims()`,
+Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail()`, `foreign()`, `claims()`,
 `reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `pulls`, `cycleStartedAt`, `stepUpSeconds`, `stepDownSeconds` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `listedAtPull`, selection weight in bps). `parameters()` lists the constructor values and
 the setter values, including the batch, replacement, reserve, `tipWei` and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
 solvency and board depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
@@ -417,3 +481,60 @@ All suites run against the real Shapes, Draw Packs and FWA contracts on a mainne
 - Scenario suite: open a pool, deposit, build, pull single and batch, settle, capture a pack, capture a GRAIL, withdraw
   with liquidation, retire, migrate to a second pool and `migrateHolder`.
 - Gas receipts of `acquireBatch(5)`, `settle` and `rotate` in `evidence/`. Sepolia rehearsal, then mainnet.
+
+## 17. Protocol-owned engine
+
+Supersedes the depositor product of sections 1, 2 and 7 for the coin-supported launch. The pool code is
+unchanged except `boardNavCap` (section 9) and the listing batch sizes (section 3); the depositor paths
+still exist and only the treasury can use them. Decisions and numbers: `docs/AUTONOMOUS_DECISIONS.md`.
+
+| Contract | Role |
+| --- | --- |
+| `FoundingRound` | Conditional ETH escrow: `target` is also the hard cap, contributions until `deadline` (48 hours), `release` to the treasury only while Funded and before `launchDeadline` (14 days more), `refund` when the target is missed, the launch window passes or the owner cancels. After release: the founders' ledger. `distribute` (treasury only) credits pro rata; cumulative payments never exceed `capBps` (12,000) of contributions; `claim` pulls. |
+| `EngineTreasury` | The pool's admin and only shareholder; bounty recipient of the ENGINE coin's Artcoins v2 market. Buckets `reserve`, `prizeBudget`, `buybackFund`; principal `basis`; maintenance subsidy `coverageOwed`. |
+| `PrizeSponsorship` | One sponsor NFT listed as a foreign listing at `listPriceWei`, paid up to `capWei` from the treasury's post-founder trading receipts while active. |
+
+Admission: the pool is deployed with `navCapFloor` 0, entry fee 0 and founder window 0, so no deposit
+is possible from construction; `activate` pauses deposits; the treasury's `_deposit` lifts the cap and
+the pause for its own deposit and restores both in the same call.
+
+Treasury flows:
+
+- `activate(fee)` (owner, once): requires the round Funded, the coin bound, the pool Opening without an
+  FWA pool and without shares, and closed admission. Creates the FWA pool, releases the escrow, deposits
+  `poolTarget` (6 ETH), funds the GRAIL (`grailSeed`) and maintenance (0.5 ETH), sets `boardNavCap`,
+  keeps up to `reserveTarget` (4 ETH) and puts any rest in the prize budget.
+- `collectFees()` (anyone): claims escrowed bounty, collects locker rewards when an LP fee exists (the
+  coin part is burned), then books the unbooked balance as trading receipts: reserve refill to target,
+  `founderTradingBps` (6,500) of the rest to founders up to their remaining entitlement, then
+  `sponsorShareBps` of what remains to the active sponsorship up to what it is owed, the rest to the
+  prize budget.
+- `harvest()` (anyone): earnings are ordinary NAV above `basis`, taken only from free pool cash (cash above
+  claims and the pool's reserve), with NAV re-checked against `basis` afterwards. Earnings repay
+  `coverageOwed` into the reserve, refill the reserve, pay `founderEarningsBps` (5,000) to founders up to
+  the entitlement and the rest to the buyback fund. NAV above `poolTarget` while `basis` exceeds it
+  returns principal to the reserve.
+- `maintainCoverage()` (anyone): maintenance below 0.15 ETH refilled to 0.5 ETH while `coverageOwed`
+  stays within 4 x 0.5 ETH; NAV below 80 percent of the pool target refilled from the reserve (raises
+  `basis`).
+- `boostGrail()` (anyone): prize budget above an open bid's price to `Pool.fundGrail`.
+- `buyback(maxEthIn, minCoinOut)` (anyone, once a block, from 180 minutes after the market opened): at most
+  0.5 ETH of the buyback fund, price limit 2 percent, every coin bought burned with a supply check; the
+  bounty of its own swap returns to the buyback fund.
+- `setBid`, `cancelBid` (owner), `fillBid` (holder, not the owner): buys a token of `prizeCollection` at up
+  to `maxBidWei` (60 ETH) from the prize budget and lists it as a treasury-owned foreign listing; its win
+  proceeds return to the prize budget.
+- `setSponsorship(s, shareBps)` (owner): at most `maxSponsorShareBps` (5,000); makes `s` the pool
+  registrar; refuses to replace an active sponsorship.
+- `poolCall(data)` (owner): pool admin allowlist: tuning setters; `setFeeSplit` with `premiumBps` at least
+  200; `setPaused` with deposits paused; `setReserve` at most 2,500; `adminCall` to FWA
+  `recoverRefundedNFT` only; `sweep` to the treasury only. Everything else is refused.
+- `windDown()` (owner, or anyone after 90 days without a booked draw) then `windDownStep()` (anyone):
+  pool retirement and export, GRAIL estate redeemed, shares withdrawn, every wei to founders up to the
+  entitlement, the rest to the buyback fund. After settlement late receipts follow the same order.
+
+Invariants (fork tests `test/fork/engine/`): the treasury balance covers `reserve + prizeBudget +
+buybackFund`; ETH in equals ETH out by category plus booked buckets; founder payments never exceed the
+entitlement; the treasury is the only shareholder and no withdrawal claim is ever queued; every coin
+bought is burned and the burn record equals the supply drop; draw settlement never calls the treasury.
+

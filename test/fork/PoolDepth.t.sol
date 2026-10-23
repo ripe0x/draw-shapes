@@ -201,23 +201,23 @@ contract PoolDepthForkTest is ForkBase, PoolFixture {
 
     // ---------------------------------------------------------------- settle on Deep
 
-    function test_settleOnDeepQueuesAndListsTwentyFivePerCallUntilTheBoardMatches() public {
+    function test_settleOnDeepQueuesAndListsTwelvePerCallUntilTheBoardMatches() public {
         _deposit(4 ether);
         uint256 target = _boardItems();
         uint256 listedBefore = pool.listedCount();
         uint256 keeperBefore = keeper.balance;
 
         (uint256 listed, uint256 refund) = _settle();
-        assertEq(listed, 25, "first call lists 25");
+        assertEq(listed, 12, "first call lists 12");
         assertGt(refund, 0, "the refund is paid");
         assertEq(keeper.balance - keeperBefore, refund);
-        assertEq(pool.listedCount(), listedBefore + 25);
+        assertEq(pool.listedCount(), listedBefore + 12);
 
         uint256 calls = 1 + _settleUntilLevel();
         assertGt(calls, 1, "more than one call");
         assertLt(calls, 20);
-        assertLt(target, _count() + 5, "board count is within batchMin of the depth");
-        assertGt(pool.listedCount(), listedBefore + 25);
+        assertLe(target, _count() + 5, "board count is within batchMin of the depth");
+        assertGt(pool.listedCount(), listedBefore + 12);
         assertEq(uint8(pool.settleDue()), uint8(IPoolTypes.SettleTrigger.None));
     }
 

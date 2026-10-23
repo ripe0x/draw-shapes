@@ -29,10 +29,15 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant VOLUME_DAYS = 7;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
-    uint256 internal constant MAX_OPEN_MINTS = 20;
+    /// @dev Items one `open()` lists; sized for the EIP-7825 per-transaction gas cap like `MAX_LIST_PER_SETTLE`.
+    uint256 internal constant MAX_OPEN_MINTS = 12;
     uint256 internal constant MAX_TIP = 0.01 ether;
     uint256 internal constant MAX_RESTORE_K = 100;
     uint256 internal constant MAX_BAND_BPS = 100_000;
+    /// @dev Cap on `_foreign` entries.
+    uint256 internal constant MAX_FOREIGN = 8;
+    /// @dev Gas forwarded to `IForeignController.onForeignCapture`.
+    uint256 internal constant FOREIGN_CALL_GAS = 200_000;
 
     // ------------------------------------------------------------------ storage
 
@@ -179,6 +184,24 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal _mixRungs;
     uint256 internal _mixShares;
 
+    /// @dev Foreign listings, at most `MAX_FOREIGN`. Outside `backing`, ordinary NAV and the GRAIL fund.
+    ForeignListing[] internal _foreign;
+    /// @dev Position plus one of each foreign listing inside `_foreign`, by FWA listing id.
+    mapping(uint256 listingId => uint256) internal _foreignAt;
+    /// @dev Proceeds of captured foreign listings awaiting the next harvest.
+    ForeignDue[] internal _foreignDue;
+    /// @dev Sum of `proceeds` over `_foreignDue`. Part of the booked receivables, held as FWA owner
+    ///      proceeds until harvest pays it to the controllers.
+    uint256 internal _foreignReceivable;
+    /// @dev Controller of a foreign token whose release in `exportStep` failed, by collection and token id.
+    ///      `sweep` sends such a token to that controller.
+    mapping(address collection => mapping(uint256 tokenId => address)) internal _heldFor;
+    /// @notice Address besides `admin` that may call `registerForeign`. Zero when unset.
+    address public registrar;
+    /// @dev Ordinary NAV above which the board does not deepen (`_boardItems`). Zero leaves the board
+    ///      sized by the whole NAV.
+    uint256 internal _boardNavCap;
+
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
         _;
@@ -293,6 +316,35 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
         _grailItems.pop();
         delete _grailAt[it.listingId];
         delete _registered[it.collection][it.tokenId];
+    }
+
+    /// @dev Reverts `InsufficientGas` unless the remaining gas funds a call that forwards
+    ///      `FOREIGN_CALL_GAS` after the 63/64 rule, plus 20,000 for the code that follows it.
+    function _requireCallGas() internal view {
+        if (gasleft() < FOREIGN_CALL_GAS * 64 / 63 + 20_000) revert InsufficientGas();
+    }
+
+    /// @dev Removes the foreign listing at `index` from `_foreign`, `_foreignAt` and `_registered`.
+    function _removeForeign(uint256 index) internal returns (ForeignListing memory f) {
+        uint256 last = _foreign.length - 1;
+        f = _foreign[index];
+        if (index != last) {
+            ForeignListing memory moved = _foreign[last];
+            _foreign[index] = moved;
+            _foreignAt[moved.listingId] = index + 1;
+        }
+        _foreign.pop();
+        delete _foreignAt[f.listingId];
+        delete _registered[f.collection][f.tokenId];
+    }
+
+    /// @dev Removes the foreign listing at `index`, withdraws its FWA listing when it is listed and
+    ///      transfers the token to `to`. FWA rejects the withdrawal while it holds unsettled acquisitions.
+    function _releaseForeign(uint256 index, address to) internal {
+        ForeignListing memory f = _removeForeign(index);
+        if (f.notional != 0) _withdrawListing(f.listingId, address(this));
+        _transfer(f.collection, address(this), to, f.tokenId);
+        emit ForeignWithdrawn(f.listingId, f.collection, f.tokenId, to);
     }
 
     /// @dev Books `it` as held (`listingId == 0`) or listed. Every registry change goes through

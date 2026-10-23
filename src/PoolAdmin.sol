@@ -62,6 +62,16 @@ contract PoolAdmin is PoolBooks {
         navCapFloor = wei_;
     }
 
+    /// @notice Caps the ordinary NAV that sizes the board. Zero removes the cap.
+    function setBoardNavCap(uint256 wei_) external onlyDelegated {
+        _admin();
+        _boardNavCap = wei_;
+    }
+
+    function boardNavCap() external view onlyDelegated returns (uint256) {
+        return _boardNavCap;
+    }
+
     /// @dev `bps` is between 1 and 10,000.
     function setTurnover(uint16 bps) external onlyDelegated {
         _admin();
@@ -79,6 +89,13 @@ contract PoolAdmin is PoolBooks {
     function setMix(PricingLib.MixRow[] memory rows) external onlyDelegated {
         _admin();
         _setMix(rows);
+    }
+
+    /// @notice Sets the address besides the admin that may call `registerForeign`. Zero clears it.
+    function setRegistrar(address registrar_) external onlyDelegated {
+        _admin();
+        registrar = registrar_;
+        emit RegistrarSet(registrar_);
     }
 
     /// @dev `n` is at most the FWA factory's `maxAcquisitionsPerTx` and at least one.
@@ -161,16 +178,24 @@ contract PoolAdmin is PoolBooks {
     }
 
     /// @notice Sends an ERC-721 token the pool does not account for to `to`. Reverts `Accounted`
-    ///         for a held or listed ordinary item and for a GRAIL item.
+    ///         for a held or listed ordinary item and for a GRAIL item. A token whose foreign release
+    ///         failed (`ForeignReleaseFailed`) goes to its controller whatever `to` is.
     function sweep(address token, uint256 id, address to) external onlyDelegated onlyAdmin {
         if (_registered[token][id]) revert Accounted();
+        address controller = _heldFor[token][id];
+        if (controller != address(0)) {
+            delete _heldFor[token][id];
+            to = controller;
+        }
         _transfer(token, address(this), to, id);
     }
 
     /// @notice Calls `target` with `data` and `msg.value` as value, then requires I1 and I2.
     ///         `msg.value` must equal `value`, so the call is funded by the admin and not by the
-    ///         buckets. Reverts with the target's revert data and `InvariantBroken` when a check
-    ///         fails.
+    ///         buckets. Reverts `AdminCallDenied` for `withdrawOwnerProceeds`, `withdrawListing`,
+    ///         `withdrawListingTo` and `updatePrice` on the FWA pool, and for any call to the collection
+    ///         of a foreign listing. Reverts with the target's revert data and `InvariantBroken`
+    ///         when a check fails.
     function adminCall(address target, bytes calldata data, uint256 value)
         external
         payable
@@ -179,6 +204,16 @@ contract PoolAdmin is PoolBooks {
         nonReentrant
     {
         if (msg.value != value) revert AdminValueMismatch();
+        if (target == address(fwaPool) && data.length >= 4) {
+            bytes4 sel = bytes4(data[:4]);
+            if (
+                sel == IFWAClone.withdrawOwnerProceeds.selector || sel == IFWAClone.withdrawListing.selector
+                    || sel == IFWAClone.withdrawListingTo.selector || sel == IFWAClone.updatePrice.selector
+            ) revert AdminCallDenied();
+        }
+        for (uint256 i; i < _foreign.length; ++i) {
+            if (_foreign[i].collection == target) revert AdminCallDenied();
+        }
         (bool ok, bytes memory ret) = target.call{value: value}(data);
         if (!ok) {
             assembly ("memory-safe") {
@@ -221,7 +256,8 @@ contract PoolAdmin is PoolBooks {
         emit ExitStarted(dest);
     }
 
-    /// @notice Moves up to `maxItems` ordinary listings, held items and the GRAIL estate out of the
+    /// @notice Releases every foreign listing to its controller, then moves up to `maxItems` ordinary
+    ///         listings, held items and the GRAIL estate out of the
     ///         pool, then settles the exit. Ordinary items are redeemed into `cash` on retirement.
     ///         On migration they go to the successor while `cash` covers `claims` and the successor
     ///         accepts the token (`canImport`), and are redeemed into `cash` otherwise. The GRAIL estate (the
@@ -229,12 +265,18 @@ contract PoolAdmin is PoolBooks {
     ///         the last item folds `maintenance` into `cash`, records `exportedShares` and
     ///         `exportedNav`, sends `cash - claims` to the successor, sets Exported, retires the FWA
     ///         pool and finalizes the import. Reverts `FwaBusy` while FWA holds unsettled
-    ///         acquisitions or the booking walk is behind. Returns whether the export is complete.
+    ///         acquisitions or the booking walk is behind, and `InsufficientGas` when a release
+    ///         could not be given its gas. A foreign release that fails emits `ForeignReleaseFailed`
+    ///         and the export continues. Returns whether the export is complete.
     function exportStep(uint256 maxItems) external onlyDelegated nonReentrant returns (bool) {
         if (lifecycle != Lifecycle.Exiting) revert NotExiting();
         _processAndSettle(MAX_SETTLE_ITEMS);
         if (_busy()) revert FwaBusy();
         _harvest();
+
+        while (_foreign.length != 0) {
+            _releaseForeignOrHold(_foreign.length - 1);
+        }
 
         address dest = exitDest;
         bool migrate = dest != address(this);
@@ -295,6 +337,53 @@ contract PoolAdmin is PoolBooks {
         }
         emit Exported(shares, exported);
         return true;
+    }
+
+    /// @dev Removes the foreign listing at `index` and unregisters its token. Withdraws the FWA listing
+    ///      when it is listed, then transfers the token to the entry's controller, forwarding at most
+    ///      `FOREIGN_CALL_GAS` to the collection. A failed step emits `ForeignReleaseFailed`, leaves
+    ///      the token where it is and records the controller in `_heldFor`, which `sweep` pays.
+    function _releaseForeignOrHold(uint256 index) internal {
+        ForeignListing memory f = _removeForeign(index);
+        bool ok = true;
+        if (f.notional != 0) {
+            _requireCallGas();
+            ok = _tryTransferCall(
+                address(fwaPool), IFWAClone.withdrawListingTo.selector, f.listingId, uint160(address(this)), 0, gasleft()
+            );
+        }
+        if (ok) {
+            _requireCallGas();
+            ok = _tryTransferCall(
+                f.collection,
+                IERC721.transferFrom.selector,
+                uint160(address(this)),
+                uint160(f.controller),
+                f.tokenId,
+                FOREIGN_CALL_GAS
+            );
+        }
+        if (ok) emit ForeignWithdrawn(f.listingId, f.collection, f.tokenId, f.controller);
+        else {
+            _heldFor[f.collection][f.tokenId] = f.controller;
+            emit ForeignReleaseFailed(f.listingId, f.tokenId);
+        }
+    }
+
+    /// @dev Calls `selector` on `target` with three word arguments, forwarding at most `gasLimit`.
+    ///      Returns whether the call succeeded and ignores the return data.
+    function _tryTransferCall(address target, bytes4 selector, uint256 a, uint256 b, uint256 c, uint256 gasLimit)
+        internal
+        returns (bool ok)
+    {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, selector)
+            mstore(add(m, 0x04), a)
+            mstore(add(m, 0x24), b)
+            mstore(add(m, 0x44), c)
+            ok := call(gasLimit, target, 0, m, 0x64, 0, 0)
+        }
     }
 
     /// @notice Sends the GRAIL fund and every GRAIL item to `to` and empties the estate. Callable

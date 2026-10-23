@@ -1,4 +1,14 @@
-import { formatEther } from "viem";
+import { formatEther, parseEther } from "viem";
+
+/** A positive ETH amount from user text, or undefined when the text is empty, zero or malformed. */
+export function parseEthInput(text: string): bigint | undefined {
+  try {
+    const v = text.trim() ? parseEther(text.trim()) : undefined;
+    return v && v > 0n ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Wei as ETH, trimmed to `digits` fraction digits. */
 export function eth(wei: bigint, digits = 4): string {

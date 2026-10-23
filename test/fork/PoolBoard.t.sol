@@ -168,15 +168,17 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         vm.recordLogs();
         pool.open();
         assertTrue(clone.localPurchasesEnabled(), "first call enables acquisitions");
-        assertEq(pool.listedCount(), 20);
+        assertEq(pool.listedCount(), 12);
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening));
 
-        pool.open();
-        assertEq(pool.listedCount(), 40);
-        assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening));
+        for (uint256 i = 2; i < 5; ++i) {
+            pool.open();
+            assertEq(pool.listedCount(), 12 * i);
+            assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Opening));
+        }
 
         pool.open();
-        assertEq(pool.listedCount(), 60, "board at target after 20 mints");
+        assertEq(pool.listedCount(), 60, "board at target after 12 mints");
         assertEq(uint8(pool.lifecycle()), uint8(IPoolTypes.Lifecycle.Live), "minItems listed sets Live");
         assertEq(IPool(address(pool)).rowCount(0), 42);
         assertEq(IPool(address(pool)).rowCount(1), 18);
@@ -312,9 +314,11 @@ contract PoolBoardForkTest is ForkBase, PoolFixture {
         _checkListings();
     }
 
-    function test_heldItemsListTwentyPerCallInOneInventoryBatch() public {
+    function test_heldItemsListTwelvePerCallInOneInventoryBatch() public {
         _open();
-        uint256 batch = clone.MAX_INVENTORY_BATCH();
+        // MAX_OPEN_MINTS (12) per call, below FWA's MAX_INVENTORY_BATCH (20), so one FWA batch per call.
+        uint256 batch = 12;
+        assertLt(batch, clone.MAX_INVENTORY_BATCH());
         uint256 count = batch + 5;
         uint256 first = mintShapes(address(pool), 0.1 ether, count);
         for (uint256 i; i < count; ++i) {

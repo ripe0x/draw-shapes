@@ -42,15 +42,9 @@ export function ParamsDisclosure() {
       <Kv label="Lifecycle" value={LIFECYCLE[p.lifecycle]} />
       <Kv label="Pulls paused" value={yesNo(p.pullsPaused)} />
       <Kv label="Deposits paused" value={yesNo(p.depositsPaused)} />
-      <Kv label="Depositor premium, of backing" value={bps(p.feeSplit.premiumBps)} />
+      <Kv label="Game margin (premium), of backing" value={bps(p.feeSplit.premiumBps)} />
       <Kv label="Maintenance, of backing" value={bps(p.feeSplit.maintenanceBps)} />
       <Kv label="GRAIL feed, of backing" value={bps(p.feeSplit.feedBps)} />
-      <Kv label="Entry fee floor" value={bps(p.floorBps)} />
-      <Kv label="Entry fee cap" value={bps(p.capBps)} />
-      <Kv label="Entry fee payback target (days of yield)" value={count(p.paybackDays)} />
-      <Kv label="NAV cap floor" value={wei(p.navCapFloor)} />
-      <Kv label="Turnover, daily fee volume over NAV" value={bps(p.turnoverBps)} />
-      <Kv label="Founder window after open" value={secs(p.founderWindowSeconds)} />
       <Kv label="Rotate interval" value={secs(p.rotateInterval)} />
       <Kv label="Opening deadline length" value={secs(p.openingDeadline)} />
       <Kv label="Opening deadline at" value={utc(p.openingDeadlineAt)} />

@@ -3,8 +3,9 @@
 import { eth, pct } from "../lib/format";
 import { usePool } from "../lib/pool";
 import { useDeployment } from "../Providers";
+import Link from "next/link";
 import { GrailBoard } from "./GrailBoard";
-import { Eth, Kv, shares } from "./Measure";
+import { Eth, Kv } from "./Measure";
 import { OddsGlance } from "./OddsGlance";
 import { ParamsDisclosure } from "./ParamsDisclosure";
 import { Upkeep } from "./Upkeep";
@@ -27,9 +28,9 @@ const FAQS = [
       "FWA credits slippage, timeout and failed delivery to the purchaser. The purchaser claims the credit at the FWA pool. The VRF fee is spent when the request is made.",
   },
   {
-    question: "How do deposits and withdrawals work?",
+    question: "Who owns the pool?",
     answer:
-      "The entry contribution funds the GRAIL. It is the depositor premium times the daily fee volume over NAV, for the payback days, kept between the floor and the cap. The rest of a deposit mints shares at ordinary NAV per share. Deposits are admitted while ordinary NAV is below the NAV cap, which is the larger of the floor and the daily fee volume divided by the turnover. Daily fee volume is the mean over the last seven complete UTC days. Deposits open after the founder window that follows the pool opening. A withdrawal burns shares and pays shares * NAV / total shares: the part cash covers is paid at once and the remainder joins a FIFO claim queue. Anyone can call payClaims, and rotate redeems items for the head claim once it is a rotate interval old. Shares are nontransferable.",
+      "The EngineTreasury is the only shareholder and the admin. Public deposits are closed. The treasury funds the pool from the founding round at activation and tracks its principal as basis; ordinary NAV above basis is game earnings, which a harvest takes out of free pool cash (never queuing a claim) and sends to founders and coin buybacks. The treasury can also refill the pool from its reserve after a loss, which raises basis. See the Treasury page for the live buckets and totals.",
   },
   {
     question: "How does the GRAIL build?",
@@ -108,7 +109,6 @@ function Buckets() {
       <Kv label="Receivable" value={<Eth wei={pool.receivable} digits={4} />} />
       <Kv label="Claims" value={<>{pool.claims > 0n ? "-" : ""}{eth(pool.claims, 4)} ETH</>} />
       <Kv label="Ordinary NAV" value={<Eth wei={pool.nav} digits={4} />} strong />
-      <Kv label="Share price" value={`${eth(pool.sharePrice, 6)} ETH, ${shares(pool.totalShares)} shares`} />
       <Kv
         label="Maintenance"
         value={`${eth(pool.maintenance, 4)} ETH, receivable ${eth(pool.maintenanceReceivable, 4)} ETH`}
@@ -207,7 +207,7 @@ export function ProtocolPage() {
       <Section
         n="04"
         title="Buckets and NAV"
-        lead="Every wei the pool holds is in one bucket. Depositors own ordinary NAV."
+        lead="Every wei the pool holds is in one bucket. The treasury owns ordinary NAV as the game's capital."
       >
         <Buckets />
       </Section>
@@ -223,12 +223,12 @@ export function ProtocolPage() {
       <Section
         n="06"
         title="Capital and control"
-        lead="What belongs to depositors, what gameplay funds and what the admin holds."
+        lead="The treasury owns the pool outright; public deposits are closed."
       >
         <div className="protocol-principles">
           <article>
-            <strong>Depositor NAV</strong>
-            <p>Depositors hold shares of ordinary NAV and exit at NAV per share in ETH.</p>
+            <strong>Treasury-owned NAV</strong>
+            <p>The EngineTreasury is the only shareholder. Ordinary NAV above its basis is game earnings. <Link href="/treasury">Treasury &rarr;</Link></p>
           </article>
           <article>
             <strong>Separate buckets</strong>
@@ -236,7 +236,7 @@ export function ProtocolPage() {
           </article>
           <article>
             <strong>One admin</strong>
-            <p>One admin address sets bounded parameters, pauses pulls and deposits, and can start an exit.</p>
+            <p>The treasury is the admin. It sets bounded parameters, keeps deposits paused, and can start a wind-down.</p>
           </article>
         </div>
         <div className="card protocol-params">

@@ -42,7 +42,7 @@ done
 case "$ENV_NAME" in
   anvil) EXPECTED_CHAIN_ID=31337 ;;
   sepolia) EXPECTED_CHAIN_ID=11155111 ;;
-  mainnet) EXPECTED_CHAIN_ID=1 ;;
+  mainnet) refuse "the protocol-owned engine launches through script/engine.sh (docs/DEPLOY.md); this depositor-pool path is kept for local runs and the PlayMonth scenario" ;;
   *) refuse "unsupported environment $ENV_NAME" ;;
 esac
 [[ "$CHAIN_ID" == "$EXPECTED_CHAIN_ID" ]] || refuse "$ENV_NAME must use chain id $EXPECTED_CHAIN_ID"

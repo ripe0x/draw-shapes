@@ -2,7 +2,7 @@
 
 import { eth, LIFECYCLE } from "../lib/format";
 import { drawOdds, useQuote, usePool } from "../lib/pool";
-import { Eth, Stat, percent, shares } from "./Measure";
+import { Eth, Stat, percent } from "./Measure";
 
 /** The pool's headline numbers: ordinary NAV, the one-pull ticket against its average redeemable
  *  value, the board and the lifecycle. */
@@ -15,18 +15,14 @@ export function VaultStats() {
   const returnBps = quote && quote.fee > 0n ? (odds.averageBackingWei * 10_000n) / quote.fee : undefined;
   return (
     <div className="stat-grid">
+      <Stat label="Ordinary NAV" value={<Eth wei={pool.nav} digits={2} />} sub="Pool game assets" />
       <Stat
-        label="Ordinary NAV"
-        value={<Eth wei={pool.nav} digits={2} />}
-        sub={`Share price ${eth(pool.sharePrice, 6)} ETH, ${shares(pool.totalShares, 2)} shares`}
-      />
-      <Stat
-        label="Ticket per pull"
+        label="FWA fee per pull"
         value={quote ? <Eth wei={quote.fee} digits={5} /> : "-"}
         sub={
           returnBps === undefined
             ? undefined
-            : `Average redeemable value ${percent(returnBps)} of the ticket, VRF and gas excluded`
+            : `Average redeemable value ${percent(returnBps)} of the fee, VRF and gas excluded`
         }
       />
       <Stat

@@ -384,7 +384,7 @@ function simulate(P, seed, days, snapDays, opts) {
   // boardItems = max(minItems, (NAV - reserve) / meanRowCost); meanRowCost is the share-weighted backing plus the mint fee per rung; NAV is already net of claims. Row target = ceil(boardItems x share).
   function boardItems() {
     if (!P.boardByNav) return P.minItems;
-    const nv = nav();
+    const nv = Math.min(nav(), P.boardNavCap || Infinity);
     return Math.max(P.minItems, Math.floor((nv - nv * P.reserveBps / 1e4) / meanRowCost + 1e-9));
   }
   function refreshTargets() {
@@ -532,6 +532,7 @@ function simulate(P, seed, days, snapDays, opts) {
     if (!G.length) return 0;
     let w = grailWeight(), tot = sumOrd() + w, n = 0;
     for (const it of G) {
+      if (it.foreign) continue;
       const old = it.notional, next = Math.max(floorFor(it, tot), old - decayOf(it) * it.since);
       const gap = old - next;
       if (!(gap > 1e-15) || gap < old * P.repriceMinBps / 1e4 - 1e-15) continue;
@@ -545,7 +546,7 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // ---------- keeper cost and refund (SPEC 10)
   function keeperRefund(items) {
-    const cost = (GAS_BASE + GAS_ITEM * items + GAS_OVERHEAD) * gas + tip;
+    const cost = (GAS_BASE + (P.gasPerItem || GAS_ITEM) * items + GAS_OVERHEAD) * gas + tip;
     const refund = Math.min(S.maint, cost);
     S.maint -= refund;
     A.keeperCost += cost; A.refunds += refund; A.shortfall += cost - refund;
@@ -650,7 +651,7 @@ function simulate(P, seed, days, snapDays, opts) {
     dayTicks++; A.boardSum += lo; A.boardTicks++; if (lo < A.minListed) A.minListed = lo;
   }
   function advanceTo(t) {
-    while (nextTick <= t) { runTick(nextTick); nextTick += TICK; }
+    while (nextTick <= t) { if (!(opts.keeperOff && opts.keeperOff(Math.floor(nextTick / DAY)))) runTick(nextTick); nextTick += TICK; }
     if (t > clock) clock = t;
   }
 
@@ -676,9 +677,11 @@ function simulate(P, seed, days, snapDays, opts) {
   const hourly = opts.hourly ? { nav: [], listed: [], cash: [] } : null;
   const snaps = {};
   const events = [];
-  let carry = 0;
+  let carry = 0, forced = false;
 
   // opening: each row's missing items are queued against its target depth and listed in row order while spendable cash covers the mints
+  if (opts.initialFund) GR.fund += opts.initialFund;
+  if (opts.initialMaint) S.maint += opts.initialMaint;
   const open = P.openingEth / P.openingDepositors;
   for (let i = 0; i < P.openingDepositors; i++) deposit(open, 0);
   refreshTargets();
@@ -790,6 +793,21 @@ function simulate(P, seed, days, snapDays, opts) {
       for (let gi = 0; gi < G.length; gi++) { const w = 1 / G[gi].notional; if (u < w) { pickT = gi; break; } u -= w; }
       if (pickT < 0) { pick = nR - 1; while (pick > 0 && R[pick].n <= 0) pick--; }
     }
+    // engine stress: the first ticket on or after forceGrailDay wins the largest GRAIL item
+    if (opts.forceGrailDay !== undefined && !forced && t / DAY >= opts.forceGrailDay) {
+      let best = -1;
+      for (let gi = 0; gi < G.length; gi++) if (!G[gi].foreign && (best < 0 || G[gi].b > G[best].b)) best = gi;
+      if (best >= 0) { pickT = best; pick = -1; forced = true; }
+    }
+    if (pickT >= 0 && G[pickT].foreign) {
+      // a sponsored prize: the player takes the sponsor's NFT, the ticket proceeds go to the GRAIL fund
+      const g = G.splice(pickT, 1)[0];
+      A.grailPaidTicket += proceeds; GR.fund += proceeds; A.foreignWon = (A.foreignWon || 0) + 1; A.foreignWonDay = t / DAY;
+      events.push({ t: t / DAY, prize: g.b, foreign: true, price: g.notional });
+      for (const g2 of G) { g2.since++; g2.age++; }
+      payClaims();
+      return;
+    }
     for (const g of G) { g.since++; g.age++; }
     if (pickT >= 0) {
       // capture of a GRAIL item: the pool is paid the ticket into the fund and the item leaves
@@ -817,6 +835,18 @@ function simulate(P, seed, days, snapDays, opts) {
     payClaims();
   }
 
+  // Engine overlay (sim/engine.mjs): the treasury moves ETH in and out of these buckets once a day.
+  const engineApi = {
+    nav, spendable, A, GR, G,
+    cash: () => S.cash, take: x => { S.cash -= x; }, put: x => { S.cash += x; },
+    maint: () => S.maint, addMaint: x => { S.maint += x; },
+    addToFund: x => { GR.fund += x; },
+    grailBacking: () => G.reduce((a, it) => a + (it.foreign ? 0 : it.b), 0),
+    listed: () => listedOrd(),
+    addForeign: (b, notional) => { G.push({ b, notional, since: 0, age: 0, cutAge: 0, done: true, piece: false, foreign: true }); },
+    removeForeign: () => { const i = G.findIndex(it => it.foreign); if (i >= 0) G.splice(i, 1); return i >= 0; },
+    hasForeign: () => G.some(it => it.foreign),
+  };
   for (let h = 0; h < totalHours; h++) {
     const day = Math.floor(h / 24), hod = h % 24;
     if (hod === 0) { depHour[day] = Math.floor(rngSched() * 24); wdHour[day] = Math.floor(rngSched() * 24); }
@@ -830,7 +860,7 @@ function simulate(P, seed, days, snapDays, opts) {
     if (day % 2 === 1 && hod === wdHour[day] && P.withdrawBpsPerDay > 0) withdraw(P.withdrawBpsPerDay);
     payClaims();
 
-    const acc = carry + P.ticketsPerDay * (0.5 + rngCount()) / 24;
+    const acc = carry + P.ticketsPerDay * (opts.ticketsAt ? opts.ticketsAt(day) : 1) * (0.5 + rngCount()) / 24;
     const n = Math.floor(acc); carry = acc - n;
     // arrivals come in groups of 1 to 5 tickets at one instant
     const sizes = [];
@@ -846,6 +876,7 @@ function simulate(P, seed, days, snapDays, opts) {
     advanceTo(t0 + 3599.999);
     if (hourly) { hourly.nav.push(nav() / S.shares); hourly.listed.push(listedOrd()); hourly.cash.push(S.cash); }
     if ((h + 1) % 24 === 0) {
+      if (opts.onDay) opts.onDay(day, engineApi);
       record(day + 1);
       if (snapDays.indexOf(day + 1) >= 0) snapshot(day + 1);
     }
