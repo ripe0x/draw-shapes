@@ -64,7 +64,7 @@ contract EngineInvariantsForkTest is EngineBase {
                 vm.roll(block.number + 1);
                 try treasury.buyback((r >> 32) % 1 ether, 1) {} catch {}
             } else {
-                vm.warp(block.timestamp + (r >> 40) % 2 days);
+                vm.warp(vm.getBlockTimestamp() + (r >> 40) % 2 days);
                 _settleBoard();
             }
             _check();

@@ -253,7 +253,7 @@ contract EngineForkTest is EngineBase {
         vm.prank(player);
         vm.expectRevert(EngineTreasury.NotOwner.selector);
         treasury.windDown();
-        vm.warp(block.timestamp + 91 days);
+        vm.warp(vm.getBlockTimestamp() + 91 days);
         assertTrue(treasury.dormant(), "dormant");
         vm.prank(player);
         treasury.windDown();

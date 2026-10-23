@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Keeper loop: settle, rotate and payClaims on the pool, one log line per sent transaction.
-# Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool), KEEPER, INTERVAL (default 15), ONCE=1 for one pass.
-# LOCAL_VRF=1 runs `script/local.sh fulfill` at the start of every pass (anvil only).
+# Keeper loop: settle, rotate and payClaims on the pool, and the engine treasury's permissionless calls
+# (collectFees, harvest, maintainCoverage, boostGrail, buyback) when the record names a treasury. One log
+# line per sent transaction. Every call is simulated first and skipped when it would revert.
+# Env: RPC_URL, POOL or DEPLOYMENT_RECORD (reads .pool and .treasury), KEEPER, INTERVAL (default 15),
+# ONCE=1 for one pass. BUYBACK_MIN_OUT (default 1): the treasury bounds every buyback at 2 percent price
+# impact and 0.5 ETH; pass a quoted minimum for tighter protection.
+# LOCAL_VRF=1 runs `$VRF_SCRIPT fulfill` (default script/engine-local.sh) at the start of every pass (anvil only).
 # WALLET_MODE=anvil sends with --unlocked --from $KEEPER. WALLET_MODE=keystore sends with
 # --account $KEYSTORE_ACCOUNT and --password-file $KEYSTORE_PASSWORD_FILE (shell only, never a key in argv).
 set -euo pipefail
 
 : "${RPC_URL:?RPC_URL is required}"
 POOL="${POOL:-$(jq -er '.pool' "${DEPLOYMENT_RECORD:?POOL or DEPLOYMENT_RECORD is required}")}"
+TREASURY="${TREASURY:-$(jq -r '.treasury // empty' "${DEPLOYMENT_RECORD:-/dev/null}" 2>/dev/null || true)}"
 INTERVAL="${INTERVAL:-15}"
 CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL")
 
@@ -28,9 +33,10 @@ ROTATE_AFTER=0
 LAST_DATA=
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
-# send <label> <event topic or ""> <signature> [args...]: simulate with eth_call, then send.
+# send <label> <event topic or ""> <signature> [args...]: simulate with eth_call, then send to TARGET (default POOL).
 send() {
   local label=$1 topic=$2; shift 2
+  local POOL="${TARGET:-$POOL}"
   if ! cast call --rpc-url "$RPC_URL" --from "$KEEPER" "$POOL" "$@" >/dev/null 2>&1; then
     log "$label skipped: simulation reverts"; return 0
   fi
@@ -52,7 +58,7 @@ send() {
 
 pass() {
   local settle rotate head cash
-  [[ "${LOCAL_VRF:-0}" != 1 ]] || "$(dirname "$0")/local.sh" fulfill
+  [[ "${LOCAL_VRF:-0}" != 1 ]] || "${VRF_SCRIPT:-$(dirname "$0")/engine-local.sh}" fulfill
   settle=$(cast call --rpc-url "$RPC_URL" "$POOL" 'settleDue()(uint8)')
   [[ "$settle" == "0" ]] || send "settle(20) reason=$settle" "$SETTLED_TOPIC" 'settle(uint256)' 20
   rotate=$(cast call --rpc-url "$RPC_URL" "$POOL" 'rotateDue()(uint8)')
@@ -72,6 +78,17 @@ pass() {
   if [[ "$cash" != "0" ]] && cast call --rpc-url "$RPC_URL" "$POOL" 'claimQueue(uint256)(address,uint64,uint256)' "$head" >/dev/null 2>&1; then
     send "payClaims head=$head" "" 'payClaims()'
   fi
+  [[ -z "$TREASURY" ]] || treasury_pass
+}
+
+# Treasury calls are permissionless and revert NothingToDo when there is no work, so each is simply
+# simulated and sent when the simulation passes.
+treasury_pass() {
+  TARGET="$TREASURY" send "collectFees" "" 'collectFees()'
+  TARGET="$TREASURY" send "harvest" "" 'harvest()'
+  TARGET="$TREASURY" send "maintainCoverage" "" 'maintainCoverage()'
+  TARGET="$TREASURY" send "boostGrail" "" 'boostGrail()'
+  TARGET="$TREASURY" send "buyback" "" 'buyback(uint256,uint256)' "$(cast max-uint)" "${BUYBACK_MIN_OUT:-1}"
 }
 
 log "keeper pool=$POOL keeper=$KEEPER chainId=$CHAIN_ID interval=${INTERVAL}s"

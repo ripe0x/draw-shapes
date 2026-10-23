@@ -213,7 +213,7 @@ abstract contract EngineBase is ForkBase, EngineDeployer {
     }
 
     function _keeperTick() internal {
-        vm.warp(block.timestamp + 901);
+        vm.warp(vm.getBlockTimestamp() + 901);
         _settleBoard();
         if (ip.rotateDue() != IPoolTypes.RotateTrigger.None) {
             vm.prank(keeper);
@@ -237,7 +237,7 @@ abstract contract EngineBase is ForkBase, EngineDeployer {
 
     /// @dev Waits out the Artcoins anti sniper window so swaps pay the baseline skim.
     function _pastSniperWindow() internal {
-        vm.warp(block.timestamp + 3 hours + 1);
+        vm.warp(vm.getBlockTimestamp() + 3 hours + 1);
     }
 
     // ------------------------------------------------------------------ checks

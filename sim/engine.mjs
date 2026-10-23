@@ -16,6 +16,9 @@ const { simulate, defaultParams } = new Function(`${model}; return { simulate, d
 // Measured on the fork (test/fork/engine/EngineFork.t.sol, test_market_feeCaptureOnBuyAndSell):
 // the treasury receives 4.5 percent of the ETH side of every swap after the sniper window.
 const CAPTURE = 0.045;
+// Measured on the fork (test/fork/engine/EngineGas.t.sol): a settle listing 12 items used 12.4M gas,
+// about 1,000,000 gas per listed item (mint, pack, FWA listing). The lab's own default is 150,000.
+const GAS_PER_ITEM = 1_000_000;
 // A buyback pays the 5 percent skim and gets the 4.5 percent bounty back: 0.5 percent leaves.
 const BUYBACK_LEAK = 0.005;
 
@@ -34,7 +37,8 @@ export function engineDefaults() {
   return {
     capBps: 12000, tradingBps: 6500, earningsBps: 5000,
     ...allocation(20), maintFloor: 0.15, poolFloorBps: 8000, mix: LAUNCH_MIX,
-    premiumBps: 200, mintFee: 0.001, gasPriceGwei: 1,
+    // 0.1 gwei is about ten times the base fee at the fork block (0.0096 gwei); stress rows go to 30.
+    premiumBps: 300, mintFee: 0.001, gasPriceGwei: 0.1,
     drawsPerDay: 100, tradingEthPerDay: 5, days: 365,
     demand: null, trading: null, keeperOff: null, forceGrailDay: undefined,
     sponsor: null, // { value, price, capEth, shareBps, fromDay, reclaimDay }
@@ -53,7 +57,8 @@ export function runEngine(cfg, seed) {
   P.entryFloorBps = 0; P.entryCapBps = 0; P.navCapFloor = 1e12; P.founderWindowDays = 0;
   P.depositPerDay = 0; P.withdrawBpsPerDay = 0;
   P.ticketsPerDay = cfg.drawsPerDay; P.premiumBps = cfg.premiumBps; P.mintFee = cfg.mintFee;
-  P.gasPriceGwei = cfg.gasPriceGwei; P.boardNavCap = cfg.poolTarget;
+  P.gasPriceGwei = cfg.gasPriceGwei; P.boardNavCap = cfg.poolTarget; P.gasPerItem = GAS_PER_ITEM;
+  P.batchMin = 12;
   if (cfg.mix) P.rows.forEach((r, i) => { r.share = cfg.mix[i]; });
   if (cfg.mutateParams) cfg.mutateParams(P);
 
@@ -255,12 +260,13 @@ function main() {
     ['trading stops after day 30', { ...base, trading: d => (d < 30 ? 25 : 0) }],
     ['no paid draws at all', { ...base, drawsPerDay: 0.0001 }],
     ['5 ETH GRAIL won on day 1', { ...base, forceGrailDay: 1 }],
-    ['high gas 30 gwei', { ...base, gasPriceGwei: 30 }],
-    ['high gas 30 gwei, owner raises maintenance to 400 bps', { ...base, gasPriceGwei: 30, mutateParams: P => { P.maintBps = 400; } }],
-    ['high gas 10 gwei', { ...base, gasPriceGwei: 10 }],
+    ['gas 1 gwei', { ...base, gasPriceGwei: 1 }],
+    ['gas 5 gwei', { ...base, gasPriceGwei: 5 }],
+    ['gas 5 gwei, owner raises maintenance to 400 bps', { ...base, gasPriceGwei: 5, mutateParams: P => { P.maintBps = 400; } }],
+    ['gas 30 gwei', { ...base, gasPriceGwei: 30 }],
     ['keeper down 3 days in 10', { ...base, keeperOff: d => d % 10 < 3 }],
     ['keeper down days 30 to 60', { ...base, keeperOff: d => d >= 30 && d < 60 }],
-    ['reduced refill: batch 40, high gas', { ...base, gasPriceGwei: 20, mutateParams: P => { P.batchMin = 40; P.batchMaxAge = 4 * 3600; } }],
+    ['reduced refill: 4 hour batches, 5 gwei', { ...base, gasPriceGwei: 5, mutateParams: P => { P.batchMaxAge = 4 * 3600; } }],
   ], seeds, [C.founders, C.d1, C.earn, C.rep, C.minRes, C.hits]);
 
   md += grid('Sponsored Wrapped Cryptopunk (value 30 ETH, cap 36 ETH, half the post-founder trading share)', [

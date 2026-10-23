@@ -61,7 +61,8 @@ abstract contract EngineDeployer {
         p.fwaFactory = FWA_FACTORY;
         p.admin = deployer;
         p.mix = _mix();
-        p.feeSplit = IPoolTypes.FeeSplit({premiumBps: 200, maintenanceBps: 100, feedBps: 400});
+        // Premium 300: in the engine the premium is what pays founders and buybacks (D10).
+        p.feeSplit = IPoolTypes.FeeSplit({premiumBps: 300, maintenanceBps: 100, feedBps: 400});
         p.grail = IPoolTypes.GrailParams({
             targetWei: 25 ether,
             listBps: 7_500,
@@ -79,7 +80,8 @@ abstract contract EngineDeployer {
         p.openingDeadline = 24 hours;
         p.minItems = 100;
         p.grailProbCapBps = 1_000;
-        p.batchMin = 20;
+        // One settle lists at most 12 items (EIP-7825 gas cap), so a batch is 12.
+        p.batchMin = 12;
         p.batchMaxAge = 1 hours;
         p.surpriseBps = 200;
         p.restoreK = 8;

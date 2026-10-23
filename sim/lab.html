@@ -546,7 +546,7 @@ function simulate(P, seed, days, snapDays, opts) {
 
   // ---------- keeper cost and refund (SPEC 10)
   function keeperRefund(items) {
-    const cost = (GAS_BASE + GAS_ITEM * items + GAS_OVERHEAD) * gas + tip;
+    const cost = (GAS_BASE + (P.gasPerItem || GAS_ITEM) * items + GAS_OVERHEAD) * gas + tip;
     const refund = Math.min(S.maint, cost);
     S.maint -= refund;
     A.keeperCost += cost; A.refunds += refund; A.shortfall += cost - refund;

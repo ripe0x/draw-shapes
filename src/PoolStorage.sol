@@ -29,7 +29,8 @@ abstract contract PoolStorage is IPoolTypes, ReentrancyGuard {
     uint256 internal constant MAX_FEE_SPLIT_BPS = 1_000;
     uint256 internal constant VOLUME_DAYS = 7;
     uint256 internal constant MAX_SETTLE_ITEMS = 20;
-    uint256 internal constant MAX_OPEN_MINTS = 20;
+    /// @dev Items one `open()` lists; sized for the EIP-7825 per-transaction gas cap like `MAX_LIST_PER_SETTLE`.
+    uint256 internal constant MAX_OPEN_MINTS = 12;
     uint256 internal constant MAX_TIP = 0.01 ether;
     uint256 internal constant MAX_RESTORE_K = 100;
     uint256 internal constant MAX_BAND_BPS = 100_000;

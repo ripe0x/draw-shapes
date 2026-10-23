@@ -654,7 +654,7 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         assertGe(pool.maintenance(), maintenanceBefore, "only a harvest changes maintenance");
     }
 
-    function test_settleListsAtMostTwentyFivePerCall() public {
+    function test_settleListsAtMostTwelvePerCall() public {
         _setCooldown(0);
         _fundMaintenance();
         _spare(0.4 ether);
@@ -665,39 +665,42 @@ contract PoolReplaceForkTest is ForkBase, PoolFixture {
         uint256 listedBefore = pool.listedCount();
 
         (uint256 listed,) = _settle();
-        assertEq(listed, 25, "MAX_LIST_PER_SETTLE");
-        assertEq(pool.listedCount(), listedBefore + 25);
-        assertEq(pool.replacementLength(), 5);
-        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.Batch), "five queued meets this fixture's batchMin");
+        assertEq(listed, 12, "MAX_LIST_PER_SETTLE");
+        assertEq(pool.listedCount(), listedBefore + 12);
+        assertEq(pool.replacementLength(), 18);
+        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.Batch), "18 queued meets this fixture's batchMin");
 
         (listed,) = _settle();
-        assertEq(listed, 5);
+        assertEq(listed, 12);
+        assertEq(pool.replacementLength(), 6);
+        (listed,) = _settle();
+        assertEq(listed, 6);
         assertEq(pool.replacementLength(), 0);
     }
 
-    function test_batchTriggerAtTwentyListsAllTwentyInOneSettle() public {
+    function test_batchTriggerAtTwelveListsAllTwelveInOneSettle() public {
         _setCooldown(0);
         _fundMaintenance();
         _spare(0.3 ether);
-        _admin().setBatch(20, 1 hours);
-        for (uint256 i; i < 19; ++i) {
+        _admin().setBatch(12, 1 hours);
+        for (uint256 i; i < 11; ++i) {
             pool.pushReplacement(0);
         }
-        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.None), "19 queued");
+        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.None), "11 queued");
         pool.pushReplacement(0);
-        assertEq(pool.replacementLength(), 20);
-        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.Batch), "20 queued");
+        assertEq(pool.replacementLength(), 12);
+        assertEq(uint8(_due()), uint8(IPoolTypes.SettleTrigger.Batch), "12 queued");
         uint256 listedBefore = pool.listedCount();
 
         uint256 gasBefore = gasleft();
         vm.prank(keeper);
         pool.settle(20);
-        emit log_named_uint("gas of settle listing 20", gasBefore - gasleft());
+        emit log_named_uint("gas of settle listing 12", gasBefore - gasleft());
         uint256 listed = pool.listedCount() - listedBefore;
         uint256 refund = keeper.balance;
 
-        assertEq(listed, 20, "one due settle lists the whole batch");
-        assertEq(pool.listedCount(), listedBefore + 20);
+        assertEq(listed, 12, "one due settle lists the whole batch");
+        assertEq(pool.listedCount(), listedBefore + 12);
         assertEq(pool.replacementLength(), 0);
         assertGe(refund, IPool(address(pool)).tipWei());
         assertEq(keeper.balance, refund);

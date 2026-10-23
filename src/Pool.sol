@@ -42,9 +42,12 @@ contract Pool is PoolBooks {
     // ------------------------------------------------------------------ constants
 
     uint256 internal constant MAX_CLAIM_ITEMS = 20;
-    uint256 internal constant MAX_LIST_PER_SETTLE = 25;
+    /// @dev A listed item costs about 1,000,000 gas (mint, pack and FWA listing; measured on the fork,
+    ///      `test/fork/engine/EngineGas.t.sol`). Batches stay well under the 16,777,216 gas
+    ///      per-transaction cap of EIP-7825.
+    uint256 internal constant MAX_LIST_PER_SETTLE = 12;
     /// @dev Queued replacements and held items listed by one `rotate`.
-    uint256 internal constant MAX_LIST_PER_ROTATE = 20;
+    uint256 internal constant MAX_LIST_PER_ROTATE = 12;
     /// @dev Listed items above `concurrency` below which `settleDue` returns `Thin`.
     uint256 internal constant THIN_MARGIN = 5;
     uint256 internal constant SETTLE_BUDGET = 3;

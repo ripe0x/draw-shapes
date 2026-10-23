@@ -37,7 +37,10 @@ Shares are nontransferable. There is one admin role.
 `Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
 delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
 `nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 23,743 B, `PoolAdmin` 23,943 B, `PoolListing` 24,365 B, `Lens` 17,848 B (limit 24,576 B).
+Runtime sizes: `Pool` 23,778 B, `PoolAdmin` 24,158 B, `PoolListing` 24,400 B, `Lens` 17,848 B (limit 24,576 B).
+The engine contracts (section 17) are `EngineTreasury` 24,359 B (via_ir), `FoundingRound` 3,015 B and
+`PrizeSponsorship` 5,326 B. Every listing batch is sized for the 16,777,216 gas per-transaction cap of
+EIP-7825: one listed item costs about 1,000,000 gas, so `open`, `settle` and `rotate` list at most 12.
 
 ## 4. Buckets and invariants
 
@@ -117,7 +120,7 @@ the rest is listed on the board).
 
 - Opening: deposits open from deployment at NAV, which is pure cash, so every opening depositor receives shares 1:1.
   Pulls closed. Admin calls `createFwaPool(expectedFee)`, which starts the opening deadline. After the deadline anyone
-  calls `open()`, which enables FWA acquisitions and lists at most 20 items per call. The first call after which at
+  calls `open()`, which enables FWA acquisitions and lists at most 12 items per call. The first call after which at
   least `minItems` are listed, or which lists fewer than 20, sets Live. Once Live, the `Deep` settle trigger (section 9)
   lists the rest of the board up to `boardItems()`.
 - Live: all paths open subject to pause flags and reopen guards.
@@ -197,7 +200,9 @@ price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps +
 ## 9. Board, replacement, rotation
 
 The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The board
-depth is `boardItems() = max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`, where `meanRowCost` is the
+depth is `boardItems() = max(minItems, (nav' - nav' * reserveBps / 10_000) / meanRowCost)`, with `nav' = min(nav,
+boardNavCap)` when the admin set `boardNavCap` (`setBoardNavCap`, zero for no cap; the engine treasury sets it to its
+pool target so NAV above it stays in `cash`), where `meanRowCost` is the
 share-weighted backing plus replacement mint fee of the mix rows. Capital above the reserve goes on the board. The target
 depth of a row is `ceil(boardItems() * shareBps / 10_000)`. A row's count is its listed, held and queued items. A row
 above its target is not replaced after a capture until it is below it again; nothing is delisted when NAV falls.
@@ -247,7 +252,7 @@ mintCounts)` with one held Shape per rung that has one and a mint count for the 
 
 `settle(maxCount)` (anyone) books, harvests and calls `activateListings` when FWA holds no unsettled acquisition. When
 `settleDue()` is nonzero and the factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on, it lists at most
-`MAX_LIST_PER_SETTLE` (25) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
+`MAX_LIST_PER_SETTLE` (12) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
 and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
 held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
 replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
@@ -264,7 +269,7 @@ unless a reason holds. `lastRotateAt` moves when the call changed inventory. Rea
 `rotateDue()` returns the first reason that holds, and `None` before the spacing ends, outside Live and when no reason
 holds. A reason can hold while its work is blocked, such as Claim while FWA holds unsettled acquisitions; that call
 leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. Steps, each bounded: (1) settle and harvest; (2) pay
-claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 20 queued replacements
+claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 12 queued replacements
 and held items; (4) `activateListings` when FWA holds no unsettled acquisition and the walk is level; (5) GRAIL step: mint and merge
 (section 11); (6) refund the caller. `open()` queues each row's
 missing items against its target depth and runs step 3.
@@ -476,3 +481,60 @@ All suites run against the real Shapes, Draw Packs and FWA contracts on a mainne
 - Scenario suite: open a pool, deposit, build, pull single and batch, settle, capture a pack, capture a GRAIL, withdraw
   with liquidation, retire, migrate to a second pool and `migrateHolder`.
 - Gas receipts of `acquireBatch(5)`, `settle` and `rotate` in `evidence/`. Sepolia rehearsal, then mainnet.
+
+## 17. Protocol-owned engine
+
+Supersedes the depositor product of sections 1, 2 and 7 for the coin-supported launch. The pool code is
+unchanged except `boardNavCap` (section 9) and the listing batch sizes (section 3); the depositor paths
+still exist and only the treasury can use them. Decisions and numbers: `docs/AUTONOMOUS_DECISIONS.md`.
+
+| Contract | Role |
+| --- | --- |
+| `FoundingRound` | Conditional ETH escrow: `target` is also the hard cap, contributions until `deadline` (48 hours), `release` to the treasury only while Funded and before `launchDeadline` (14 days more), `refund` when the target is missed, the launch window passes or the owner cancels. After release: the founders' ledger. `distribute` (treasury only) credits pro rata; cumulative payments never exceed `capBps` (12,000) of contributions; `claim` pulls. |
+| `EngineTreasury` | The pool's admin and only shareholder; bounty recipient of the ENGINE coin's Artcoins v2 market. Buckets `reserve`, `prizeBudget`, `buybackFund`; principal `basis`; maintenance subsidy `coverageOwed`. |
+| `PrizeSponsorship` | One sponsor NFT listed as a foreign listing at `listPriceWei`, paid up to `capWei` from the treasury's post-founder trading receipts while active. |
+
+Admission: the pool is deployed with `navCapFloor` 0, entry fee 0 and founder window 0, so no deposit
+is possible from construction; `activate` pauses deposits; the treasury's `_deposit` lifts the cap and
+the pause for its own deposit and restores both in the same call.
+
+Treasury flows:
+
+- `activate(fee)` (owner, once): requires the round Funded, the coin bound, the pool Opening without an
+  FWA pool and without shares, and closed admission. Creates the FWA pool, releases the escrow, deposits
+  `poolTarget` (6 ETH), funds the GRAIL (`grailSeed`) and maintenance (0.5 ETH), sets `boardNavCap`,
+  keeps up to `reserveTarget` (4 ETH) and puts any rest in the prize budget.
+- `collectFees()` (anyone): claims escrowed bounty, collects locker rewards when an LP fee exists (the
+  coin part is burned), then books the unbooked balance as trading receipts: reserve refill to target,
+  `founderTradingBps` (6,500) of the rest to founders up to their remaining entitlement, then
+  `sponsorShareBps` of what remains to the active sponsorship up to what it is owed, the rest to the
+  prize budget.
+- `harvest()` (anyone): earnings are ordinary NAV above `basis`, taken only from free pool cash (cash above
+  claims and the pool's reserve), with NAV re-checked against `basis` afterwards. Earnings repay
+  `coverageOwed` into the reserve, refill the reserve, pay `founderEarningsBps` (5,000) to founders up to
+  the entitlement and the rest to the buyback fund. NAV above `poolTarget` while `basis` exceeds it
+  returns principal to the reserve.
+- `maintainCoverage()` (anyone): maintenance below 0.15 ETH refilled to 0.5 ETH while `coverageOwed`
+  stays within 4 x 0.5 ETH; NAV below 80 percent of the pool target refilled from the reserve (raises
+  `basis`).
+- `boostGrail()` (anyone): prize budget above an open bid's price to `Pool.fundGrail`.
+- `buyback(maxEthIn, minCoinOut)` (anyone, once a block, from 180 minutes after the market opened): at most
+  0.5 ETH of the buyback fund, price limit 2 percent, every coin bought burned with a supply check; the
+  bounty of its own swap returns to the buyback fund.
+- `setBid`, `cancelBid` (owner), `fillBid` (holder, not the owner): buys a token of `prizeCollection` at up
+  to `maxBidWei` (60 ETH) from the prize budget and lists it as a treasury-owned foreign listing; its win
+  proceeds return to the prize budget.
+- `setSponsorship(s, shareBps)` (owner): at most `maxSponsorShareBps` (5,000); makes `s` the pool
+  registrar; refuses to replace an active sponsorship.
+- `poolCall(data)` (owner): pool admin allowlist: tuning setters; `setFeeSplit` with `premiumBps` at least
+  200; `setPaused` with deposits paused; `setReserve` at most 2,500; `adminCall` to FWA
+  `recoverRefundedNFT` only; `sweep` to the treasury only. Everything else is refused.
+- `windDown()` (owner, or anyone after 90 days without a booked draw) then `windDownStep()` (anyone):
+  pool retirement and export, GRAIL estate redeemed, shares withdrawn, every wei to founders up to the
+  entitlement, the rest to the buyback fund. After settlement late receipts follow the same order.
+
+Invariants (fork tests `test/fork/engine/`): the treasury balance covers `reserve + prizeBudget +
+buybackFund`; ETH in equals ETH out by category plus booked buckets; founder payments never exceed the
+entitlement; the treasury is the only shareholder and no withdrawal claim is ever queued; every coin
+bought is burned and the burn record equals the supply drop; draw settlement never calls the treasury.
+
