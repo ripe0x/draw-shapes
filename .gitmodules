@@ -11,3 +11,6 @@
 	path = lib/draw-packs
 	url = https://github.com/ripe0x/shape-packs
 	branch = draw-packs
+[submodule "lib/v4-core"]
+	path = lib/v4-core
+	url = https://github.com/Uniswap/v4-core

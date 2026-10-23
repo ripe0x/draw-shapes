@@ -73,6 +73,28 @@ interface IPoolTypes {
         uint256 listedAtPull;
     }
 
+    /// @dev A foreign listing: a token the pool did not mint, listed on the FWA pool for `controller`.
+    ///      `listingId` is the FWA listing id the entry is keyed by. `notional` is the list price and
+    ///      is zero while the token is held unlisted after a refunded delivery. `lastRepriceAt` is the
+    ///      timestamp of the last `repriceForeign`, zero before the first.
+    struct ForeignListing {
+        address collection;
+        uint256 tokenId;
+        address controller;
+        uint256 listingId;
+        uint256 notional;
+        uint64 lastRepriceAt;
+    }
+
+    /// @dev Proceeds of a captured foreign listing, booked in `foreignReceivable` and paid to
+    ///      `controller` when the next harvest withdraws them from FWA.
+    struct ForeignDue {
+        address controller;
+        uint256 listingId;
+        uint256 tokenId;
+        uint256 proceeds;
+    }
+
     struct Claim {
         address to;
         uint64 requestedAt;
@@ -190,6 +212,15 @@ interface IPoolTypes {
     error AlreadyRegistered();
     error NotDelegated();
     error NotSelf();
+    error ForeignFull();
+    error NotController();
+    error ListingNotActive(uint256 listingId);
+    error ProbCapExceeded();
+    error InsufficientGas();
+    error PriceOutOfRange();
+    error RepriceTooSmall();
+    error RepriceTooSoon();
+    error AdminCallDenied();
 
     event Deposited(address indexed to, uint256 value, uint256 contribution, uint256 shares);
     event Withdrawn(address indexed from, uint256 shares, uint256 paidNow, uint256 enqueued);
@@ -237,6 +268,20 @@ interface IPoolTypes {
     event GrailCycleCompleted(uint256 indexed cycleId, uint256 nextTargetWei);
     /// @dev `proceeds` is zero for a write-off of a pending delivery.
     event GrailCaptured(uint256 indexed requestId, uint256 indexed listingId, uint256 backing, uint256 proceeds);
+    event ForeignRegistered(
+        address indexed collection, uint256 indexed tokenId, address indexed controller, uint256 listingId, uint256 price
+    );
+    event RegistrarSet(address indexed registrar);
+    event ForeignRepriced(uint256 indexed listingId, uint256 price);
+    /// @dev `to` is the recipient of the token. `exportStep` withdraws to the entry's controller.
+    event ForeignWithdrawn(uint256 indexed listingId, address indexed collection, uint256 tokenId, address to);
+    /// @dev `delivered` is true when the controller's `onForeignCapture` call succeeded. Otherwise
+    ///      `proceeds` joined `cash` as margin. `proceeds` is zero for a capture whose request was
+    ///      opened directly at the FWA pool and for a write-off of a pending delivery.
+    event ForeignCaptured(uint256 indexed listingId, uint256 tokenId, uint256 proceeds, bool delivered);
+    /// @dev `exportStep` could not withdraw or transfer the token of a foreign listing. The entry is
+    ///      removed and the token is unregistered. `sweep` sends it to the controller once the pool holds it.
+    event ForeignReleaseFailed(uint256 indexed listingId, uint256 tokenId);
     event ExitStarted(address indexed dest);
     /// @dev `nav` is `exportedNav`, `shares` is `exportedShares`.
     event Exported(uint256 shares, uint256 nav);
@@ -263,6 +308,7 @@ interface IPool is IPoolTypes {
     function adminModule() external view returns (address);
     function listingModule() external view returns (address);
     function admin() external view returns (address);
+    function registrar() external view returns (address);
     function lifecycle() external view returns (Lifecycle);
     function pullsPaused() external view returns (bool);
     function depositsPaused() external view returns (bool);
@@ -274,6 +320,7 @@ interface IPool is IPoolTypes {
     function maintenanceReceivable() external view returns (uint256);
     function grail() external view returns (Grail memory);
     function grailItems() external view returns (GrailItem[] memory);
+    function foreignListings() external view returns (ForeignListing[] memory);
     function totalShares() external view returns (uint256);
     function sharesOf(address account) external view returns (uint256);
     function claimQueue(uint256 index) external view returns (address to, uint64 requestedAt, uint256 amount);
@@ -386,6 +433,9 @@ interface IPool is IPoolTypes {
     function setFeeSplit(uint16 premiumBps, uint16 maintenanceBps, uint16 feedBps) external;
     function setEntryFee(uint32 floorBps, uint32 capBps, uint32 paybackDays) external;
     function setNavCapFloor(uint256 wei_) external;
+    /// @notice Ordinary NAV above which the board does not deepen. Zero for no cap.
+    function setBoardNavCap(uint256 wei_) external;
+    function boardNavCap() external view returns (uint256);
     function setTurnover(uint16 bps) external;
     function setFounderWindow(uint32 seconds_) external;
     function setMix(PricingLib.MixRow[] memory rows) external;
@@ -394,6 +444,12 @@ interface IPool is IPoolTypes {
     /// @notice Sets the ladder step thresholds. `stepUpSeconds` is below `stepDownSeconds`.
     function setGrailStep(uint32 stepUpSeconds, uint32 stepDownSeconds) external;
     function setGrailTarget(uint256 targetWei) external;
+    /// @dev `PoolListing` entrypoints for foreign listings. `registerForeign` is the admin's or the registrar's, the
+    ///      other two are the entry's controller's.
+    function registerForeign(address collection, uint256 tokenId, address controller, uint256 priceWei) external;
+    function repriceForeign(uint256 listingId, uint256 priceWei) external;
+    function withdrawForeign(uint256 listingId, address to) external;
+    function setRegistrar(address registrar_) external;
     function setMaxBatch(uint256 n) external;
     function setConcurrency(uint256 n) external;
     function setRotateInterval(uint256 seconds_) external;

@@ -6,6 +6,7 @@ remappings = [
     "ladder/=lib/shapes/ladders/mainnet/",
     "@openzeppelin/contracts/=lib/shapes/lib/openzeppelin-contracts/contracts/",
     "draw-packs/=lib/draw-packs/src/",
+    "@uniswap/v4-core/=lib/v4-core/",
 ]
 src = "src"
 out = "out"
@@ -27,6 +28,7 @@ compilation_restrictions = [
     { paths = "src/PoolListing.sol", via_ir = true },
     { paths = "src/PoolBooks.sol", via_ir = true },
     { paths = "src/PoolStorage.sol", via_ir = true },
+    { paths = "src/engine/EngineTreasury.sol", via_ir = true },
 ]
 bytecode_hash = "none"
 cbor_metadata = false
@@ -44,4 +46,5 @@ remappings = [
     "ladder/=lib/shapes/ladders/testnet/",
     "@openzeppelin/contracts/=lib/shapes/lib/openzeppelin-contracts/contracts/",
     "draw-packs/=lib/draw-packs/src/",
+    "@uniswap/v4-core/=lib/v4-core/",
 ]

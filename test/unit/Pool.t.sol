@@ -223,6 +223,13 @@ contract PoolHarness is Pool {
         _grail.receivable += grailWei;
     }
 
+    /// @dev Raises the last foreign due and `foreignReceivable` by `extra`, as booked proceeds that FWA
+    ///      never received.
+    function inflateForeignDue(uint256 extra) external {
+        _foreignDue[_foreignDue.length - 1].proceeds += extra;
+        _foreignReceivable += extra;
+    }
+
     function setMintLineOwed(uint256 amount) external {
         _mintLineOwed = amount;
     }
