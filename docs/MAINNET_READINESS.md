@@ -17,7 +17,9 @@ more code from this branch, except fixes an external audit may find.
 | `971fbdc` | Engine core: foreign-listing port, FoundingRound, EngineTreasury, PrizeSponsorship, `boardNavCap`, first fork tests |
 | `ec8fc1a` | Security review fixes (FWA pool created in `activate`, reserve cap, no self-filled bids), step deploy script, simulator results, decision and hook docs |
 | `ecfe589` | EIP-7825 batch sizes, premium 300, measured gas model, SPEC/DEPLOY/RUNBOOK/SECURITY/ECONOMIC docs |
-| see PR head | Frontend, readiness record |
+| `5bb76f5` | Final decision numbers, readiness record, VRF fee correction |
+| `4a41f3f` | PlayMonth evidence regenerated with 12-item batches |
+| `0bf5c7c` | Web: `/`, `/pull`, `/fund`, `/treasury`, `/sponsor`, `/protocol` for the engine |
 
 ## Test commands and results
 
@@ -33,7 +35,8 @@ Fork RPC: `https://mainnet.gateway.tenderly.co`. Results at commit `ecfe589` unl
 | `forge build --sizes --skip test --skip script` | | every deployed contract under 24,576 B: Pool 23,778, PoolAdmin 24,158, PoolListing 24,400, Lens 17,848, EngineTreasury 24,359, PrizeSponsorship 5,326, FoundingRound 3,015 |
 | `node sim/engine.mjs --out sim/engine-results.md` | | 72 scenarios x 12 seeds x 365 days, tables in `docs/ECONOMIC_VALIDATION.md` |
 | `script/engine-local.sh start` | 26,240,000 (anvil, Fusaka rules) | every launch step broadcast as real transactions: see "Deployment rehearsal" |
-| `cd web && pnpm typecheck && pnpm build` | | see PR description |
+| `cd web && pnpm typecheck && pnpm build` (and `pnpm lint` by the web agent) | | pass at `0bf5c7c` |
+| Browser on the anvil rehearsal (`localhost:3002`) | 26,240,000 fork | a draw through `/pull`; `collectFees` through `/treasury` (1 ETH booked: 0.65 to founders, 0.175 to the sponsor, 0.175 to prizes); founder claim of 0.1625 ETH through `/fund`. Not exercised in the browser: sponsor stake/claim/reclaim (covered by fork tests), harvest and buyback successes (covered by fork tests). |
 
 Not run: the full invariant campaign (`test/invariant/*` beyond the reach test) and the other PlayMonth
 scenarios; these are frozen-candidate checks (`CANDIDATE_RUN=1`) for the release milestone.
