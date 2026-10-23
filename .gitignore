@@ -22,3 +22,5 @@ deployments/.dry-run-*
 broadcast/**/31337/
 .anvil-*.pid
 .anvil-*.log
+deployments/engine-31337.json
+foundry-pp/

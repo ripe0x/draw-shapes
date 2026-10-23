@@ -171,6 +171,8 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
     ///      through the coverage-first refill, the founders' share of receipts. The owner's remedy is a
     ///      higher `maintenanceBps`.
     uint256 internal constant MAX_SUBSIDY_TARGETS = 4;
+    /// @dev Highest pool `reserveBps` the owner may set. The pool's reserve is cash `harvest` cannot take.
+    uint256 internal constant MAX_RESERVE_BPS = 2_500;
 
     IPool public immutable pool;
     IPoolManager public immutable poolManager;
@@ -329,29 +331,34 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
     }
 
     /// @notice Why `activate` would revert now, or 0 when it would not: 1 round not funded, 2 coin
-    ///         not bound, 3 pool admin is not this treasury, 4 FWA pool missing or pool not Opening,
-    ///         5 pool already has shares, 6 pool admission terms would tax or block the treasury.
+    ///         not bound, 3 pool admin is not this treasury, 4 pool not Opening or its FWA pool already
+    ///         created, 5 pool already has shares, 6 pool admission terms would tax or block the treasury.
     function activationCheck() public view returns (uint8) {
         if (address(round) == address(0) || round.state() != FoundingRound.State.Funded) return 1;
         if (address(coin) == address(0)) return 2;
         if (pool.admin() != address(this)) return 3;
-        if (address(pool.fwaPool()) == address(0) || pool.lifecycle() != IPoolTypes.Lifecycle.Opening) return 4;
+        if (address(pool.fwaPool()) != address(0) || pool.lifecycle() != IPoolTypes.Lifecycle.Opening) return 4;
         if (pool.totalShares() != 0) return 5;
         (uint32 floorBps, uint32 capBps,) = pool.entryFee();
         if (floorBps != 0 || capBps != 0 || pool.founderWindowSeconds() != 0 || pool.navCapFloor() != 0) return 6;
         return 0;
     }
 
-    /// @notice Takes the funded escrow and deploys it: `poolTarget` into the pool as ordinary NAV,
-    ///         `grailSeed` into the GRAIL fund, `maintenanceTarget` into maintenance, up to
-    ///         `reserveTarget` into the reserve and the rest into the prize budget. Owner only, once,
-    ///         when `activationCheck()` is 0. Pool deposits stay paused for everyone else.
-    function activate() external onlyOwner nonReentrant {
+    /// @notice Takes the funded escrow and deploys it: creates the FWA pool (paying
+    ///         `fwaCreationFee` in FWA tokens the pool already holds), then `poolTarget` into the pool
+    ///         as ordinary NAV, `grailSeed` into the GRAIL fund, `maintenanceTarget` into maintenance,
+    ///         up to `reserveTarget` into the reserve and the rest into the prize budget. Owner only,
+    ///         once, when `activationCheck()` is 0. Pool deposits stay paused for everyone else.
+    /// @dev The FWA pool is created here and nowhere else: its creation starts the pool's opening
+    ///      deadline, after which anyone may `open()`, and an unseeded pool opened early would lock
+    ///      activation out.
+    function activate(uint256 fwaCreationFee) external onlyOwner nonReentrant {
         if (activated) revert AlreadySet();
         uint8 check = activationCheck();
         if (check != 0) revert NotReady(check);
         activated = true;
         uint256 released = round.release();
+        pool.createFwaPool(fwaCreationFee);
         pool.setPaused(pool.pullsPaused(), true);
         pool.setBoardNavCap(poolTarget);
         _deposit(poolTarget);
@@ -534,10 +541,10 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
 
     /// @notice Sells the bid's token to the treasury at the bid price and lists it on the board as a
     ///         treasury-owned foreign listing. The caller holds the token and has approved this
-    ///         contract. Reverts while the prize budget is below the price.
+    ///         contract. Reverts while the prize budget is below the price, and for the owner.
     function fillBid(uint256 tokenId) external live nonReentrant {
         Bid memory b = bid;
-        if (!b.open || b.tokenId != tokenId || prizeBudget < b.priceWei) revert BidInvalid();
+        if (!b.open || b.tokenId != tokenId || prizeBudget < b.priceWei || msg.sender == owner) revert BidInvalid();
         delete bid;
         prizeBudget -= b.priceWei;
         _totals.collectiblesBought += b.priceWei;
@@ -584,9 +591,10 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
 
     /// @notice Forwards an admin call to the pool. Owner only. Tuning setters pass. `setFeeSplit`
     ///         keeps `premiumBps` at or above `premiumFloorBps`; `setPaused` keeps deposits paused;
+    ///         `setReserve` stays at or below `MAX_RESERVE_BPS`, so earnings cannot be held back as reserve;
     ///         `adminCall` reaches only FWA `recoverRefundedNFT`; `sweep` sends only to this treasury.
     ///         Every other selector, including `setAdmin`, `startExit`, `transferGrailEstate`,
-    ///         `setRegistrar`, `registerForeign`, the admission setters, `deposit` and `withdraw`, is
+    ///         `setRegistrar`, `registerForeign`, `createFwaPool`, the admission setters, `deposit` and `withdraw`, is
     ///         refused, so the owner cannot move principal, change who holds the pool or redirect a
     ///         prize.
     function poolCall(bytes calldata data) external onlyOwner returns (bytes memory ret) {
@@ -597,6 +605,8 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
         } else if (sel == IPool.setPaused.selector) {
             (, bool deposits) = abi.decode(data[4:], (bool, bool));
             if (!deposits) revert ArgumentDenied(sel);
+        } else if (sel == IPool.setReserve.selector) {
+            if (abi.decode(data[4:], (uint256)) > MAX_RESERVE_BPS) revert ArgumentDenied(sel);
         } else if (sel == IPool.adminCall.selector) {
             (address target, bytes memory inner, uint256 value) = abi.decode(data[4:], (address, bytes, uint256));
             if (target != address(pool.fwaPool()) || value != 0 || bytes4(inner) != IFWAClone.recoverRefundedNFT.selector)
@@ -607,13 +617,12 @@ contract EngineTreasury is ReentrancyGuard, IUnlockCallback, IForeignController 
             (,, address to) = abi.decode(data[4:], (address, uint256, address));
             if (to != address(this)) revert ArgumentDenied(sel);
         } else if (
-            sel != IPool.createFwaPool.selector && sel != IPool.setMix.selector && sel != IPool.setGrail.selector
+            sel != IPool.setMix.selector && sel != IPool.setGrail.selector
                 && sel != IPool.setGrailStep.selector && sel != IPool.setGrailTarget.selector
                 && sel != IPool.setMaxBatch.selector && sel != IPool.setConcurrency.selector
                 && sel != IPool.setRotateInterval.selector && sel != IPool.setMinItems.selector
                 && sel != IPool.setGrailProbCap.selector && sel != IPool.setBatch.selector
-                && sel != IPool.setReplacement.selector && sel != IPool.setReserve.selector
-                && sel != IPool.setTip.selector && sel != IPool.setListWhilePaused.selector
+                && sel != IPool.setReplacement.selector && sel != IPool.setTip.selector && sel != IPool.setListWhilePaused.selector
                 && sel != IPool.setTurnover.selector
         ) {
             revert SelectorDenied(sel);

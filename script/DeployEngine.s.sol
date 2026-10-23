@@ -27,8 +27,8 @@ import {EngineDeployer} from "./EngineDeployer.sol";
 ///      coin      ARTCOINS   The Artcoins factory owner launches ENGINE with `_coinConfig`.
 ///      lock      TOKEN_ADMIN Locks the coin's fee recipients.
 ///      bind      OWNER      Binds the coin on the treasury (checks recipient, fee terms, lock).
-///      fwa       OWNER      Creates the FWA pool. The pool must already hold the FWA creation fee.
-///      activate  OWNER      Takes the funded escrow and seeds the game.
+///      activate  OWNER      Takes the funded escrow, creates the FWA pool (the pool must already hold
+///                           the FWA creation fee in FWA tokens) and seeds the game.
 ///      open      anyone     Opens the board after the opening deadline and fills it.
 ///      sponsor   OWNER      Deploys a PrizeSponsorship with SPONSOR_* terms and attaches it.
 ///      status    anyone     Prints every readback, changes nothing.
@@ -44,7 +44,6 @@ contract DeployEngine is Script, EngineDeployer {
         else if (s == keccak256("coin")) _coinStep();
         else if (s == keccak256("lock")) _lockStep();
         else if (s == keccak256("bind")) _bindStep();
-        else if (s == keccak256("fwa")) _fwaStep();
         else if (s == keccak256("activate")) _activateStep();
         else if (s == keccak256("open")) _openStep();
         else if (s == keccak256("sponsor")) _sponsorStep();
@@ -84,6 +83,7 @@ contract DeployEngine is Script, EngineDeployer {
             revert Guard("round readback");
         }
         console2.log("FOUNDING_ROUND", address(r));
+        _record("round", address(r));
         console2.log("contributions close at", r.deadline());
         console2.log("launch deadline", r.launchDeadline());
     }
@@ -116,6 +116,7 @@ contract DeployEngine is Script, EngineDeployer {
                 || sc.lpFeePips != COIN_LP_FEE_PIPS || sc.maxReferralBpsOfVolume != 0
         ) revert Guard("coin fee readback");
         console2.log("COIN", coin);
+        _record("coin", coin);
     }
 
     function _lockStep() internal {
@@ -137,20 +138,6 @@ contract DeployEngine is Script, EngineDeployer {
         console2.logBytes32(bytes32(uint256(keccak256(abi.encode(t.poolKey())))));
     }
 
-    function _fwaStep() internal {
-        EngineTreasury t = _treasury();
-        IPool pool = t.pool();
-        IFWACloneFactory factory = IFWACloneFactory(FWA_FACTORY);
-        uint256 fee = factory.poolCreationFee();
-        if (IERC20(FWA_TOKEN).balanceOf(address(pool)) < fee) revert Guard("pool lacks the FWA creation fee");
-        vm.startBroadcast(vm.envAddress("OWNER"));
-        t.poolCall(abi.encodeCall(IPool.createFwaPool, (fee)));
-        vm.stopBroadcast();
-        if (address(pool.fwaPool()) == address(0)) revert Guard("FWA pool readback");
-        console2.log("FWA_POOL", address(pool.fwaPool()));
-        console2.log("opening deadline at", pool.openingDeadlineAt());
-    }
-
     function _activateStep() internal {
         EngineTreasury t = _treasury();
         uint8 check = t.activationCheck();
@@ -158,10 +145,15 @@ contract DeployEngine is Script, EngineDeployer {
             console2.log("activationCheck", check);
             revert Guard("not ready");
         }
-        vm.startBroadcast(vm.envAddress("OWNER"));
-        t.activate();
-        vm.stopBroadcast();
         IPool pool = t.pool();
+        uint256 fee = IFWACloneFactory(FWA_FACTORY).poolCreationFee();
+        if (IERC20(FWA_TOKEN).balanceOf(address(pool)) < fee) revert Guard("pool lacks the FWA creation fee");
+        vm.startBroadcast(vm.envAddress("OWNER"));
+        t.activate(fee);
+        vm.stopBroadcast();
+        _record("fwaPool", address(pool.fwaPool()));
+        console2.log("FWA_POOL", address(pool.fwaPool()));
+        console2.log("opening deadline at", pool.openingDeadlineAt());
         if (!t.activated() || pool.totalShares() != pool.sharesOf(address(t)) || !pool.depositsPaused()) {
             revert Guard("activation readback");
         }
@@ -193,6 +185,7 @@ contract DeployEngine is Script, EngineDeployer {
         vm.stopBroadcast();
         if (address(t.sponsorship()) != address(s) || t.pool().registrar() != address(s)) revert Guard("sponsor readback");
         console2.log("SPONSORSHIP", address(s));
+        _record("sponsorship", address(s));
     }
 
     // ------------------------------------------------------------------ checks
@@ -251,13 +244,21 @@ contract DeployEngine is Script, EngineDeployer {
         }
     }
 
+    /// @dev Sets `key` of the deployment record to `value` when `DEPLOYMENT_RECORD` names one. Skipped in
+    ///      a dry run, which `script/engine.sh` marks with `DRY_RUN=1`.
+    function _record(string memory key, address value) internal {
+        string memory path = vm.envOr("DEPLOYMENT_RECORD", string(""));
+        if (bytes(path).length == 0 || vm.envOr("DRY_RUN", uint256(0)) == 1) return;
+        vm.writeJson(string.concat("\"", vm.toString(value), "\""), path, string.concat(".", key));
+    }
+
     function _treasury() internal view returns (EngineTreasury) {
         return EngineTreasury(payable(vm.envAddress("TREASURY")));
     }
 
     function _writeRecord(Deployment memory d, address drawPacks) internal {
         string memory path = vm.envOr("DEPLOYMENT_RECORD", string(""));
-        if (bytes(path).length == 0) return;
+        if (bytes(path).length == 0 || vm.envOr("DRY_RUN", uint256(0)) == 1) return;
         string memory k = "engine";
         vm.serializeUint(k, "chainId", block.chainid);
         vm.serializeAddress(k, "pool", address(d.pool));
@@ -266,6 +267,12 @@ contract DeployEngine is Script, EngineDeployer {
         vm.serializeAddress(k, "lens", address(d.lens));
         vm.serializeAddress(k, "treasury", address(d.treasury));
         vm.serializeAddress(k, "drawPacks", drawPacks);
+        vm.serializeAddress(k, "shapes", SHAPES);
+        vm.serializeAddress(k, "poolManager", POOL_MANAGER);
+        vm.serializeAddress(k, "round", address(0));
+        vm.serializeAddress(k, "coin", address(0));
+        vm.serializeAddress(k, "fwaPool", address(0));
+        vm.serializeAddress(k, "sponsorship", address(0));
         vm.serializeString(k, "gitCommit", vm.envOr("GIT_COMMIT", string("unknown")));
         string memory json = vm.serializeUint(k, "blockNumber", block.number);
         vm.writeJson(json, path);

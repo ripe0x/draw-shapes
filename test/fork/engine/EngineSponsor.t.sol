@@ -188,6 +188,18 @@ contract EngineSponsorForkTest is EngineBase {
         _assertTreasuryBooks();
     }
 
+    function test_ownerCannotFillOwnBid() public {
+        uint256 id = _wpunk(1, owner);
+        vm.prank(owner);
+        treasury.setBid(id, 0.5 ether, 6 ether);
+        _trade(40 ether);
+        vm.prank(owner);
+        IERC721(WRAPPED_PUNKS).approve(address(treasury), id);
+        vm.prank(owner);
+        vm.expectRevert(EngineTreasury.BidInvalid.selector);
+        treasury.fillBid(id);
+    }
+
     function test_bidBoundedAndOwnerOnly() public {
         vm.prank(player);
         vm.expectRevert(EngineTreasury.NotOwner.selector);

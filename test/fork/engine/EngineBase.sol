@@ -151,26 +151,24 @@ abstract contract EngineBase is ForkBase, EngineDeployer {
         key = treasury.poolKey();
     }
 
-    /// @dev Pays the FWA pool creation fee into the pool from a real FWA holder, then the treasury
-    ///      owner creates the FWA pool through `poolCall`.
-    function _createFwaPool() internal {
-        uint256 fee = factory.poolCreationFee();
+    /// @dev Pays the FWA pool creation fee into the pool from a real FWA holder. Returns the fee.
+    function _fundFwaFee() internal returns (uint256 fee) {
+        fee = factory.poolCreationFee();
         if (fee != 0) {
             vm.prank(factory.owner());
             IERC20(FWA_TOKEN).transfer(address(d.pool), fee);
         }
-        vm.prank(owner);
-        treasury.poolCall(abi.encodeCall(IPool.createFwaPool, (fee)));
-        clone = ip.fwaPool();
     }
 
-    /// @dev Round funded, coin launched, FWA pool created, treasury activated, board opened and filled.
+    /// @dev Round funded, coin launched, treasury activated (which creates the FWA pool), board opened
+    ///      and filled.
     function _launch() internal {
         _openAndFundRound(TARGET);
         _launchCoin();
-        _createFwaPool();
+        uint256 fee = _fundFwaFee();
         vm.prank(owner);
-        treasury.activate();
+        treasury.activate(fee);
+        clone = ip.fwaPool();
         vm.warp(ip.openingDeadlineAt());
         while (ip.lifecycle() == IPoolTypes.Lifecycle.Opening) ip.open();
         _settleBoard();

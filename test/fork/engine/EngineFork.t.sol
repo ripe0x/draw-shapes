@@ -60,10 +60,13 @@ contract EngineForkTest is EngineBase {
         treasury.setFoundingRound(round);
         _contribute(f1, 10 ether);
         _launchCoin();
-        _createFwaPool();
+        uint256 fee = _fundFwaFee();
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(EngineTreasury.NotReady.selector, uint8(1)));
-        treasury.activate();
+        treasury.activate(fee);
+        // Without an FWA pool nobody can open the empty pool early.
+        vm.expectRevert(IPoolTypes.FwaPoolMissing.selector);
+        ip.open();
         // Deadline passes below target: every contributor is refunded in full, nothing was spent.
         vm.warp(round.deadline());
         uint256 before = f1.balance;
@@ -285,6 +288,12 @@ contract EngineForkTest is EngineBase {
         treasury.poolCall(
             abi.encodeCall(IPool.adminCall, (address(coin), abi.encodeCall(IERC20.transfer, (owner, 1)), 0))
         );
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(EngineTreasury.ArgumentDenied.selector, IPool.setReserve.selector));
+        treasury.poolCall(abi.encodeCall(IPool.setReserve, (10_000)));
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(EngineTreasury.SelectorDenied.selector, IPool.createFwaPool.selector));
+        treasury.poolCall(abi.encodeCall(IPool.createFwaPool, (0)));
         // A tuning setter passes.
         vm.prank(owner);
         treasury.poolCall(abi.encodeCall(IPool.setTip, (0.0003 ether)));
