@@ -1,6 +1,8 @@
 # Review of the ENGINE brief
 
-Revision 2, 2026-10-24. Revision 1 was answered by the brief's author in [NOTES_2026-10-24](NOTES_2026-10-24.md);
+Revision 2, 2026-10-24. A second round of the author's notes, [NOTES_2026-10-24b](NOTES_2026-10-24b.md), answered
+plan revision 2 and is folded into [PLAN](PLAN.md) revision 3; every claim in it was checked against the vendored
+FWA source and recomputed (see PLAN section 0, "Revision 3 changes"). The review text itself is unchanged by it. Revision 1 was answered by the brief's author in [NOTES_2026-10-24](NOTES_2026-10-24.md);
 the section "Corrections after the author's notes" at the end records what revision 1 got wrong and what
 changed. The body below is revision 1 with two inline corrections marked.
 
