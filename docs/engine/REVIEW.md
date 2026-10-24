@@ -246,5 +246,15 @@ realised probability each draw rather than the maximum.
 6. One prize wrapper for both modes (drops Draw Packs) or Draw Packs for ETH packs as decided?
 7. Admin: which multisig, and does the 72 hour timelock also govern the game's `PoolAdmin` setters?
 
-The implementation plan in [PLAN](PLAN.md) assumes the first option in each case where one is marked as
-recommended above, and flags where a different answer changes the work.
+Decisions, 2026-10-24: the owner took the recommendation on every question.
+
+1. Base is `main`, depositors removed first; the model archive goes into `docs/engine/model/`.
+2. The 48 hour exit pays backing less a haircut equal to the sell fee.
+3. Original inventory lives in the hook on a virtual curve; the pool holds circulated tokens only.
+4. Sponsor compensation is `P / 100,000` per eligible draw, capped at `1.0 P`; uptime follows the pot.
+5. Public buys of resale open at hour zero; the delay stays a parameter at 0.
+6. One prize wrapper carries both modes; Draw Packs leaves the dependency set.
+7. One multisig everywhere; the 72 hour timelock covers the hook policy and every economic setter on the
+   game; keeper tunables and risk-stopping pauses stay direct.
+
+[PLAN](PLAN.md) section 0 records them as decisions A1 to A7.
