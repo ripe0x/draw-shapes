@@ -3,6 +3,7 @@
 ## Project context
 
 - Current behavior: [SPEC](docs/SPEC.md). Decisions and superseded choices: [OWNER_QUESTIONS](docs/OWNER_QUESTIONS.md). [V1_PROMISES](docs/V1_PROMISES.md) is the historical simplification proposal, not the current decision log.
+- ENGINE proposal (not current behavior): [docs/engine](docs/engine/) holds the owner's brief, its review and the implementation plan.
 - Operations: [DEPLOY](docs/DEPLOY.md) and [PLAY](docs/PLAY.md). Dependency assumptions: [docs/external](docs/external/).
 - The previous `shapes-on-fwa-v2` implementation is read-only reference. Use named source paths in [PORT_NOTES](docs/PORT_NOTES.md); its old design is not new scope.
 
