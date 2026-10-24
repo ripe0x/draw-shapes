@@ -1,363 +1,381 @@
 # ENGINE implementation plan
 
-Date: 2026-10-24. Input: [BRIEF](BRIEF.md). Findings it builds on: [REVIEW](REVIEW.md). Base: `main` at
-`4a13a09`. Nothing in this plan is built yet; this document is the proposal for how to build it.
+Revision 2, 2026-10-24. Input: [BRIEF](BRIEF.md). Findings: [REVIEW](REVIEW.md). Correction pass:
+[NOTES_2026-10-24](NOTES_2026-10-24.md), the brief author's reply to revision 1; each numbered section of
+that reply is answered here and cited as "notes N". Base: `main` at `4a13a09`. Reused branches:
+`origin/feat/coin-funded-engine` (PR #7, `2c70c15`) and `origin/claude/next` (PR #5, `7afd772`), both fetched.
+Nothing in this plan is built yet.
 
 ## 0. Decisions
 
-The review left seven choices. The owner took the recommendations on 2026-10-24; each is recorded here as
-the decision the plan builds on, with the phase it affects. Phase 1 copies them into `docs/OWNER_QUESTIONS.md`.
+| Decision | Source | Affects |
+| --- | --- | --- |
+| D1. Base is `main`. The depositor layer (shares, NAV as a share price, entry fee, volume cap, founder window, withdrawal claims, claim liquidation, successor migration) is removed. The creator's 5 ETH enters through typed funding calls. | review 1, notes 1, 6 | Phase 3 |
+| D2. Reuse from the two PR branches, selectively: foreign listings (`registerForeign`, `repriceForeign`, `withdrawForeign`, `foreignListings`, SPEC 11 text, `test/fork/PoolForeign.t.sol`, identical on both branches); `PrizeSponsorship` and `test/fork/engine/EngineSponsor.t.sol` as the sponsor base; `SponsorOffer` (standing offer any holder can take) and `docs/PUNK_VALUE.md` plus `script/survey/` as the evidence for P; `test/fork/engine/EngineBase.sol` and `EngineGas.t.sol` as the harness; the EIP-7825 listing batch size of 12 and the VRF fee priced at the transaction gas price; `sim/engine.mjs` as the model base; `docs/SECURITY_REVIEW.md` and `AUTONOMOUS_DECISIONS.md` as reference. Not reused: `FoundingRound`, `IArtcoins`, the Artcoins market, founder splits, `FeeSplit` mint fee routing, `boardNavCap`. | notes 1 | Phase 1 |
+| D3. The 48 hour ETH exit of an ENGINE mode pack pays `backing × (10,000 − haircutBps) / 10,000`, haircut launch value 500. The haircut and the exit delay are snapshotted into the pack at the request's acceptance; a later parameter change applies to later prizes only. Exit haircuts are reported as a separate line from market fees. The model and the published tables carry zero, half and full conversion; the baseline game must stand at zero. | review 1, notes 4 | Phase 2, 3 |
+| D4. Original inventory is held by the hook and sold only to authenticated game buyers along a virtual curve (section 2). Accepted as a candidate only: it is built and tested first, and the brief's price and liquidity figures are not carried forward until the new market reproduces or improves them on the same scenarios. | review 1, notes 2 | Phase 2 |
+| D5. Primary proceeds are a conserved account that becomes hook-owned ETH bid liquidity in the canonical pool, deployed in the same transaction as the primary sale. They are never fees, profit, GRAIL or Punk money. | notes 2 | Phase 2 |
+| D6. The transfer gate authenticates each path. No allowlist of wallets, no blanket trust of `PoolManager`. Closed before `start()`. | notes 3 | Phase 2 |
+| D7. Sponsor terms are the brief's: `2 P / 100,000` per eligible settled draw, cumulative cap `1.5 P`, 30 day reclaim, early win ends future accrual, cap reached transfers ownership. Compensation is reserved for every newly accepted draw of a batch before exposure. Odds are a fixed-point fraction (`1e18` scale), not basis points. The 1× rate with a `1.0 P` cap is kept in the model as a comparison row only. | notes 5, 8 | Phase 4 |
+| D8. Public buys of resale open at hour zero; `publicBuyDelay` is a policy parameter at 0. | review 1, notes 9 | Phase 2 |
+| D9. One prize wrapper, `PrizePack`, carries both modes and replaces Draw Packs. | review 1, notes 9 | Phase 3 |
+| D10. Capital protection stays: an explicit distribution gate decides when retained surplus may leave the game, and a retirement lifecycle (no successor migration) stays. | notes 6 | Phase 3 |
+| D11. Scheduled farming tokens and purchased reward tokens are accounted separately with their own conservation equations and one claim interface. Purchase budgets attribute to their source epoch. An epoch is final only when every request accepted in it has a terminal FWA status. | notes 7 | Phase 3 |
+| D12. One multisig everywhere. A 72 hour timelock in front of every setter that can raise spending or weaken a guard, on the hook and the game. Direct multisig calls: pauses that stop new risk and tighten-only changes. Fork integration is the acceptance environment; Sepolia is a rehearsal. The shutdown notice is 30 days; the timelock is 72 hours. | review 1, notes 8, 10 | Phase 2, 3, 5 |
 
-| Decision | Affects |
-| --- | --- |
-| A1. Base is `main`. The depositor layer (shares, NAV, entry fee, volume cap, founder window, claims, liquidation, retirement by `withdraw`, successor migration) is removed in its own phase before any new feature. The creator's 5 ETH enters through typed funding calls, not `deposit`. The companion model archive (`check_design.py`, `board_economics.json`, `selected_design.json`, `DECISION_REGISTER.md`, scenario outputs) is checked into `docs/engine/model/` before contract work starts; any engine branch held elsewhere is pushed before phase 6 or treated as superseded. | Phase 1, 2 |
-| A2. ENGINE Pack ETH exit after 48 hours pays `backing * (10_000 - exitHaircutBps) / 10_000`, haircut launch value equal to the market sell fee (500), routed to the market fee policy. | Phase 3 |
-| A3. Original inventory is held by the hook as a balance and sold only to authenticated game buyers along a virtual curve at no less than pool spot. The v4 pool holds circulated tokens and ETH only. | Phase 5 |
-| A4. Sponsorship compensation is fair value: `P / 100_000` per eligible settled draw, cumulative cap `1.0 P`. The Punk fund balance sets uptime; the Lens publishes the daily spend and the draws the reserved pot still covers. | Phase 6 |
-| A5. Public buys of resale open at hour zero. `publicBuyDelay` stays a policy parameter with launch value 0, so the hour 24 variant is a value change, not code. | Phase 5 |
-| A6. One prize wrapper collection carries both modes. An `Eth` row of two or more rungs is a wrapper pack redeemable to ETH; an `Engine` row is a wrapper pack redeemable to ENGINE; single rung `Eth` rows stay plain Shapes. Draw Packs leaves the dependency set, the deploy guards, the fork setup and the release gate. This reverses the Draw Packs decision in `docs/OWNER_QUESTIONS.md`. | Phase 2, 3, 7, 8 |
-| A7. One multisig is `admin` of every contract, new and existing. A 72 hour timelock sits in front of the hook policy module and every economic setter on the game (fee split, mix, gas cap, active outcome floor, maintenance floor, GRAIL parameters, sponsorship offer). Keeper tunables (`tipWei`, `batchMin`, `batchMaxAge`, `maxBatch`, `concurrency`, `rotateInterval`, `listWhilePaused`) and the pause flags that stop new risk are direct multisig calls. Nothing can touch earned claims. | Phase 2, 5, 8 |
+Open for the owner (not blocking phase 1 or 2): the mint fee stays the creator's income with disclosure
+and no subsidy promise (notes 9); the 1.122 ETH ordinary buffer is the operating coverage floor of D10.
 
 ## 1. Target architecture
 
-Seven contracts, two of them existing. Everything the brief calls "enforced outside the replaceable
-module" is immutable code or a constructor constant.
-
-| Contract | New or changed | Role | Immutable guarantees |
+| Contract | New or changed | Role | Enforced outside the replaceable module |
 | --- | --- | --- | --- |
-| `Pool` + `PoolAdmin` + `PoolListing` + `PoolBooks` + `PoolStorage` | changed | The FWA game. Board, settlement, treasury buckets, keeper refunds, GRAIL. Records every accepted request for genesis. Economic setters callable only by the timelock. | Owner proceeds split by fixed bps; retained surplus can only go to `Treasury` |
-| `Treasury` | new | Holds retained surplus, reserve, Punk fund, liquidity fund, GRAIL top-up routing. Executes ENGINE purchases (genesis rewards, post genesis burns) and fee allocation. | Can send ETH only to the hook (purchase), the GRAIL fund, a sponsor's earned compensation, or a Punk acquisition it executes itself |
-| `PrizePack` | new | ERC721 wrapper around Shapes for every multi-Shape prize and every ENGINE prize. Mode fixed at mint: `Eth` redeems to ETH at once; `Engine` redeems to ENGINE via receipt, with the haircut ETH exit after 48 hours. Replaces Draw Packs. | A pack redeems exactly once; backing can only be paid to the holder or spent on the holder's purchase |
-| `Engine` | new | ERC20, 1e9 fixed supply minted once to `Genesis`. Transfer gate during genesis (allowlist of hook, genesis, pack, treasury), fully open after. | No mint function; gate is dropped by the genesis deadline, not by admin |
-| `Genesis` | new | Epoch ledger: per request credit, per epoch totals, bonus points, claims, burns of empty epochs and dust. Custody of the 100 million farming allocation; hands the 900 million purchase inventory to the hook at start. | 14 epochs of 86,400 s from `startedAt`; schedule constants; credit only from `Pool` |
-| `EngineHook` | new | v4 hook on the ENGINE/ETH pool. Original inventory curve for authenticated buys, fee on public swaps, liquidity gating during genesis, finalizer. Delegates fee bounds and gating parameters to `HookPolicy`. | Fee cap 500 bps; original inventory can leave only through an authenticated buy or the finalizer burn; finalizer runs once, after the deadline, by anyone |
-| `HookPolicy` | new, replaceable behind the timelock | Fee level (at most 500), public buy enable time, per-swap limits, gas policy readouts. | Replaced only through `Timelock` |
-| `Sponsorship` | new | One posted collection offer, acceptance, exposure reservation, compensation accrual per eligible settled draw, reclaim, early win, cap. Holds the sponsored NFT between listing and win. | Compensation is reserved from the Punk fund before exposure |
-| `Lens` | changed | Views for every new contract. | none |
+| `Pool` + `PoolAdmin` + `PoolListing` + `PoolBooks` + `PoolStorage` | changed | The FWA game: board, settlement, buckets, keeper refunds, GRAIL, foreign listings (reused). Records every accepted request for genesis. Distribution gate. Retirement. | Owner proceeds split by fixed bps; retained surplus leaves only through the gate, only to `Treasury` |
+| `Treasury` | new (patterns from `EngineTreasury`) | Buckets: reserve, retained, Punk fund, liquidity fund, GRAIL routing. ENGINE purchases for rewards and burns, fee allocation, sponsor reservation and payment, Punk acquisition. | ETH leaves only to the hook (purchase), the GRAIL fund, a sponsor's accrued compensation, a Punk acquisition it executes, or the game's operating coverage |
+| `PrizePack` | new | ERC721 wrapper around Shapes for every multi-Shape prize and every ENGINE prize. Mode, haircut and exit delay fixed at mint. | A pack redeems exactly once; backing goes to the holder or to the holder's purchase |
+| `Engine` | new | ERC20, 1e9 minted once to `Genesis`. Transfer gate (section 3) until the deadline. | No mint; gate ends at the deadline by code |
+| `Genesis` | new | Epoch ledger, scheduled 100 million custody, purchased reward custody, claims, burns. Hands 900 million to the hook at `start()`. | 14 × 86,400 s from `startedAt`; schedule constants; credit only from `Pool` |
+| `EngineHook` | new | v4 hook: original inventory curve, primary proceeds account and bid deployment, fee matrix, transfer authorisation, liquidity gating, finalizer. | Fee cap 500 bps; original inventory leaves only by authenticated buy or finalizer burn; primary proceeds only to bid liquidity; finalizer once, after the deadline, by anyone |
+| `HookPolicy` | new, replaceable through the timelock | Fee level (≤ 500), `publicBuyDelay`, per-swap limits. | Replaced only by `Timelock` |
+| `Sponsorship` | reused and adapted (`PrizeSponsorship`, `SponsorOffer`) | Posted offer, acceptance, per-draw accrual, reservation, reclaim, early win, cap. | Compensation reserved before exposure |
+| `Timelock` | pinned OpenZeppelin `TimelockController` from `lib/shapes` | 72 hours. | |
+| `Lens` | changed | Views for every contract above. | |
 
-Existing invariants I1, I2, I5, I6, I7 stay with NAV terms removed. New invariants, enforced by the
-invariant suite:
+### Invariants
 
-- I8 `Engine.totalSupply()` is at most 1e9 and never increases after deployment.
-- I9 Original inventory released + original inventory burned + hook original balance = 900 million at all times.
-- I10 Farming tokens claimed + claimable (finalised epochs) + reserved (open epochs) + burned (empty epochs, dust) = 100 million.
-- I11 Every credited request id maps to exactly one booked Fulfilled sequence; refunded, expired and written-off requests carry no credit.
-- I12 A `PrizePack` is in exactly one state: listed, held, awarded-unredeemed, redeemed-to-ENGINE, redeemed-to-ETH, exited-to-ETH. Its Shapes leave the wrapper only in the last three, and only the mode's own redemption or the timed exit applies.
-- I13 Treasury ETH out = ENGINE purchases + GRAIL funding + sponsor compensation paid + Punk acquisitions; nothing else.
-- I14 Sponsor compensation accrued is at most `1.0 P` and at most the reserved amount; exposure is accepted only while reserved compensation covers the next eligible draw.
-- I15 The sum of fee receipts allocated equals fee receipts collected (10 / 45 / 45 after the GRAIL milestone; 90 to GRAIL before it; reserve repair first).
-- I16 After the finalizer, the hook holds zero original inventory and public buys are unrestricted.
+I1, I2, I5, I6, I7 stay with NAV terms replaced by the game's asset ledger (section 4). New:
 
-## 2. Phases
+- I8 `Engine.totalSupply()` ≤ 1e9, never increases.
+- I9 Original released + original burned + hook original balance = 900 million.
+- I10a Scheduled farming: claimed + claimable + reserved for open epochs + burned = 100 million.
+- I10b Purchased rewards: claimed + claimable + held for open epochs = purchased; never mixed with I10a.
+- I11 Every credited request maps to one FWA request with terminal status Fulfilled; refunded, expired and refunded-delivery requests carry no credit.
+- I12 A `PrizePack` is in one state: listed, held, awarded-unredeemed, redeemed-to-ENGINE, redeemed-to-ETH, exited-to-ETH. Shapes leave only in the last three.
+- I13 Treasury ETH out = ENGINE purchases + GRAIL funding + sponsor compensation + Punk acquisitions + coverage transfers to the game.
+- I14 Sponsor compensation accrued ≤ `1.5 P` and ≤ reserved; every accepted draw while active had its compensation reserved before acceptance.
+- I15 Fee receipts allocated = fee receipts collected.
+- I16 After `finalise()`: hook original balance 0, gate open, every restriction lifted.
+- I17 Primary proceeds received = ETH in hook-owned bid positions (principal) + pending deployment; never anywhere else.
+- I18 Game ledger: `cash ≥ openLiabilities + replacementOwed + operatingFloor` after every distribution; retained swept ≤ cumulative positive margin − cumulative realised losses.
+- I19 Transfer gate: during genesis every ENGINE transfer is one of the authenticated paths of section 3.
 
-Each phase ends with its tests green under the repository rules (`forge test --match-path` on the
-affected files, real Shapes and FWA on the pinned fork, sizes checked when runtime code
-changes). Phases 3, 4 and 5 can run in parallel after phase 2 defines the interfaces.
+## 2. The market (answers notes 2 and 8)
 
-### Phase 1. Specification
+### Assets and accounts in the hook
 
-Deliverable: `docs/SPEC.md` rewritten as the v2 build input, with `docs/OWNER_QUESTIONS.md` entries 44
-onward recording each brief decision and each assumption above. `docs/V1_PROMISES.md` stays historical.
+| Account | Holds | In | Out |
+| --- | --- | --- | --- |
+| `original` | ENGINE never released, 900 million at start | `start()` | authenticated buy; `finalise()` burn |
+| `primaryProceeds` | ETH paid for original tokens, until deployed | authenticated buy from the curve | bid liquidity positions, same transaction |
+| bid positions | hook-owned, ETH-only ranges below spot in the canonical pool | primary proceeds; the 0.25 ETH seed; the liquidity fund share of fees | never withdrawn during the hook's life (D5); after a sale moves spot through a range they hold ENGINE, which stays in the position |
+| `feeReceipts` | ETH fees from public swaps | fee matrix | `Treasury.pullFees()` keeper call |
 
-- Remove SPEC 7 (depositor paths), SPEC 13 (exit and migration), the NAV terms of SPEC 4, the admission
-  parameters of SPEC 5, and the depositor actions of SPEC 16.
-- Rewrite SPEC 9: fixed `boardDepth` (launch 100), per row target = the opening count, like for like
-  replacement (captured row is requeued as the same row), no `chooseRow`, no surprise, no band.
-- Add sections for the treasury, the ENGINE Pack, the token, genesis, the market, the finalizer, the fee
-  policy, sponsorship and the upgrade policy, in the brief's order, each with its invariants from section 1.
-- Add the acceptance list from brief section 16 as SPEC 16, mapped to test files (section 4 below).
-- Write `docs/external/uniswap-v4.md` (PoolManager address, hook permission bits, custom accounting
-  rules, fee units, pinned commits) and `docs/external/wrapped-punks.md` in the style of the existing
-  dossiers.
+The canonical pool holds circulated ENGINE and ETH only. Nothing original is ever in a position.
 
-Exit: owner sign-off on SPEC and the seven open questions in REVIEW.
+### The curve
 
-### Phase 2. Game core: remove depositors, add treasury and genesis attribution
+Price `p(q) = p0 × 10^(q / Q)` with `p0 = 5e-8` ETH, `Q = 900 million`, `q` = original released so far. The
+tenfold range of the brief, as a geometric curve so each token sold moves the price by the same ratio; an
+exact closed form lives in `CurveLib` with the integral for "ETH for Δq" and its inverse. Unit tests check
+it against the brief's position arithmetic (a constant-product position over the same range clears for
+about 142 ETH; the curve is calibrated to the same total).
 
-Files: `src/Pool.sol`, `src/PoolAdmin.sol`, `src/PoolBooks.sol`, `src/PoolListing.sol`,
-`src/PoolStorage.sol`, `src/interfaces/IPool.sol`, `src/lib/PricingLib.sol`, `src/Lens.sol`, new
-`src/Treasury.sol`, `src/interfaces/ITreasury.sol`, `src/interfaces/IGenesis.sol`.
+### Authenticated buy: exact definition
 
-Remove:
+Input: receipt `(packId or rewardEpoch, beneficiary, budgetWei, nonce)` signed by `PrizePack` or
+`Treasury`, consumed once. The hook runs inside its own `PoolManager.unlock`:
 
-- `deposit`, `withdraw`, `redeemAndDeposit`, `payClaims`, `sharesOf`, `totalShares`, `nav`, `navCap`,
-  `dailyVolume`, `_recordFees` and the day slots, `EntryFee`, `turnoverBps`, `founderWindowSeconds`,
-  `depositsOpenAt`, `Claim`, `_payClaims`, `_clearClaims`, `_liquidateForClaims`, `_liquidateOne`,
-  `_mostOverweightListedRow`, `startExit`, `exportStep`, `transferGrailEstate`, the import functions,
-  `canImport`, `migrateHolder`, `Lifecycle.Exiting`, `Lifecycle.Exported`, `PricingLib.sharesFor`,
-  `claimFor`, `entryFeeBps`, `entryContribution`, `chooseRow`, `_surprise`, `rowDepth`.
-- Parameters `navCapFloor`, `turnoverBps`, `entryFee`, `founderWindowSeconds`, `surpriseBps`, `restoreK`,
-  `bandBps`, `reserveBps` and their setters and env keys.
+1. Let `pCurve` be the curve price at the current `q`. Swap ETH for ENGINE in the canonical pool with
+   `sqrtPriceLimitX96 = sqrt(pCurve)`, exact input `budgetWei`, fee 0 (authenticated). The pool fills up to
+   the point where its price reaches the curve price, or exhausts the budget.
+2. The unfilled remainder of the budget buys from the curve: `Δq = CurveLib.tokensFor(remainder, q)`,
+   `original -= Δq`, `q += Δq`, `primaryProceeds += remainder`.
+3. Deploy `primaryProceeds` as a bid position in the range `[pCurveAfter / 10, pCurveAfter)` (ETH only,
+   ticks rounded down to the pool's spacing), owned by the hook. `primaryProceeds` returns to zero.
+4. Deliver the pool fill plus `Δq` to `beneficiary`. The gate (section 3) authorises exactly this transfer.
+5. Revert the whole call if the delivered amount is below the receipt holder's `minOut`.
 
-Add:
+Properties: the pool is always used first while it is cheaper (notes 2 routing rule, with the swap's own
+price limit instead of a spot comparison); execution price is bounded above by the curve at every point;
+the primary ETH is in the pool as bid depth before the transaction ends, so the first acceptance test
+below passes by construction; no spot-price oracle is read.
 
-- Buckets: `cash` (ordinary operating coverage), `backing`, `receivable`, `maintenance`, `grail.fund`
-  as today; `retained` (the retained surplus share of positive margin, swept to `Treasury`). Funding calls
-  `fundOrdinary()`, `fundMaintenance()` (exists), `fundGrail()` (exists), each payable by anyone.
-  `Treasury` receives its 0.45 ETH reserve and the 0.25 ETH market seed directly.
-- `PricingLib.MixRow` gains `mode` (`Eth`, `Engine`). An `Engine` row is listed as a `PrizePack` in
-  ENGINE mode wrapping the row's Shapes; an `Eth` row of two or more rungs is a `PrizePack` in ETH mode;
-  a single rung `Eth` row is a plain Shape as today. `createPack` and the Draw Packs handle leave
-  `PoolListing`, `PoolStorage` and `Params` (A6). The opening board is the
-  brief's table as twelve rows (six denominations times two modes, 0.5 ETH ENGINE at zero count).
-- Fixed depth: `boardDepth` constructor value (100). Target per row is its opening count. Replacement:
-  `_capture` enqueues `capturedRow`. `Deep` compares the board count against `boardDepth`.
-- Guards in `_requirePurchasable`: `tx.gasprice <= maxGasPrice` (parameter, launch 0.25 gwei), listed
-  ordinary items minus unsettled at least `minActiveOutcomes` (launch 80), `maintenance >=
-  maintenanceFloor` (parameter), plus the existing I1 check. All three are parameters behind the timelock
-  (A7); a revert reason names the guard so the site can show it.
-- Admin split (A7): `PoolAdmin` gains `timelock` beside `admin`. The economic setters require the
-  timelock; keeper tunables and pause flags keep `admin`. `adminCall` moves behind the timelock as well,
-  since it can reach every external contract.
-- Genesis attribution: `_acquire` records `(requestId, purchaser, acceptedAt)` and calls
-  `IGenesis.accept(requestId, purchaser, acceptedAt)` while genesis is open; `_capture` on a booked
-  Fulfilled sequence calls `IGenesis.credit(requestId, randomWord)`. Refunds, expiries and write-offs
-  call nothing. The pool is the only authorised caller of both.
-- Margin split: `mintLineOwed` first, then `retainedBps : maintenanceBps : feedBps` (200 / 200 / 100).
-  Retained is swept to `Treasury.receiveRetained()` at harvest.
-- `Treasury`: buckets `reserve`, `retained`, `punkFund`, `liquidityFund`, `grailRouting`; functions
-  `buyForRewards(epoch, minOut)` (genesis only), `buyAndBurn(minOut)` (after genesis), `allocateFees()`
-  (the 10 / 45 / 45 rule with the first GRAIL milestone and reserve repair first), `fundGrail()` passthrough,
-  `reserveSponsorCompensation` and `paySponsor` (callable by `Sponsorship` only), `acquirePunk(offer)`
-  (admin, timelocked, bounded by `punkFund`). Every outflow is one of the I13 categories.
+The first acceptance test (notes 2, verbatim): an ENGINE mode pack of 0.05 ETH buys original tokens; the
+holder immediately sells them all; the test prints ETH and ENGINE balances of the holder, the pool, the
+hook accounts and the bid positions before and after, and asserts I9 and I17 and that the sale was
+filled by the position step 3 created.
 
-Keep: the FWA purchase ABI and operator, `pullWithShapes` with held Shape reuse, `settle` and `rotate`
-with the keeper refund, the GRAIL fund and ladder (feed now 100 bps plus treasury routing), `adminCall`
-with its invariant post-check, `sweep`.
+### Public swaps and the fee matrix
 
-Tests: rewrite `test/fork/PoolAdmission.t.sol`, `PoolExit.t.sol` (delete), `PoolDepth.t.sol` (fixed
-depth), `PoolReplace.t.sol` (like for like); add `test/fork/PoolGuards.t.sol` (gas cap, active outcomes,
-maintenance floor), `test/fork/Treasury.t.sol`; update the invariant handlers (drop depositor actions,
-add `fundOrdinary`, treasury sweeps). `PlayMonth` scenario rewritten for a 5 ETH opening with the
-brief's board.
+| Swap | Specified currency | Fee on the ETH side taken in | Permission |
+| --- | --- | --- | --- |
+| Buy, exact ETH in | ETH | `beforeSwap`, as a positive specified delta on ETH | `beforeSwapReturnDelta` |
+| Buy, exact ENGINE out | ENGINE | `afterSwap`, as a delta on the unspecified currency (ETH) | `afterSwapReturnDelta` |
+| Sell, exact ENGINE in | ENGINE | `afterSwap`, as a delta on the unspecified currency (ETH) | `afterSwapReturnDelta` |
+| Sell, exact ETH out | ETH | `beforeSwap`, as a positive specified delta on ETH | `beforeSwapReturnDelta` |
 
-Exit: fork suites green, `forge build --sizes` recorded in SPEC 3, gas receipts for `acquireBatch(5)`,
-`settle`, `rotate` refreshed in `evidence/`.
+Permissions therefore: `beforeSwap`, `beforeSwapReturnDelta`, `afterSwap`, `afterSwapReturnDelta`,
+`beforeAddLiquidity`, `beforeRemoveLiquidity`, `afterInitialize`. The fee is `policy.feeBps()` (≤ 500) of
+the ETH amount actually moved, so a partial fill at a price limit pays a fee on the filled part only.
+Fees accrue in `feeReceipts` as ERC-6909 claims on ETH and are pulled by `Treasury.pullFees()`; no
+treasury call and no liquidity change happens inside a public swap (notes 8). Public buys revert while
+`block.timestamp < startedAt + publicBuyDelay` (launch 0).
 
-### Phase 3. Prize wrapper
+### Liquidity policy
 
-Files: `src/PrizePack.sol`, `src/interfaces/IPrizePack.sol`, listing changes in `PoolListing`.
+The liquidity fund (10 percent of fees) is deployed by a bounded keeper call `deployLiquidity()` as
+ETH-only bid ranges below spot, the same shape as primary proceeds. No full range positions: the hook
+owns no circulated ENGINE to pair with (notes 8). The tradeoff is one-sided support: the fund deepens the
+bid, not the ask. `beforeAddLiquidity` and `beforeRemoveLiquidity` admit only the hook during genesis and
+anyone after.
 
-- `mint(uint256[] shapeIds, Mode mode) -> packId` by `Pool` only. Holds the Shapes; `backing` is the
-  sum of `valueOf`. `tokenURI` renders the Shapes and the mode (port the Draw Packs renderer, which this
-  wrapper replaces per A6; `lib/draw-packs` stays pinned as read-only reference until the port lands).
-- `redeemToEth(packId)` by the holder of an `Eth` mode pack at any time: redeems the Shapes at Shapes and
-  pays the full backing to the holder. No haircut, no delay; this is the Draw Pack behaviour.
-- `award(packId, requestId)` by `Pool` at the booked Fulfilled walk, recording `awardedAt`. The pack is
-  already in the winner's wallet by then (FWA delivered it), so award is bookkeeping for the exit clock.
-- `redeemToEngine(packId, minOut, deadline)` by the holder: redeems the Shapes at Shapes, receives
-  ETH, mints a single-use receipt `(packId, holder, budgetWei, nonce)` and calls
-  `EngineHook.buyWithReceipt{value: budget}(receipt, minOut, holder)`. On revert the whole call reverts
-  and the pack stays funded (no partial state).
-- `exitToEth(packId)` by the holder of an `Engine` mode pack after `awardedAt + 48 hours` while
-  unredeemed: redeems the Shapes, pays `backing * (10_000 - exitHaircutBps) / 10_000` to the holder and
-  the haircut to `Treasury.allocateFees()` (A2; the haircut equals the market sell fee at launch, 500,
-  and is a timelocked parameter).
-- Transfer of a pack transfers both rights; genesis credit stays with the original purchaser in `Genesis`.
-- The pool's `Item` gains the pack's collection as an ordinary item; I2 counts a pack at its backing.
+### Finalise
 
-Tests: `test/fork/PrizePack.t.sol`: capture by a real FWA draw on the fork, ETH mode pack redeemed at once
-for full backing, redeem to ENGINE through the hook (phase 5 stub until then), haircut exit after 48 hours, double claim impossible, transfer then redeem,
-`recoverRefundedNFT` path, delayed claim after genesis close buying circulated tokens only.
+Anyone, once, after the deadline: `Engine.burn(original)`, `original = 0`, `Genesis.recordBurn`, gate open,
+liquidity open. No position is moved. Protocol bid positions stay for the hook's life.
 
-### Phase 4. Token and genesis ledger
+## 3. The transfer gate (answers notes 3)
 
-Files: `src/Engine.sol`, `src/Genesis.sol`, `src/interfaces/IGenesis.sol`.
+`Engine._beforeTokenTransfer(from, to, amount)` during the restricted period:
 
-- `Engine`: Solady ERC20, `constructor(genesis)` mints 1e9 to `Genesis`. `_beforeTokenTransfer` reverts
-  unless `block.timestamp >= Genesis.deadline()` or sender and recipient are both in the fixed allowlist
-  (`Genesis`, `EngineHook`, `PrizePack`, `Treasury`, the v4 `PoolManager`). No admin hook into the gate.
-- `Genesis`: `start()` by admin once the pool is Live and the hook pool is initialised; sets
-  `startedAt`, transfers 900 million to the hook. Epoch `e(t) = (t - startedAt) / 86_400`, 0 to 13.
-  `accept(requestId, purchaser, acceptedAt)` stores the epoch. `credit(requestId, randomWord)` increments
-  the epoch's success count, assigns bonus points from `keccak256(abi.encode(randomWord, requestId,
-  "ENGINE/bonus"))` (0 / 1 / 10 at 90 / 9 / 1 percent), and stores the purchaser's per epoch counts.
-- Finalisation: `finaliseEpoch(e)` by anyone once `Pool.nextSequenceToBook()` passes the last sequence
-  accepted in epoch `e` (the pool exposes it) and `block.timestamp` is past the epoch end. Computes the
-  equal share (80 percent, or 100 when no bonus points) and the bonus share per point; burns the epoch's
-  allotment when it has no successes; burns division dust. Schedule: `100_000_000e18 / 14` per epoch,
-  remainder to epoch 13.
-- `claim(epochs[])` by a purchaser, after finalisation, no expiry. Reward purchases by `Treasury` during
-  genesis (`buyForRewards`) add tokens to the epoch's pool before finalisation; after finalisation they go
-  to the next open epoch, and after epoch 13 to burn.
-- Views for the Lens: per epoch totals, per wallet pending and claimable, the liability of pending
-  requests at the boundary.
-
-Tests: `test/unit/Genesis.t.sol` (schedule arithmetic, dust, bonus distribution, all 14 boundaries),
-`test/fork/Genesis.t.sol` (accept at acquire, credit at settle, a slippage refund earns nothing, a request
-accepted in epoch 13 and settled after the deadline is paid from epoch 13, operational pause does not move
-the calendar), invariant handlers for I8, I10, I11.
-
-### Phase 5. Market: hook, policy, finalizer
-
-Files: `src/EngineHook.sol`, `src/HookPolicy.sol`, `src/Timelock.sol` (or a pinned OpenZeppelin
-`TimelockController` from `lib/shapes`), `lib/v4-core`, `lib/v4-periphery` submodules,
-`script/MineHookAddress.s.sol`.
-
-- Pool: ENGINE/ETH, hook fee dynamic, hook permissions `beforeSwap`, `beforeSwapReturnDelta`,
-  `afterSwap`, `beforeAddLiquidity`, `beforeRemoveLiquidity`, `afterInitialize`. Address mined for the bits.
-- `beforeSwap`: if the swap is an authenticated buy (receipt from `PrizePack`, or a `Treasury` call), fee
-  0; fill from pool liquidity while pool spot is at or below the curve price, else from the hook's original
-  balance along the curve via return delta (A3). Record released original inventory. Else: public swap;
-  revert while `block.timestamp < startedAt + publicBuyDelay` for a buy (launch value 0, A5); charge `policy.feeBps()` (at most
-  500, immutable cap) on the ETH side in `afterSwap` and forward it to `Treasury.allocateFees()`.
-- `beforeAddLiquidity` / `beforeRemoveLiquidity`: during genesis only the hook's own positions change.
-  After the deadline, open.
-- Curve: opening price `5e-8` ETH per token, tenfold range, 900 million tokens; closed form in a pure
-  library `CurveLib` with unit tests against the brief's model figures.
-- Seed: `Treasury` adds the 0.25 ETH as a hook-owned bid position below opening at `start()`.
-- `finalise()`: anyone, once, after the deadline. Burns the hook's remaining original balance, records
-  the burn in `Genesis`, lifts the public buy and liquidity restrictions. With A3 there is no position
-  removal. Protocol liquidity received from fees (the 10 percent) is added as full range hook-owned
-  positions on each `allocateFees()`.
-- `HookPolicy`: `feeBps` (at most 500), `publicBuyDelay` (launch 0), `maxPublicBuyPerSwap`. Replaced by the
-  timelock. Emergency `pauseNewRisk()` by the multisig stops public buys and new positions; never claims.
-
-Tests: `test/fork/EngineHook.t.sol` on the pinned mainnet fork against the deployed `PoolManager`:
-receipt buy fills from pool then curve, forged and reused receipts revert, a public buy pays the fee and
-cannot reach original inventory from hour zero (I9 under a fuzzed sequence), a nonzero `publicBuyDelay`
-blocks public buys until it passes, holder sells through a different router and through direct `PoolManager.unlock` are both
-fee-charged, add liquidity during genesis reverts for anyone but the hook, `finalise()` burns exactly
-`900e6 - released`, post finalise everything is open and fee capture continues. `test/unit/CurveLib.t.sol`.
-
-### Phase 6. Sponsorship
-
-Files: `src/Sponsorship.sol`, FWA listing of the sponsored NFT through `Pool` (as a GRAIL-style item that
-is not an ordinary row).
-
-- `postOffer(collection, referencePrice P, maxOddsBps, minPot)` by admin; P at most the immutable cap for
-  the first offer (30 ETH). `accept(tokenId)` by a holder of a verified Wrapped CryptoPunk while
-  `Treasury.punkFund() >= minPot`: transfers the NFT, `Pool` lists it at the assigned value that yields
-  at most `1 / 100_000` on the live board, `Treasury` reserves compensation for the first tranche of draws.
-- Per settled eligible draw `Pool` calls `Sponsorship.onEligibleDraw()`; compensation `P / 100_000`
-  (the expected prize loss at the odds cap) accrues to the sponsor, capped at `1.0 P` (A4);
-  `Treasury.paySponsor` on `withdrawCompensation()`. The Lens reports the daily spend at the trailing
-  draw rate and the number of draws the reserved pot still covers.
-- Exposure guard inside `_requirePurchasable`: the listed sponsor weight at current prices and pending
-  requests stays within the odds cap, and reserved compensation covers `pending + 1` draws; otherwise the
-  pool withdraws the listing (when FWA allows) and stops sponsored exposure. Ordinary play continues.
-- `reclaim()` by the sponsor after 30 days while unwon and not fully compensated, honouring pending
-  requests. Early win: FWA delivers the NFT to the winner, accrued compensation stays claimable, future
-  accrual ends. Cap reached: compensation and reclaim rights end, the NFT becomes protocol owned.
-- Outright purchase: `Treasury.acquirePunk` is a separate, timelocked path.
-
-Tests: `test/fork/Sponsorship.t.sol` with the real Wrapped CryptoPunks contract on the fork: accept,
-compensation accrual, reclaim, early win by a forced VRF word, funding exhaustion stops exposure without
-stopping ordinary draws, uptime readout.
-
-### Phase 7. Scenarios, invariants, evidence
-
-- `test/scenario/Genesis14Days.t.sol`: the brief's launch checks as one lifecycle: 5 ETH opening with the
-  exact board, maintenance delayed, an early 0.5 ETH capture, delayed ENGINE claims, every epoch boundary,
-  private and public swap authentication, exact primary quota, holder sales through alternate paths,
-  pending rewards at close, finalise, sponsor early win and funding exhaustion. Driven at 100 and 300
-  draws a day with the existing `PlayMonth` harness pattern and recorded in `evidence/play/`.
-- Invariant suite extended with I8 to I16 and the handler reach test CI already runs.
-- `sim/lab.html` replaced by `sim/engine.html` modelling the new buckets, genesis and the curve, checked
-  against the fork scenario the way the current lab is checked (its "Check against the fork runs" block).
-- Gas receipts: `acquireBatch(5)`, `settle`, `rotate`, `redeemToEngine`, `exitToEth`, `claim`, a public
-  swap, `finalise`, at 0.25 gwei and 1 gwei, published as the true player cost table.
-
-### Phase 8. Deploy, operations, web, review
-
-- `script/Deploy.s.sol` and `script/deploy.sh`: deploy order `Timelock`, `Engine` + `Genesis`
-  (circular: deploy `Genesis` with a predicted `Engine` address via CREATE2), `PrizePack`, `Treasury`,
-  `HookPolicy`, `EngineHook` at the mined salt, `Sponsorship`, `PoolAdmin`, `PoolListing`, `Pool`, `Lens`.
-  Env keys for every new constant. Postflight readback of each. The existing guards (chain id, ladder,
-  code at dependencies, sizes, clean `main` on mainnet) stay; the Draw Packs checks go (A6); add the
-  `PoolManager` code check, the hook permission bit check, and a readback that every economic setter's
-  authority is the timelock (A7).
-- `docs/DEPLOY.md`: launch sequence: fund 5 ETH through the typed calls, `createFwaPool`, `open()`,
-  initialise the v4 pool, `Genesis.start()` only when Live and the market is ready, post the sponsor offer.
-  `docs/RUNBOOK.md`: keeper adds `finaliseEpoch`, `allocateFees`, `buyForRewards` / `buyAndBurn` cadence.
-- Web: remove `/deposit`; add `/genesis` (epochs, your credit, claims), `/pack` (redeem or exit), the
-  market view, sponsorship status; publish the per draw split with the mint fee and FWA protocol share
-  as the first chart.
-- Sepolia rehearsal with a Sepolia `PoolManager` and the testnet ladder, then the independent review of
-  `EngineHook`, `Genesis`, `PrizePack` and `Treasury` (the brief names the quota and burn as needing it),
-  then the 30 day timelock and multisig setup, then mainnet.
-- Legal review runs in parallel from phase 1 and gates phase 8.
-
-## 3. Brief section to work item
-
-| Brief | Phase |
+| Path | Allowed when |
 | --- | --- |
-| 1 product, 2 contribution | 2 (funding calls, treasury buckets) |
-| 3 board, 4 pricing and guards | 2 |
-| 5 ENGINE Pack | 3 |
-| 6 supply, 7 genesis | 4 |
-| 8 market, 9 close | 5 |
-| 10 cash policy | 2 (`Treasury.allocateFees`), 5 (fee forwarding) |
-| 11 sponsorship | 6 |
-| 12 creator income, 13 stress tests | 7 (lab and evidence) |
-| 14 participation | web copy, phase 8 |
-| 15 upgrade and trust | 5 (policy, timelock), 8 (multisig) |
-| 16 delivery boundaries | 1 (SPEC 16), 7, 8 |
+| Farming or reward claim | `from == Genesis` |
+| Delivery of an authenticated buy | `from == EngineHook` and the hook's transient `deliveryTo == to`, `deliveryAmount == amount` |
+| Burn | `to == address(0)` and `from` is `EngineHook` or `Treasury` |
+| Canonical pool, user side | `from` or `to` is `PoolManager`, and `EngineHook.authorised(from, to, amount)` reads a transient record set in `beforeSwap` for this pool id, direction and maximum amount, and cleared in `afterSwap` |
+| Canonical pool, hook side | `from` or `to` is `PoolManager` and the counterparty is `EngineHook` inside the hook's own unlock |
 
-## 4. Launch checks to tests
+Everything else reverts `GenesisTransfer()`. The restricted period is from deployment until
+`Genesis.deadline()`; `deadline()` returns `type(uint64).max` until `start()` is called, so an unset
+deadline means closed, not open (notes 3). ERC-6909 minting of ENGINE inside `PoolManager`, a second pool,
+or a router that does not go through the canonical pool all require an ENGINE transfer that no row
+above authorises, so they cannot move tokens during genesis. The gate is demonstrated by
+`test/fork/EngineGate.t.sol` in phase 2 before anything is built on it.
 
-| Brief section 16 check | Test |
+## 4. The game ledger, distribution gate and retirement (answers notes 6)
+
+Buckets stay as in SPEC 4 minus `claims`: `cash`, `backing`, `receivable`, `maintenance`, `grail.fund`,
+plus `foreignReceivable` from the reused foreign listings. NAV as a share price goes; the game's asset
+ledger stays as views:
+
+- `openLiabilities`: FWA escrow the game may have to refund is FWA's, not the pool's, so this is the
+  value of listed items selected by requests not yet booked (bounded by `unsettledAcquisitionCount` ×
+  largest listed backing).
+- `replacementOwed`: `mintLineOwed` plus the backing of queued replacements not yet funded.
+- `operatingFloor`: parameter, launch 1.122 ETH less the opening mint fees already spent, the brief's
+  liquid remainder.
+- `realisedLoss`: cumulative negative margin, carried as today.
+
+Margin split per settled capture is unchanged in shape: `mintLineOwed` first, then
+`retainedBps : maintenanceBps : feedBps` = 200 : 200 : 100, with negative margin carried forward.
+Retained accrues to a `retainedCredit` ledger inside `cash`; it does not leave the game at harvest.
+
+Distribution gate, `Pool.distribute()` by anyone:
+`amount = min(retainedCredit, cash − openLiabilities − replacementOwed − operatingFloor)`, zero if negative,
+and only while `realisedLoss` is fully repaid. `amount` goes to `Treasury.receiveRetained(epochTag)` with the
+epoch tag of the captures that produced it (section 5). Tests order outcomes adversely: fifty cheap
+captures then the 0.5 ETH capture, the 0.5 ETH capture first, two 0.5 ETH captures in one batch.
+
+Retirement (`startExit()` by the timelock, or by the multisig after a 30 day notice recorded on chain):
+disables FWA purchases, settles every request, withdraws unawarded listings and redeems them into `cash`,
+returns the sponsored asset under its agreement, redeems protocol owned prize assets after obligations,
+folds `maintenance` into the game's `cash`, and sends the residual to `Treasury.receiveResidual()`, which can
+spend it only on bounded `buyAndBurn`. No successor import, no `migrateHolder`.
+
+## 5. Genesis accounting (answers notes 7)
+
+Two ledgers in `Genesis`, one claim interface:
+
+- Scheduled: `100_000_000e18 / 14` per epoch, remainder to epoch 13; 80 percent equal, 20 percent by
+  bonus points, bonus portion joins equal when no points; empty epoch burns; division dust burns (I10a).
+- Purchased: `Treasury.buyForRewards(epochTag)` spends the retained surplus tagged to epoch `e` (the
+  epoch of the captures that produced it, section 4) on an authenticated buy and credits the tokens to
+  epoch `e`'s purchased pot, divided by the same equal and bonus shares (I10b). The buy for epoch `e`
+  runs inside `finaliseEpoch(e)`, so the beneficiary cohort is fixed by economic source, not by keeper
+  timing. During genesis the curve gives the buy a floor output, so `minOut = budget / pCurve` needs no
+  oracle. After the deadline (epoch 13's late surplus) the buy is circulated only, with `minOut` from the
+  pool's 30 minute TWAP less 5 percent; if unfillable it stays tagged and retries, never redirected.
+
+Attribution: `Pool.acquire` records `(requestId, purchaser, acceptedAt)`; `Genesis.accept` stores the
+epoch. Credit is granted by `Genesis.credit(requestId, randomWord)` when the request's FWA status is
+Fulfilled, called from the pool's walk, or by anyone later through `Genesis.creditLate(requestId)`, which
+reads FWA directly for a request the walk wrote off as DeliveryPending and FWA later completed.
+
+Finality: `finaliseEpoch(e)` requires (1) the epoch has ended, (2) `nextSequenceToBook` passed the last
+sequence accepted in `e`, (3) no request accepted in `e` is in status Pending, Ready or DeliveryPending at
+FWA. FWA's `DELIVERY_WINDOW` (7 days) bounds the wait. A request that ends Refunded, Expired or
+DeliveryRefunded earns nothing; one that ends Fulfilled earns, however late (notes 7).
+
+Pack rights do not depend on the pool's walk: `PrizePack.registerAward(packId)` by the holder reads FWA's
+listing and acquisition state and sets `awardedAt` from the delivery block's timestamp, so a pack delivered
+after the write-off has its 48 hour clock and both redemption paths. Test matrix: delivery before
+bookkeeping, delayed delivery after write-off, refunded delivery, transfer before redemption, settlement
+after the deadline.
+
+## 6. Admin powers (answers notes 8)
+
+| Call | Authority |
 | --- | --- |
-| Five ETH opening with actual inventory | `Genesis14Days` setup, `PoolBoard` |
-| Delayed maintenance | `PoolGuards` (maintenance floor), `Genesis14Days` |
-| Early maximum prize | `Genesis14Days` (forced VRF word on the 0.5 ETH row) |
-| Delayed ENGINE claims | `PrizePack` (claim after close buys circulated only) |
-| Every genesis boundary | `Genesis` unit and fork |
-| Private and public swap authentication | `EngineHook` |
-| Exact primary quota enforcement | `EngineHook` I9 fuzz, `finalise` exactness |
-| Holder sales through alternate paths | `EngineHook` (direct `unlock`, second router) |
-| Pending rewards at close | `Genesis` fork (epoch 13 settled after deadline) |
-| Liquidity migration | `EngineHook.finalise` (with A3: burn and unlock, no migration) |
-| Sponsor early win or funding exhaustion | `Sponsorship` |
+| Raise `tipWei`, `maxGasPrice`, `batchMin`, `batchMaxAge`, `maxBatch`, `concurrency`; lower `minActiveOutcomes`, `maintenanceFloor`, `operatingFloor`; change fee split, mix, GRAIL parameters, sponsorship offer, `HookPolicy`, haircut, `publicBuyDelay`; `adminCall`; `startExit` | Timelock, 72 hours |
+| Lower `tipWei` and the other spending tunables; raise the guard floors; `setPaused(true)`; `pauseNewRisk()` on the hook | Multisig, direct |
+| `setPaused(false)` | Timelock |
 
-## 5. Sequencing and effort
+`tipWei` keeps its hard cap of 0.01 ETH; the refund formula is unchanged, so a tip raise through the
+timelock is visible three days before it can spend maintenance.
+
+## 7. Phases
+
+Order follows notes 10: recover, prove the market, re-model, then refactor the game.
+
+### Phase 1. Recover and specify
+
+- Check `docs/engine/model/` in from the companion archive. Record in `OWNER_QUESTIONS.md` entries 44
+  onward the decisions D1 to D12 and the superseded first pass.
+- Cherry-pick onto this branch, from `claude/next` and `feat/coin-funded-engine`: foreign listings (the
+  `src/Pool*.sol`, `IPool.sol`, `IForeignController.sol` and `PoolForeign.t.sol` changes, SPEC 11 text), the
+  EIP-7825 batch sizes, the gas-priced VRF fee note, `test/fork/engine/EngineBase.sol`, `EngineGas.t.sol`,
+  `PrizeSponsorship.sol`, `EngineSponsor.t.sol`, `SponsorOffer.sol`, `SponsorOffer.t.sol`, `PUNK_VALUE.md`,
+  `script/survey/`, `sim/engine.mjs`. Record what was taken and what was left in `docs/engine/REUSE.md`.
+- Rewrite `docs/SPEC.md` as the v2 build input with sections 2 to 6 of this plan as the new material and
+  the depositor sections removed. Write `docs/external/uniswap-v4.md` and `docs/external/wrapped-punks.md`.
+- Pin `lib/v4-core` and `lib/v4-periphery`; add the mainnet `PoolManager` to `deployments/dependencies.json`;
+  move `FORK_BLOCK` once to a block after the v4 mainnet deployment and the FWA factory state the brief
+  asks to verify, then pin it.
+
+Exit: owner sign-off on SPEC.
+
+### Phase 2. Market proof on the mainnet fork
+
+Files: `src/Engine.sol`, `src/EngineHook.sol`, `src/HookPolicy.sol`, `src/lib/CurveLib.sol`, a minimal
+`Genesis` stub exposing `deadline()` and `start()`, `script/MineHookAddress.s.sol`,
+`test/fork/EngineGate.t.sol`, `test/fork/EngineHook.t.sol`, `test/unit/CurveLib.t.sol`.
+
+Demonstrations, each a fork test against the deployed `PoolManager`:
+
+1. Gate: every row of section 3 passes and every other transfer reverts, before and after `start()`,
+   and after the deadline everything passes.
+2. Primary purchase then immediate sale (the first acceptance test, section 2).
+3. Holder sale, public resale buy, fee capture on all four swap forms including a partial fill at a price
+   limit, `pullFees()` exact receipts.
+4. A second router, a direct `unlock`, ERC-6909 minting and a second pool all fail during genesis and
+   pass after.
+5. Forged, replayed and over-budget receipts revert.
+6. `finalise()` burns exactly `900e6 − released`; I9, I16, I17 hold under a fuzzed sequence.
+
+Economic rerun: `sim/engine.mjs` adapted to this exact market (curve, bid deployment, fee matrix), run on
+the brief's six scenarios plus zero, half and full ENGINE conversion, plus the sponsor comparison rows
+(brief terms against the 1× / 1.0 P variant). Results in `docs/engine/MODEL_V2.md`. Phase 3 starts only
+if the baseline game stands at zero conversion and the market figures are reproduced or explained.
+
+### Phase 3. Game refactor and integration
+
+Files: `src/Pool*.sol`, `src/interfaces/IPool.sol`, `src/lib/PricingLib.sol`, `src/Lens.sol`,
+`src/Treasury.sol`, `src/PrizePack.sol`, `src/Genesis.sol` (full), `src/interfaces/*`.
+
+- Remove: `deposit`, `withdraw`, `redeemAndDeposit`, `payClaims`, shares, `nav` as a price, `navCap`,
+  `dailyVolume`, `EntryFee`, `turnoverBps`, `founderWindowSeconds`, `depositsOpenAt`, `Claim`,
+  `_liquidateForClaims`, successor import, `migrateHolder`, `Lifecycle.Exported` as a migration state,
+  `PricingLib.sharesFor`, `claimFor`, `entryFeeBps`, `entryContribution`, `chooseRow`, `_surprise`,
+  `rowDepth`, `surpriseBps`, `restoreK`, `bandBps`, `reserveBps`, `boardItems()` as a NAV function,
+  `createPack` and the Draw Packs handle (D9).
+- Add: `fundOrdinary()`, the asset ledger views and `distribute()` (section 4), retirement (section 4),
+  `MixRow.mode`, `boardDepth` 100 with like for like replacement, guards `maxGasPrice`, `minActiveOutcomes`,
+  `maintenanceFloor`, genesis attribution calls, the admin split of section 6, `PrizePack` listing.
+- `PrizePack`: `mint(shapeIds, mode, haircutBps, exitDelay)` by `Pool`; `registerAward`; `redeemToEth` for
+  ETH mode at once; `redeemToEngine(minOut, deadline)` through a receipt; `exitToEth` after the snapshotted
+  delay at the snapshotted haircut, haircut to `Treasury.allocateFees()` under its own line.
+- `Treasury`: buckets and flows of section 1; `allocateFees()` with the first GRAIL milestone rule;
+  `buyForRewards(epochTag)`, `buyAndBurn`, `reserveSponsorCompensation`, `paySponsor`, `acquirePunk`,
+  `receiveRetained`, `receiveResidual`, `pullFees`, `deployLiquidity` call-through.
+- `Genesis`: section 5 in full.
+
+Tests: rewrite `PoolAdmission`, `PoolDepth`, `PoolReplace`, delete `PoolExit` (replace with
+`PoolRetire.t.sol`), add `PoolGuards.t.sol`, `PoolDistribute.t.sol` (adverse orderings), `Treasury.t.sol`,
+`PrizePack.t.sol` (the delivery matrix of section 5), `Genesis.t.sol` unit and fork (all 14 boundaries, late
+delivery credit, epoch 13 after the deadline, pause does not move the calendar), invariant handlers for
+I8 to I19. Sizes recorded in SPEC 3; gas receipts refreshed.
+
+### Phase 4. Sponsorship, scenarios, operations
+
+- `Sponsorship` from `PrizeSponsorship` and `SponsorOffer`: per-draw accrual at `2 P / 100,000` from the
+  Punk fund, reservation for every accepted draw of a batch, cap `1.5 P`, reclaim, early win, cap
+  transfer, exposure guard on live weight and pending requests, `oddsPerDraw` as a `1e18` fraction. Tests
+  from `EngineSponsor.t.sol` and `SponsorOffer.t.sol` adapted, plus funding exhaustion mid-batch.
+- `test/scenario/Genesis14Days.t.sol`: the brief's section 16 checks as one lifecycle at 100 and 300 draws
+  a day, recorded in `evidence/play/`.
+- Deploy: `script/Deploy.s.sol` order `Timelock`, `Engine` and `Genesis` (CREATE2 predicted pair),
+  `PrizePack`, `Treasury`, `HookPolicy`, `EngineHook` at the mined salt, `Sponsorship`, `PoolAdmin`,
+  `PoolListing`, `Pool`, `Lens`; env keys per value; postflight readback including setter authorities and
+  hook permission bits; the Draw Packs guards removed. `DEPLOY.md` and `RUNBOOK.md` with the launch
+  sequence (`fund*`, `createFwaPool`, `open`, initialise the pool, `Genesis.start()` when Live and the
+  market is ready) and the keeper set (`settle`, `rotate`, `finaliseEpoch`, `distribute`, `pullFees`,
+  `allocateFees`, `deployLiquidity`, `buyAndBurn`).
+- Web: remove `/deposit`; add `/genesis`, `/pack`, the market view, `/sponsor` (reuse the engine branch's
+  pages where the data model matches); first chart is the per draw split including the mint fee and FWA's
+  protocol share; the cost table at 0.25, 1 and 5 gwei.
+
+### Phase 5. Review and launch
+
+Independent review of `EngineHook`, `Engine`, `Genesis`, `PrizePack`, `Treasury` and the `Pool` changes;
+legal review (started in phase 1) closed; Sepolia rehearsal as a dry run of the scripts only; 72 hour
+timelock and multisig set up; mainnet.
+
+## 8. Brief and notes to work item
+
+| Source | Where |
+| --- | --- |
+| Brief 1 to 4 | Phase 3 (funding, board, pricing, guards) |
+| Brief 5 | Phase 3 (`PrizePack`), D3 |
+| Brief 6, 7 | Phase 3 (`Genesis`), section 5 |
+| Brief 8, 9 | Phase 2, section 2 |
+| Brief 10 | Phase 3 (`Treasury.allocateFees`), section 2 liquidity policy |
+| Brief 11 | Phase 4, D7 |
+| Brief 12, 13 | Phase 2 model rerun, phase 4 evidence |
+| Brief 15 | Section 6, phase 5 |
+| Brief 16 | Phases 2 and 4 tests |
+| Notes 1 | D2, phase 1 |
+| Notes 2 | Section 2, D4, D5 |
+| Notes 3 | Section 3, D6 |
+| Notes 4 | D3 |
+| Notes 5 | D7 |
+| Notes 6 | Section 4, D10 |
+| Notes 7 | Section 5, D11 |
+| Notes 8 | Section 2 fee matrix, section 6, D7, D12 |
+| Notes 9 | D8, D9, mint fee left as income |
+| Notes 10 | Phase order, D12 |
+
+## 9. Sequencing and effort
 
 ```
-Phase 1 (spec)  ─┐
-Phase 2 (core)  ─┼─► Phase 3 (pack) ─┐
-                 ├─► Phase 4 (genesis)┼─► Phase 7 (scenarios) ─► Phase 8 (deploy, review, mainnet)
-                 └─► Phase 5 (market) ┘
-                 └─► Phase 6 (sponsor) ┘
+Phase 1 (recover, spec) ─► Phase 2 (market proof, model) ─► Phase 3 (game, wrapper, genesis, treasury) ─► Phase 4 (sponsor, scenarios, ops, web) ─► Phase 5
 ```
 
-Rough effort in focused engineer weeks, excluding the independent review and legal: phase 1, 1; phase 2,
-2; phase 3, 1; phase 4, 1.5; phase 5, 3; phase 6, 1.5; phase 7, 2; phase 8, 2. About 14 weeks serial,
-roughly 9 with phases 3 to 6 in parallel. Phase 5 is the long pole and the one the brief flags for
-independent review; start its submodule pins and address mining in week one of phase 2.
+Focused engineer weeks: phase 1, 1.5; phase 2, 3; phase 3, 4; phase 4, 2.5; phase 5, 2 plus the external
+review's calendar. About 13 weeks serial. Phase 2 is the gate: if the market proof or the rerun fails, the
+fallback is the brief's original design (original inventory as a position with a ledger), which the
+phase 2 harness can also test, and nothing in phase 3 depends on which one won.
 
-## 6. Repository rules this plan keeps
+## 10. Repository rules this plan keeps
 
-- Solidity 0.8.28, the compiler profiles, via_ir restrictions and remappings in `foundry.toml`. New
-  contracts default to the legacy pipeline; a new file joins the via_ir list only when measured over the
-  limit, with the measurement recorded in SPEC 3 as today.
-- One Solidity writer per repo. Phases 3 to 6 in parallel means parallel branches, each touching its own
-  new files plus narrow interface additions, with phase 2 merged first.
-- Real Shapes, FWA, Wrapped CryptoPunks and `PoolManager` on the pinned fork; Draw Packs leaves the
-  fork setup and SPEC 16 under A6. `FORK_BLOCK` moves once, to a block
-  after the v4 mainnet deployment and after any FWA factory change the brief asks to verify (edge, VRF,
-  cooldown), and is pinned again.
+- Solidity 0.8.28, the compiler profiles, via_ir restrictions and remappings. New contracts default to
+  the legacy pipeline and join the via_ir list only when measured over the limit, recorded in SPEC 3.
+- One Solidity writer per repo; phases are serial, so one branch at a time.
+- Real Shapes, FWA, Wrapped CryptoPunks and `PoolManager` on the pinned fork as the acceptance environment
+  (D12). Sepolia is a rehearsal of scripts.
 - `script/deploy.sh <env>` with values-only env files and every existing guard.
-- Each brief value lands in `script/env/*.env`, never as a literal in a contract, except the constants
-  the brief says are enforced outside the replaceable module (supply, schedule, fee cap, first offer cap).
+- Every brief value lands in `script/env/*.env` except the constants enforced outside the replaceable
+  module (supply, schedule, fee cap, first offer cap, timelock delay).
 
-## 7. Risks
+## 11. Risks
 
-- **Phase 5 correctness.** Custom accounting, return deltas and fee forwarding on v4 are new to this
-  codebase. Mitigation: A3 keeps original inventory out of the pool; the hook's own state is three
-  numbers (original balance, released, burned); property tests against I9 and I16.
-- **Depositor removal breadth.** Phase 2 touches every contract. Mitigation: do it first, alone, with the
-  existing fork suites as the regression net before any new feature lands.
-- **FWA dependencies the brief asks to verify live.** Pool creation allowance, `inventoryChangeCooldown`,
-  `edgeBps`, VRF fee at 0.25 gwei. Any change moves the published cost table. Mitigation: read them in
-  the deploy preflight and in `Lens.quote`.
-- **Zero conversion of ENGINE mode packs** (review concern 2). Mitigation: A2, and the lab publishes the
-  zero conversion row.
-- **Renderer port.** Replacing Draw Packs with the wrapper means porting its renderer and losing the
-  separate collectible. Mitigation: port the renderer unchanged in phase 3 and keep `lib/draw-packs`
-  pinned as reference until mainnet.
-- **Sponsor uptake at fair value.** A `1.0 P` cap and `P / 100_000` per draw may attract no Punk holder.
-  Mitigation: the offer terms are timelocked parameters; the Punk fund can also buy outright.
-- **Bytecode.** `Pool` family near the limit today. Mitigation: phase 2 removes more than it adds; sizes
-  measured at each phase.
-- **No Forge in the planning container.** Nothing here has been compiled. The first build of phase 2
-  will surface interface churn the plan cannot predict.
+- **Phase 2 may not reproduce the brief's market figures.** The curve and one-sided bids are not the
+  original position. Mitigation: the harness tests both designs; the decision is made on the rerun.
+- **Gate correctness.** A missed path blocks users or opens a bypass. Mitigation: it is the first thing
+  built and demonstrated.
+- **Epoch finality waits on FWA's delivery window.** One stuck delivery delays an epoch's claims up to
+  7 days. Mitigation: disclosed; the pool's write-off keeps the game moving; `creditLate` keeps the credit.
+- **Bytecode.** `Pool` family within 3 KB of the limit on `main`, and the foreign listings add to it.
+  Mitigation: depositor removal frees more than the additions; measured at phase 3.
+- **Sponsor uptake and uptime.** Published, tested, optional.
+- **No Forge in the planning container.** Nothing here has compiled.

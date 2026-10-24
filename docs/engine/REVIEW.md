@@ -1,5 +1,9 @@
 # Review of the ENGINE brief
 
+Revision 2, 2026-10-24. Revision 1 was answered by the brief's author in [NOTES_2026-10-24](NOTES_2026-10-24.md);
+the section "Corrections after the author's notes" at the end records what revision 1 got wrong and what
+changed. The body below is revision 1 with two inline corrections marked.
+
 Date: 2026-10-24. Reviewed: [BRIEF](BRIEF.md) (owner, 2026-10-23) against this repository at `main`
 (`4a13a09`), `docs/SPEC.md`, `docs/OWNER_QUESTIONS.md`, the vendored FWA V2 sources and `docs/external/`.
 Nothing was deployed or simulated on chain; the arithmetic below was recomputed independently from the
@@ -89,8 +93,15 @@ Design points that fit the existing code well:
 
 ### 1. Base code mismatch and missing artefacts
 
-Checked: the repository has two branches (`main` and this one), 98 commits, no object `2c70c15…`, and no
-file matching ENGINE, hook, Uniswap, ERC20, founder note or foreign NFT outside the vendored FWA sources.
+**Corrected in revision 2.** Revision 1 said the engine branch did not exist. It does: the planning container
+had fetched only `main`. `origin/feat/coin-funded-engine` (PR #7, head `2c70c15`) and `origin/claude/next`
+(PR #5, head `7afd772`) both exist and were fetched on 2026-10-24. What revision 1 checked was the container,
+not the remote. The scope consequence stands: `main` is a depositor vault, and "no outside ETH depositors"
+removes that layer. The reuse consequence changes: see the corrections section.
+
+Checked in revision 1: the container's checkout had two branches (`main` and this one), 98 commits, no object
+`2c70c15…`, and no file matching ENGINE, hook, Uniswap, ERC20, founder note or foreign NFT outside the vendored
+FWA sources.
 The companion archive (`check_design.py`, `board_economics.json`, `selected_design.json`,
 `DECISION_REGISTER.md`, the 38 scenarios) is not in the repository either.
 
@@ -190,7 +201,14 @@ design unless there is a reason to keep original inventory inside the pool that 
 Either way the hook address must be mined for its permission bits, `v4-core` and `v4-periphery` become
 pinned submodules, and the mainnet `PoolManager` joins the pinned fork inputs.
 
-### 6. The sponsorship pays twice the fair rate and cannot run continuously from the pot
+### 6. The sponsorship cannot run continuously from the pot (the "twice the fair rate" claim was wrong)
+
+**Corrected in revision 2.** Revision 1 called `2 P / 100,000` twice the fair rate. That treated the
+compensation as rent for exposure only. At the cap the sponsor also surrenders the Punk, so the offer must
+also pay for an ownership transfer. Expected compensation under continuous funded play to the cap is
+`c × (1 − (1 − p)^N) / p`: about 31.7 ETH for the brief's terms (2× rate, 1.5 P cap) and about 19.0 ETH for
+the 1× rate with a 1.0 P cap that revision 1 recommended, both against a 30 ETH asset. The brief's terms are
+close to fair with a small premium; the revision 1 terms are not. The uptime arithmetic below stands.
 
 Expected prize loss per eligible draw is `P / 100,000`; compensation is `2 P / 100,000`, capped at `1.5 P`
 after 75,000 draws. At P = 30 ETH and 300 draws a day that is 0.18 ETH a day, and a 1 ETH pot funds
@@ -246,15 +264,60 @@ realised probability each draw rather than the maximum.
 6. One prize wrapper for both modes (drops Draw Packs) or Draw Packs for ETH packs as decided?
 7. Admin: which multisig, and does the 72 hour timelock also govern the game's `PoolAdmin` setters?
 
-Decisions, 2026-10-24: the owner took the recommendation on every question.
+Decisions after the author's notes, 2026-10-24 (supersede the first pass taken earlier the same day):
 
-1. Base is `main`, depositors removed first; the model archive goes into `docs/engine/model/`.
-2. The 48 hour exit pays backing less a haircut equal to the sell fee.
-3. Original inventory lives in the hook on a virtual curve; the pool holds circulated tokens only.
-4. Sponsor compensation is `P / 100,000` per eligible draw, capped at `1.0 P`; uptime follows the pot.
+1. Base is `main` with the depositor layer removed. The foreign listing support, the sponsor contracts
+   and fork tests, the fork harness, the EIP-7825 batch sizes and the gas-priced VRF fee are reused from
+   `feat/coin-funded-engine` and `claude/next`. The founding round, Artcoins dependency and founder
+   splits are not. The model archive goes into `docs/engine/model/`.
+2. The 48 hour exit pays backing less a haircut equal to the sell fee, snapshotted at request acceptance.
+   Zero, partial and full conversion are modelled; the baseline game must stand at zero.
+3. Original inventory lives in the hook on a virtual curve, conditional on a specified primary proceeds
+   account that becomes bid liquidity, a complete routing rule and a fee matrix. The old model's price
+   results are not carried forward until the new market reproduces them.
+4. Sponsor terms return to the brief's: `2 P / 100,000` per eligible draw, cap `1.5 P`, 30 day reclaim.
+   Compensation is reserved per accepted draw, batches included, and uptime is published.
 5. Public buys of resale open at hour zero; the delay stays a parameter at 0.
 6. One prize wrapper carries both modes; Draw Packs leaves the dependency set.
-7. One multisig everywhere; the 72 hour timelock covers the hook policy and every economic setter on the
-   game; keeper tunables and risk-stopping pauses stay direct.
+7. One multisig everywhere; the 72 hour timelock covers every setter that can raise spending or weaken a
+   guard, on the hook and the game alike; only pauses and tighten-only changes are direct.
+8. New: the game keeps an explicit distribution gate and a retirement lifecycle (depositor rights go,
+   capital protection stays). Scheduled farming tokens and purchased reward tokens are accounted
+   separately. The transfer gate authenticates each path, never a blanket allowlist.
 
-[PLAN](PLAN.md) section 0 records them as decisions A1 to A7.
+[PLAN](PLAN.md) revision 2 records them as decisions D1 to D12.
+
+## Corrections after the author's notes
+
+What revision 1 got wrong, in the author's numbering:
+
+1. **The engine branch exists.** Revision 1 concluded from the container that there was none. There are
+   two open PRs with the work. Reuse is now planned, not a rebuild.
+2. **The primary proceeds flow was unspecified.** Revision 1's hook-held inventory said nothing about
+   where a pack's ETH goes. Without that, farmers would sell into the 0.25 ETH seed alone. The plan now
+   defines a conserved primary proceeds account that becomes hook-owned ETH bid liquidity in the
+   canonical pool, deployed in the same transaction as the primary sale, and the first acceptance test
+   the author asked for.
+3. **The transfer gate was wrong.** "Both parties on an allowlist" blocks claims, pack deliveries,
+   sells and public buys. The plan now authenticates each path: distribution from `Genesis` and the
+   hook to the entitled wallet, and pool transfers only inside a swap the hook has authorised in the
+   same transaction for the canonical pool, direction and amount. Before `start()` the gate is closed.
+5. **The sponsor arithmetic was incomplete**, as corrected inline above.
+6. **Removing NAV removed the capital protections with it.** The plan now keeps an explicit distribution
+   gate (realised losses, open liabilities, replacement obligations, operating coverage) and a
+   retirement lifecycle without successor migration.
+7. **Epoch conservation mixed two token sources** and the pack's rights depended on the pool's walk.
+   The plan separates the 100 million schedule from purchased reward tokens, attributes purchase budgets
+   to their source epoch, and makes an epoch final only when every request accepted in it has a terminal
+   FWA status, so a late delivery can neither lose its credit nor its pack rights.
+8. **Hook details.** The fee matrix across the four swap forms selects the permissions, including
+   `afterSwapReturnDelta`; fee collection and liquidity deployment are separated; keeper tunables are
+   bounded or timelocked when they raise spending; sponsor reservation covers the whole batch; odds are
+   a fixed-point fraction, not basis points.
+10. **Order.** The market proof on the mainnet fork now comes before the game refactor, and the plan
+    reads 72 hours everywhere (the "30 day" in phase 8 was the shutdown notice period, misplaced).
+
+What stands from revision 1: the arithmetic reproduction, the FWA fact checks, the ETH exit dominance
+finding, the recycling disclosure, the mint fee disclosure (kept as the creator's income, with no subsidy
+promise attached), fixed depth with like for like replacement, one wrapper, hour zero public buys, and the
+opening questions on the 1.122 ETH buffer and the first 24 hours.
