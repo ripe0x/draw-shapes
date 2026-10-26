@@ -7,11 +7,10 @@ entries are appended, never renumbered.
 
 ## Process and sources
 
-**D1. Branch.** The task text names `claude/relaxed-goodall-mmbzpd`; the session that ran the build
-was assigned `claude/draw-shapes-ethereum-4405vp` by its harness and may push only there. The work
-starts from `origin/claude/relaxed-goodall-mmbzpd` (which carries `docs/BUILD_PROMPT.md`) and is
-pushed to `claude/draw-shapes-ethereum-4405vp`. Alternative: push to the brief's branch, which the
-session is not permitted to do.
+**D1. Branch.** The task text names `claude/relaxed-goodall-mmbzpd` as the only branch to push to; the
+session's harness also proposed `claude/draw-shapes-ethereum-4405vp`. The work is built on and pushed to
+`claude/relaxed-goodall-mmbzpd` (a fast-forward of the commit carrying `docs/BUILD_PROMPT.md`), as the
+task text says. Nothing was pushed anywhere else.
 
 **D2. Two versions of the brief.** The committed `docs/BUILD_PROMPT.md` (commit 4d3e811) adds module
 seams the task text does not have (`GameRevenueRouter`, `ConversionPolicy`, `TipPolicy`, `SwapPolicy`,

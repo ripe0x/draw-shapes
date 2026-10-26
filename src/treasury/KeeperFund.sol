@@ -96,12 +96,12 @@ contract KeeperFund is Governed, ReentrancyGuard {
 
     /// @notice The tip for a job that used `gasUsed` gas after waiting `age` seconds, before the
     ///         balance limit.
-    function quoteTip(uint256 gasUsed, uint256 age) public view returns (uint256 tip) {
+    function quoteTip(uint256 gasUsed, uint256 age) public view returns (uint256 amount) {
         uint256 fee = block.basefee < basefeeCap ? block.basefee : basefeeCap;
-        tip = (gasUsed + gasOverhead) * fee * (BPS + premiumBps) / BPS;
-        if (tip > tipCap) tip = tipCap;
+        amount = (gasUsed + gasOverhead) * fee * (BPS + premiumBps) / BPS;
+        if (amount > tipCap) amount = tipCap;
         uint256 ramp = rampSeconds;
-        tip += maxBounty * (age < ramp ? age : ramp) / ramp;
+        amount += maxBounty * (age < ramp ? age : ramp) / ramp;
     }
 
     /// @notice Balance available for tips (excludes credited, unwithdrawn tips).

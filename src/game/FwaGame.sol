@@ -92,6 +92,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 public bookedGain;
     uint256 public bookedLoss;
     uint256 public grailReserve;
+    uint256 public grailCapturedBacking;
     uint256 public pendingMarkup;
     uint256 public pendingMargin;
 
@@ -350,6 +351,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         if (it.row == GRAIL_ROW) {
             grailListing = 0;
             ++grailStep;
+            grailCapturedBacking += it.backing;
         } else {
             liveRows &= ~(uint256(1) << it.row);
             if (expected >= it.cost) bookedGain += expected - it.cost;

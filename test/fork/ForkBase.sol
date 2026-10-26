@@ -109,6 +109,29 @@ abstract contract ForkBase is Test, LaunchConfig {
         pool.processAcquisitions(10);
     }
 
+    /// @dev A word that makes the head request capture a live listing whose backing is `wantBacking`. FWA picks
+    ///      `word % totalWeight` along the slot order of its segment tree, so the prefix weight of the wanted
+    ///      slot selects it. Valid for the next request to settle, with no staged activation pending.
+    function wordFor(uint256, uint256 wantBacking) internal view returns (uint256 prefix) {
+        for (uint256 slot = 1; slot < 1000; ++slot) {
+            uint256 id = pool.slotToListing(slot);
+            if (id == 0) continue;
+            (,,,, uint256 weight,,, IFWAPool.ListingStatus st) = pool.listings(id);
+            if (st != IFWAPool.ListingStatus.Active) continue;
+            (, uint80 backing,,,,,) = sys.game.items(id);
+            if (backing == wantBacking || wantBacking == 0) return prefix;
+            prefix += weight;
+        }
+        revert("wordFor: none");
+    }
+
+    /// @dev Sync until there is nothing left to do.
+    function syncAll() internal {
+        for (uint256 i; i < 30; ++i) {
+            try sys.game.sync(100) {} catch { return; }
+        }
+    }
+
     function statusOf(uint256 requestId) internal view returns (IFWAPool.AcquisitionStatus st) {
         (,,,, st) = pool.acquisitions(requestId);
     }

@@ -83,6 +83,7 @@ interface IFWAPool {
     function ownerProceeds() external view returns (uint256);
     function selectionSlippageBps() external view returns (uint256);
     function selectionTimeoutBlocks() external view returns (uint256);
+    function slotToListing(uint256 slot) external view returns (uint256 listingId);
     function acquisitionRefundCredit(address purchaser) external view returns (uint256);
 
     function listings(uint256 listingId)
