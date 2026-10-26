@@ -49,7 +49,7 @@ abstract contract ForkBase is Test, LaunchConfig {
     ///      FWA fee purchase.
     function deployLaunch() internal {
         setUpFork();
-        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER);
+        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether);
         cfg.create2Deployer = address(this);
         cfg.fwaFeeEth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
         vm.deal(address(this), cfg.fwaFeeEth + 1 ether);
