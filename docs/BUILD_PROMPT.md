@@ -77,20 +77,29 @@ the owner included, can withdraw it.
 PrizeVault      holds game ETH; sends only to the active game; takes it back on retire; shutdown → LP
 FwaGame         creates/owns the FWA pool; mints & lists prizes; sync walk (books captures, credits the
                 ledger, queues replacements); conversion; GRAIL listing; margin → Treasury, markup → KeeperFund;
-                retire → everything back to the vault.   Policy modules: BoardPolicy, PricingPolicy, GrailPolicy
+                retire → everything back to the vault.   Modules: BoardPolicy, PricingPolicy, GrailPolicy,
+                ConversionPolicy, GameRevenueRouter, EngineBuyer
 GenesisFarm     holds the farm allocation + seasons reserve; pays claims from the ledger; accepts pot deposits;
                 shorten; retireUnearned (burn).          Module: EmissionSchedule (allocationOf)
 Treasury        holds revenue; distribute() splits by table to sinks
 Sinks           BuybackBurn, BuybackReward, GrailFund, KeeperFund   (each: receive() + process())
+                KeeperFund pays what TipPolicy says.   Modules: EngineBuyer (shared), TipPolicy
 EngineToken     fixed supply, burn, contractURI/tokenURI → Renderer (module)
-EngineHook      3% ETH fee → Treasury; buy gate until genesisEnd; fee exemptions; anti-snipe decay at open
+EngineHook      takes the fee SwapPolicy says and enforces its allow/deny; nothing else.   Module: SwapPolicy
 ProtocolLiquidity  initialises the pool, holds the full-range position, addLiquidity (no remove)
 Lens            read-only aggregation for the site and keeper
 ```
 
 Holders (fixed, no upgrade path): PrizeVault, FwaGame, GenesisFarm, Treasury, EngineToken,
-ProtocolLiquidity. Deciders (replaceable via timelock, views + events only, no balances):
-BoardPolicy, PricingPolicy, GrailPolicy, EmissionSchedule, Renderer, the sinks, fee policy on the hook.
+ProtocolLiquidity, EngineHook. Deciders (replaceable via timelock; views + events, or forward
+in-call; never hold a balance): BoardPolicy, PricingPolicy, GrailPolicy, ConversionPolicy,
+GameRevenueRouter, EngineBuyer, EmissionSchedule, SwapPolicy, TipPolicy, Renderer, the sinks.
+
+The rule, stated once: a holder has exactly one settable module address per kind of decision; a
+holder never contains a number you might want to change; a module never holds a balance between
+calls. What stays rigid on purpose: the vault's outflow set, the FWA retire path, the token supply,
+the farm's claim arithmetic and finality rule, the hook's fee-taking mechanics. Those are the trust
+surface; a seam there is an escape hatch.
 
 The FWA pool owner cannot be changed, so FwaGame is the one holder that cannot be swapped; it must
 be the smallest holder you can write, with every policy question pushed to a module. If a better
@@ -122,9 +131,12 @@ venue appears, FwaGame retires (returns everything to the vault) and governance 
 - **Ledger**: `epochTotals(epoch) → (accepted, resolved, units)`, `userEpoch(epoch, purchaser) → units`,
   `openBlock`, `activated`. Pulls accepted before `openBlock` (none should exist) and after genesis
   end still count units (the farm pays post-genesis pots from them).
-- **Revenue**: markup share of each booked capture → KeeperFund (until its target; overflow →
-  Treasury); house margin → Treasury; mint fees are paid at mint time to the Shapes contract (that is
-  the owner's income; never touch it).
+- **Revenue**: every revenue wei FwaGame books goes to one settable `GameRevenueRouter` module in
+  the same call, tagged by source (`Markup`, `Margin`, `GrailCapture`). The router forwards by a
+  per-source table and holds nothing. Launch table: Markup → KeeperFund (until its target, overflow
+  → Treasury); Margin → Treasury; GrailCapture → Treasury. Keeper gas stays pull-based because the
+  Markup row points at KeeperFund; governance can repoint any row. Mint fees are paid at mint time to
+  the Shapes contract (that is the owner's income; never touch it).
 - **Conversion** `convert(tokenId, minEngineOut)`: only Shapes delivered by our pool, once each;
   burn for backing → `EngineHook`-exempt buy from the pool → + 2% bonus (from the bonus pool, at the
   executed price) → transfer to caller. Reverts if the bonus pool is empty of the bonus (still
@@ -153,9 +165,11 @@ unused bonus pool at genesis end.
 
 - Treasury: `receive()`; `sinks[] (address, bps)` summing to 10,000, set by timelock; `distribute()`
   pushes the balance by bps; a sink must have code; a sink never holds a balance between calls.
-- `BuybackBurn.process(minOut)`: buys ENGINE in slices (`sliceWei`, `minSpacing`, `maxImpactBps`),
-  burns; caller tip per 4.6. Runs from genesis day one.
+- `BuybackBurn.process(minOut)`: buys ENGINE through `EngineBuyer` in slices (`sliceWei`,
+  `minSpacing`, `maxImpactBps`), burns; caller tip per 4.6. Runs from genesis day one.
 - `BuybackReward.process(minOut)`: same buy, then `GenesisFarm.deposit`.
+- A future sink (for example "buy and stake $FWA") is a new contract with `receive()` + `process()`
+  and one row in the table; nothing deployed changes.
 - `GrailFund`: forwards to `FwaGame.fundGrail()`.
 - `KeeperFund`: holds the keeper allowance (target `keeperTargetWei`), pays tips; `fundKeeper()` from
   FwaGame; overflow back to Treasury.
@@ -166,19 +180,27 @@ unused bonus pool at genesis end.
   deploy script passes (ProtocolLiquidity, GenesisFarm), `burn`, `contractURI()`/`tokenURI()` via a
   settable `IMetadataRenderer` (take the interface shape from `ripe0x/artcoins` `src/v2/renderer/`,
   not the code). Admin of metadata = timelock.
-- `EngineHook` (v4, mainnet PoolManager; verify its address on the fork): fee in ETH on every swap
-  (`feeBps` ≤ 500, launch 300) to Treasury; `gateEnd` block: before it, a buy whose `sender` is not
-  in `exempt` reverts `BuysClosed`; `exempt` = FwaGame + registered sinks (also fee-exempt); an
-  anti-snipe decaying extra fee for the first `snipeWindow` seconds after pool open (launch: 50% →
-  0 over 60 minutes; governance-settable, can be 0). Exact-output sells revert (as in the Base hook).
-  Only ProtocolLiquidity may initialise the pool, once.
+- `EngineHook` (v4, mainnet PoolManager; verify its address on the fork): on every swap it asks the
+  `SwapPolicy` module `(sender, isBuy, amountSpecified) → (allowed, feeBps)`, reverts `SwapNotAllowed`
+  if not allowed, and takes `feeBps` of the ETH side (hard cap 500 in the hook) to Treasury. The hook
+  contains no fee rule of its own. Exact-output sells revert (as in the Base hook). Only
+  ProtocolLiquidity may initialise the pool, once. `setSwapPolicy` is timelock-only.
+- `SwapPolicy` (module, launch version): fee 300 bps; `gateEnd` block before which a buy whose
+  `sender` is not in `exempt` is disallowed; `exempt` = FwaGame, EngineBuyer and registered sinks
+  (also fee 0); an anti-snipe decaying extra fee for the first `snipeWindow` seconds after pool open
+  (launch 50% → 0 over 60 minutes; can be 0). Asymmetric fees, fee holidays or a different gate are
+  a new policy module, never a hook change.
+- `EngineBuyer` (module): `buy(minOut) payable → engineOut`, the one place that knows how to buy
+  ENGINE (today: the v4 pool through PoolManager). FwaGame's conversion and both buyback sinks call
+  it. Changing the venue or route is one address change.
 - `ProtocolLiquidity`: initialises ETH/ENGINE at the launch price from `LAUNCH_ETH` and the 10% float,
   full range, tick spacing 200; `addLiquidity(minSqrtPrice)` (treasury/vault/timelock), no remove.
 
 ### 4.6 Keeper tips (adjustable, timelock)
 
 Every keeper-callable function (`sync`, `retireStep`, `distribute`, every sink's `process`,
-`retireUnearned`) pays its caller from KeeperFund:
+`retireUnearned`) pays its caller from KeeperFund, which pays what the `TipPolicy` module returns
+for `(gasUsed, basefee, age)`, capped by KeeperFund's own `tipCap`. Launch policy:
 
 ```
 tip = min(tipCap, gasUsed × min(basefee, basefeeCap) × (10_000 + premiumBps) / 10_000)
