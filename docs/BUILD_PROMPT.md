@@ -22,12 +22,15 @@ we provide the house (a protocol-owned prize inventory) and a token.
 
 **ENGINE** is the token. Its purpose is to drive play: for a 21-day genesis window every pull earns
 ENGINE, and for the whole life of the game a share of the game's revenue buys ENGINE back, half of
-it burned and half paid to that day's players. During genesis the only way to acquire ENGINE is to
-play (public buys are closed; sells are never closed).
+it burned and half paid to that day's players. During genesis the protocol issues ENGINE only to
+players and the canonical pool is closed to public buys (sells are never closed).
 
 The owner is a solo operator with a small audience and organic marketing only. Their income is the
-Shapes mint fee (0.001 ETH per Shape minted), nothing else. The game's own ETH is held so that nobody,
-the owner included, can withdraw it.
+Shapes mint fee (0.001 ETH per Shape minted), nothing else. The game's own ETH is held in contracts
+with no withdraw function; governance can move it only between the registered game, the treasury's
+registered sinks, the farm and the ENGINE liquidity position. Governance is a timelock whose delay is
+the only notice of such a move, and the delay is 0 at launch: say this plainly in the docs and the
+Terms rather than claiming nobody can move the ETH.
 
 ## 2. Intent and priorities (use these to decide anything this brief doesn't)
 
@@ -41,8 +44,10 @@ the owner included, can withdraw it.
    (the owner will raise it later). Every tunable has an in-contract bound; within the bound the
    timelock moves it freely. Immutable only where it must be (token supply, the FWA pool, the
    vault's lack of a withdraw).
-4. **Custody is the one hard promise.** Game ETH leaves holders only to the active game, the
-   treasury's registered sinks, the farm, or the ENGINE liquidity position. Never to an EOA.
+4. **Custody is the one hard promise, stated accurately.** Game ETH leaves holders only to the
+   active game, the treasury's registered sinks, the farm, or the ENGINE liquidity position; never
+   to an EOA. Governance chooses those destinations, so the promise is "no withdraw, every move is a
+   registered contract, the timelock delay is the notice", not "nobody can move it".
 5. **Play is the point.** When a design choice trades token economics against reasons to play,
    choose play.
 6. **Measure, don't guess.** Economic parameters come from fork gas receipts and the sims, recorded
@@ -58,14 +63,14 @@ the owner included, can withdraw it.
 | Pool model | Protocol-owned house. No depositors. All vault assets go to the active game immediately (no caps, no notice beyond the timelock). |
 | Pricing | Listing price = backing + mint fees + a governance-set **markup** (launch 3%, cap 5%) earmarked for keeper gas. FWA charges EV × 1.05; we receive EV × 1.025. No settlement fee of ours. `purchaseOperator` left unset so FWA's site can sell our pulls. |
 | Token | "ENGINE" / "ENGINE", 18 decimals, supply 1,000,000,000 minted once. Our own contracts (not artcoins), with `contractURI`/`tokenURI` and a pluggable renderer. No bonus weights. |
-| Supply split | 10% to the launch liquidity position; 10% to the genesis farm; 1% to the prize-conversion bonus pool; 79% to the farm as a **seasons reserve** that governance can only (a) schedule as a future farming season or (b) burn. It can never be transferred elsewhere. Unused genesis allocation (empty days) and unused bonus are burned at genesis end. |
+| Supply split | 10% to the launch liquidity position; 10% to the genesis farm; 1% to the prize-conversion bonus pool; 79% to the farm as a **seasons reserve** that governance can only (a) schedule as a future farming season or (b) burn, under in-contract limits: a season starts no sooner than `SEASON_NOTICE_BLOCKS` (50,400 ≈ 7 days) after it is scheduled, releases at most the genesis average per epoch, seasons never overlap, and an epoch's allocation is snapshotted when the epoch becomes final so no schedule change can alter an earned claim. The reserve can never be transferred elsewhere. Unused genesis allocation (empty days) and unused bonus are burned at genesis end. |
 | Market | One Uniswap v4 ETH/ENGINE pool on our own hook, LP fee 0, full-range protocol-owned position, no remove. Hook fee 3% of the ETH side on every swap, to the treasury (cap 5%). Opens 48 h before the game. |
-| Gate | From game open to genesis end, **public buys revert; sells always work**. Buys are allowed only from FwaGame (prize conversion) and registered treasury sinks (buybacks). |
+| Gate | From the game-open block (`openBlock`, not before: the 48 h pre-market is open both ways) to genesis end, **public buys on the canonical pool revert; sells always work**. Buys are allowed only through `EngineBuyer` (prize conversion, buybacks). ENGINE is an ordinary ERC-20, so OTC trades, other pools and buying a won Shape on secondary to convert it remain possible; disclose that. |
 | Genesis | 21 daily epochs in blocks (7,200 blocks each) from the game-open block. Emission tapers linearly from 1.5× the average day to 0.5× (same total). Each epoch's pot is split pro rata among that epoch's delivered pulls (one unit per pull). An epoch is claimable once every pull accepted in it is terminal. Claims never expire. Governance may shorten genesis (one way, min 7 epochs, 2 full epochs' notice); cut epochs are burned. |
-| Prize conversion | A winner may convert a Shape won from our pool into ENGINE: FwaGame burns the Shape for its backing, buys ENGINE from the pool with that ETH (fee-exempt), adds a 2% bonus from the bonus pool, and sends the ENGINE to the player. Allowed during and after genesis. Only token IDs our pool delivered. |
-| Buybacks | Run from genesis day one. Treasury revenue is split by a governance table across sinks. Launch table: BuybackBurn 45%, BuybackReward 45%, GrailFund 10%. BuybackReward deposits what it buys into the farm's current epoch. |
+| Prize conversion | The holder of a Shape our pool delivered (eligibility follows the token, not the original winner) may convert it: FwaGame burns it for its backing, buys ENGINE through `EngineBuyer` (fee-exempt), adds the bonus (launch 2%) from the bonus pool, and sends the ENGINE to the caller. A delivered Pack converts by FwaGame unpacking it in the same call. Allowed during and after genesis. The bonus may never exceed the sell fee (checked in-contract whenever either is set). |
+| Buybacks | Run from genesis day one. Treasury revenue is split by a governance table across sinks. Launch table: Buyback 90%, GrailFund 10%. The Buyback sink makes one purchase per slice and splits the tokens by `burnShareBps` (launch 5,000): the burn share is burned, the rest is deposited into the farm's current epoch. Rewards are an incentive to play now, not compensation for past revenue; the keeper's daily cadence bounds how much revenue a single epoch can carry. |
 | Keeper gas | Paid from the markup (pull-based), never from trading fees. Our keeper is a backup; bots are welcome. |
-| GRAILs | Large Shapes (0.5 → 1 → 5 ETH ladder) listed through FwaGame below backing with a probability cap and per-pull decay; funded by the GrailFund sink. Policy in a module, bounds in the contract. |
+| GRAILs | Large Shapes (0.5 → 1 → 5 ETH ladder) listed through FwaGame below backing with a probability cap and decay applied at maintenance windows; funded by the GrailFund sink, or seeded by the owner. Not part of the launch proposition: on the reference board a 0.5 ETH GRAIL is about a 1-in-2,800 pull and the fund needs ~46 days at 300 pulls/day. The first GRAIL lists when funded. Policy in a module, bounds in the contract. |
 | Visuals | The mainnet Shapes renderer as-is for NFTs. ENGINE gets a custom renderer (on-chain SVG; pick a simple, clean design; the owner may replace it). |
 | Governance | OpenZeppelin `TimelockController`, `minDelay = 0` at launch, proposer/executor = the owner's governance address from the env file. Every setter is timelock-only. |
 | Site / terms | Next.js site with a Terms page and clickwrap on first wallet connect; no country blocking; operator name and contact from env. |
@@ -112,7 +117,9 @@ venue appears, FwaGame retires (returns everything to the vault) and governance 
 - `retireGame()` (timelock): marks the game retiring; the game's own `retire()` path returns funds.
 - `shutdown()`: when no game is active and the last game has returned, anyone may move the balance to
   `ProtocolLiquidity.addLiquidity` with a price limit, after a governance-set delay.
-- No withdraw. No other outflow. Keep it under ~120 lines.
+- No withdraw. No other outflow. `activeGame` can be changed only when the previous game has
+  repaid in full. Keep it under ~120 lines. Trust model, to be documented: governance picks the game
+  and the sinks, so governance can direct all capital; the timelock delay is the notice.
 
 ### 4.2 FwaGame
 
@@ -121,30 +128,47 @@ venue appears, FwaGame retires (returns everything to the vault) and governance 
 - **Inventory**: mints Shapes / Packs from vault ETH per `BoardPolicy`, lists at `PricingPolicy`
   prices with `listNFTs` (batches ≤ `MAX_INVENTORY_BATCH` = 20), tracks every listing and token ID it
   has ever listed and delivered.
-- **Sync walk** `sync(uint256 maxCount)` (permissionless, tipped): walks `requestIdAtSequence` from
-  the last booked sequence while the acquisition is terminal (`Fulfilled`, `Expired`, `Refunded`,
-  `TimedOut`, `DeliveryRefunded`; treat `DeliveryPending` as not terminal). For each: book the capture
-  (proceeds − captured backing − mint line = margin), credit the ledger (epoch = `(requestBlock −
-  openBlock) / EPOCH_BLOCKS`, purchaser +1 unit; count accepted and resolved per epoch), queue the
-  replacement row, then list queued replacements if the FWA inventory cooldown allows. Recover
+- **Sync walk** `sync(uint256 maxCount)` (permissionless, tipped per item of progress): two cursors.
+  (1) `seenSequence` advances over every issued sequence (`requestIdAtSequence`, up to the pool's
+  last issued sequence) regardless of status: at first sight the request is assigned its epoch from
+  `requestBlock` and counted as **accepted** in that epoch; `accepted` therefore comes from FWA's own
+  issuance, never from what we have booked. (2) Every seen-but-unresolved request sits in an open set;
+  each sync pass resolves any that have become terminal (`Fulfilled`, `Expired`, `Refunded`,
+  `TimedOut`, `DeliveryRefunded`), in any order: book the economics (proceeds − captured backing −
+  mint line), credit one unit to the purchaser only for a delivered pull, mark **resolved**, queue
+  the replacement row. A request still `DeliveryPending` after `DELIVERY_GRACE_BLOCKS` (the 7-day
+  refund window plus 7,200) is marked resolved **without a unit** for reward purposes; its economics
+  book whenever it finally settles. No single request can stall the walk. Replacement listings and
+  GRAIL reprices are applied in batches at maintenance windows, because every FWA inventory change
+  sets `purchasesResumeAt` (cooldown, 5 min default): never list or reprice per pull. Recover
   `DeliveryRefunded` NFTs back into inventory. Withdraw owner proceeds when available.
 - **Ledger**: `epochTotals(epoch) → (accepted, resolved, units)`, `userEpoch(epoch, purchaser) → units`,
-  `openBlock`, `activated`. Pulls accepted before `openBlock` (none should exist) and after genesis
-  end still count units (the farm pays post-genesis pots from them).
-- **Revenue**: every revenue wei FwaGame books goes to one settable `GameRevenueRouter` module in
-  the same call, tagged by source (`Markup`, `Margin`, `GrailCapture`). The router forwards by a
+  `openBlock`, `activated`. An epoch is final when `accepted == resolved` under the rule above.
+  Pulls after genesis end still count units (the farm pays post-genesis pots from them).
+- **Capital accounting** (the house's working capital is protected before anything leaves): FwaGame
+  tracks `cash`, `replacementsOwed` (cost of queued replacements incl. mint fees), `reserveTarget`
+  (timelock-set within bounds; derived from adverse-sequence sims, section 5) and cumulative P&L.
+  `distributable = max(0, cash − replacementsOwed − reserveTarget)`; only `distributable` is ever
+  routed out (to `GameRevenueRouter`). Deficits carry forward: a run of expensive wins is paid from
+  cash and the reserve, and later gains refill the reserve before anything is distributed. The
+  solvency invariant is `cash + inventory backing ≥ vault principal − cumulative booked P&L` **and**
+  `no outflow while cash < replacementsOwed + reserveTarget`.
+- **Revenue**: every distributable wei FwaGame releases goes to one settable `GameRevenueRouter`
+  module in the same call, tagged by source (`Markup`, `Margin`, `GrailCapture`). The router forwards by a
   per-source table and holds nothing. Launch table: Markup → KeeperFund (until its target, overflow
   → Treasury); Margin → Treasury; GrailCapture → Treasury. Keeper gas stays pull-based because the
   Markup row points at KeeperFund; governance can repoint any row. Mint fees are paid at mint time to
   the Shapes contract (that is the owner's income; never touch it).
-- **Conversion** `convert(tokenId, minEngineOut)`: only Shapes delivered by our pool, once each;
+- **Conversion** `convert(tokenId, minEngineOut, allowNoBonus)` / `convertPack(packId, …)`: Shapes
+  our pool delivered (or unpacked from a delivered Pack in the same call), once each;
   burn for backing → `EngineHook`-exempt buy from the pool → + 2% bonus (from the bonus pool, at the
   executed price) → transfer to caller. Reverts if the bonus pool is empty of the bonus (still
   converts without the bonus if `allowNoBonus` is set by the caller).
 - **GRAILs**: `GrailFund` sink calls `fundGrail()`; when the fund covers backing + mint fee of the
   next ladder step, mint and list a GRAIL at `GrailPolicy.listPrice` (bounded: never below
-  `MIN_GRAIL_PRICE_BPS` of backing, probability share never above `MAX_GRAIL_PROB_BPS`), reprice per
-  pull by the policy within the same bounds.
+  `MIN_GRAIL_PRICE_BPS` of backing, probability share never above `MAX_GRAIL_PROB_BPS`), reprice at
+  maintenance windows by the policy within the same bounds (decay is computed per pull, applied in
+  batch). `seedGrail()` payable lets the owner fund the first GRAIL directly.
 - **Retire** `retire()` (timelock) then `retireStep()` (anyone): `retirePool()`, process until
   `unsettledAcquisitionCount == 0`, `withdrawListingsTo(ids, this)`, burn held Shapes for backing,
   unpack Packs, repay the vault. Must work while the factory is `globalWithdrawOnly`.
@@ -157,17 +181,23 @@ Port the held farm contract from the earlier handoff (Appendix A there) with the
 weights (100% by units); epochs in blocks via the ledger (`openBlock`, `EPOCH_BLOCKS`); `allocationOf`
 delegates to `EmissionSchedule`; `deposit(amount)` from a registered sink adds to the current epoch's
 pot (post-genesis epochs have pots only from deposits; they are claimable by the same finality rule);
-`seasonsReserve` balance with `scheduleSeason(start, epochs, amount)` and `burnReserve(amount)`
-(timelock only; no other outflow); `retireUnearned` burns cut epochs, empty genesis epochs and the
-unused bonus pool at genesis end.
+`seasonsReserve` balance with `scheduleSeason(ledger, startBlock, epochs, amount)` and
+`burnReserve(amount)` (timelock only; no other outflow; limits per section 3); each season binds to a
+ledger address and an `openBlock`, so a replacement game's ledger never collides with an earlier
+season's claims and old claims stay payable from the old ledger; an epoch's allocation and totals are
+snapshotted at finality; a post-genesis epoch whose pot has no eligible units rolls its pot into the
+next epoch; `retireUnearned` burns cut epochs, empty genesis epochs and the unused bonus pool at
+genesis end.
 
 ### 4.4 Treasury and sinks
 
 - Treasury: `receive()`; `sinks[] (address, bps)` summing to 10,000, set by timelock; `distribute()`
-  pushes the balance by bps; a sink must have code; a sink never holds a balance between calls.
-- `BuybackBurn.process(minOut)`: buys ENGINE through `EngineBuyer` in slices (`sliceWei`,
-  `minSpacing`, `maxImpactBps`), burns; caller tip per 4.6. Runs from genesis day one.
-- `BuybackReward.process(minOut)`: same buy, then `GenesisFarm.deposit`.
+  pushes the balance by bps; a sink must have code. Sinks are small holders of their own allocation
+  (a buyback sink holds ETH between slices); the "never holds a balance" rule is for policy modules.
+  Trust model as for the vault: governance picks sinks; document it.
+- `Buyback.process(minOut)`: one purchase per slice through `EngineBuyer` (`sliceWei` shrinks to
+  `min(sliceWei, balance / 4)` when the balance is low, `minSpacing`, `maxImpactBps`), then splits the
+  tokens by `burnShareBps`: burn, and `GenesisFarm.deposit` for the rest. Runs from genesis day one.
 - A future sink (for example "buy and stake $FWA") is a new contract with `receive()` + `process()`
   and one row in the table; nothing deployed changes.
 - `GrailFund`: forwards to `FwaGame.fundGrail()`.
@@ -185,9 +215,10 @@ unused bonus pool at genesis end.
   if not allowed, and takes `feeBps` of the ETH side (hard cap 500 in the hook) to Treasury. The hook
   contains no fee rule of its own. Exact-output sells revert (as in the Base hook). Only
   ProtocolLiquidity may initialise the pool, once. `setSwapPolicy` is timelock-only.
-- `SwapPolicy` (module, launch version): fee 300 bps; `gateEnd` block before which a buy whose
-  `sender` is not in `exempt` is disallowed; `exempt` = FwaGame, EngineBuyer and registered sinks
-  (also fee 0); an anti-snipe decaying extra fee for the first `snipeWindow` seconds after pool open
+- `SwapPolicy` (module, launch version): fee 300 bps; between `gateStart` (= `openBlock`) and
+  `gateEnd` a buy whose `sender` is not `EngineBuyer` is disallowed. In v4 `sender` is whoever calls
+  `PoolManager.swap`, normally a router, so `EngineBuyer` is the only exempt sender (also fee 0) and it
+  accepts calls only from FwaGame and registered sinks; never exempt a public router; an anti-snipe decaying extra fee for the first `snipeWindow` seconds after pool open
   (launch 50% → 0 over 60 minutes; can be 0). Asymmetric fees, fee holidays or a different gate are
   a new policy module, never a hook change.
 - `EngineBuyer` (module): `buy(minOut) payable → engineOut`, the one place that knows how to buy
@@ -200,7 +231,11 @@ unused bonus pool at genesis end.
 
 Every keeper-callable function (`sync`, `retireStep`, `distribute`, every sink's `process`,
 `retireUnearned`) pays its caller from KeeperFund, which pays what the `TipPolicy` module returns
-for `(gasUsed, basefee, age)`, capped by KeeperFund's own `tipCap`. Launch policy:
+for `(gasUsed, basefee, age, itemsProcessed)`, capped by KeeperFund's own `tipCap`. A call that makes
+no measurable progress (no sequence seen or resolved, no listing made, no slice bought) earns nothing,
+and the bounty is paid once per unit of work, not per call, so splitting work into many calls earns
+no more than one call would. KeeperFund is seeded at deploy with `KEEPER_SEED` from the env file and
+keeps a `maintenanceFloor` that only retirement may spend below. Launch policy:
 
 ```
 tip = min(tipCap, gasUsed × min(basefee, basefeeCap) × (10_000 + premiumBps) / 10_000)
@@ -228,19 +263,34 @@ wallet, conversion quote, treasury table and sink states, keeper work available 
 | Markup | 300 bps | ≤ 500 |
 | Hook fee | 300 bps | ≤ 500 |
 | Anti-snipe | 50% → 0 over 60 min | ≤ 90%, ≤ 3 h |
-| Gate end | genesis end | — |
+| Gate | start `openBlock`, end genesis end | — |
+| Reserve target (FwaGame) | from the adverse-sequence sims (section 5 note); initial guess 1.0 ETH on the reference board | ≥ cost of the two most expensive board items |
+| Delivery grace | 7-day refund window + 7,200 blocks | — |
+| Seasons | notice 50,400 blocks; per-epoch release ≤ genesis average | — |
 | Genesis | 21 epochs × 7,200 blocks; taper 1.5× → 0.5× | min 7 on shorten |
 | Farm | 100,000,000 ENGINE | — |
 | Bonus pool | 10,000,000 ENGINE, 2% of backing per conversion | bonus ≤ 500 bps |
-| Treasury table | Burn 4,500 / Reward 4,500 / GRAIL 1,000 | sums to 10,000 |
-| Buyback | slice 0.05 ETH, spacing 1 h, impact cap 3% | — |
+| Treasury table | Buyback 9,000 / GRAIL 1,000 | sums to 10,000 |
+| Buyback | `burnShareBps` 5,000; slice 0.05 ETH (shrinks with balance), spacing 1 h, impact cap 3% | burn share any |
+| Keeper seed / floor | `KEEPER_SEED` from env; `maintenanceFloor` 0.05 ETH | — |
 | Keeper | per 4.6 | tipCap ≤ 0.05 ETH, maxBounty ≤ 0.01 ETH |
 | GRAIL | ladder 0.5/1/5 ETH; list ≥ 80% of backing; prob cap 5%; decay per policy | list ≥ 50%, prob ≤ 10% |
 | Launch liquidity | `LAUNCH_ETH` from env (owner decides; default the sims recommend) | — |
 
-Re-run the sims (port from `draw-shapes-base/sim/`, mainnet gas, 21 days, FWA lean pricing, the taper,
-the gate, 50/50 buyback) and set the per-pull expectations, `LAUNCH_ETH` recommendation and keeper
-budget from them. Record inputs and outputs in `docs/ECONOMICS.md`.
+Re-run the sims (port from `draw-shapes-base/sim/`, mainnet gas, 21 days, FWA lean pricing plus the
+3% markup, the taper, the gate, the buyback split) and set from them: the per-pull expectations, the
+`reserveTarget` (the reserve that keeps the probability of being unable to fund the next replacement
+below 0.5% over 21 days at 300 pulls/day, including the inventory cooldown and outstanding
+requests), the `LAUNCH_ETH` recommendation (as a function of the owner's capital budget and acceptable
+drawdown, given that the farm sells up to 100M into a 100M-token pool), and the keeper budget at 10,
+30, 100 and 300 pulls/day. Model real selling into the pool and the venue's cadence (cooldown after
+each maintenance window, FWA's outstanding-request caps), not a constant price or a continuous flow.
+The **post-genesis scenarios are the decisive test**: 10 / 30 / 100 / 300 pulls/day with zero prize
+conversion, minimal trading and a sharp fall in farming, and the system must remain operable (keeper
+funded, replacements affordable) in every one. Record inputs and outputs in `docs/ECONOMICS.md`,
+including the honest baseline: at 300 pulls/day the buyback is ~0.00036 ETH per pull in total, mint
+fees to the owner are ~3.4× the treasury's game revenue, and the common outcome of a pull is losing
+about a third of the ticket.
 
 ## 6. Rules for the build
 
@@ -282,15 +332,24 @@ budget from them. Record inputs and outputs in `docs/ECONOMICS.md`.
 ## 7. Test plan (all must pass before you report done)
 
 - Unit: every holder and module; bounds; setter access; emission taper sums to the allocation.
-- Fork: pool creation and permanent ownership; listing and the inventory cooldown; a pull through
-  FWA's real `acquire` with the VRF callback; the sync walk over every terminal status including
-  `TimedOut` and `DeliveryRefunded` recovery; replacement and the markup/margin/mint-line split to the
-  wei; conversion; GRAIL mint/list/reprice/capture; buybacks splitting burn/reward; gate (public buy
-  reverts, sell passes, game buy passes); anti-snipe decay; retire path including under
-  `globalWithdrawOnly`; vault fund/repay/shutdown.
-- Invariants: custody (rule 7); solvency (vault + game NAV ≥ what was lent minus booked losses);
-  ledger = delivered pulls per epoch; farm never pays more than allocation + deposits; treasury table
-  always sums to 10,000; sinks hold nothing between calls.
+- Fork: pool creation and permanent ownership; listing and the inventory cooldown (`purchasesResumeAt`
+  after every change; maintenance windows, never per-pull changes); a pull through FWA's real
+  `acquire` with the VRF callback; the sync walk over every status including out-of-order resolution,
+  `TimedOut`, `DeliveryRefunded` recovery, and **a recipient that rejects delivery and never claims a
+  refund** (the walk and every other epoch must keep progressing; the epoch becomes final after the
+  grace period without a unit for that pull); `accepted` derived from FWA issuance (ten issued, one
+  resolved → not final); replacement and the markup/margin/mint-line split to the wei; capital
+  accounting (an expensive early win is paid from cash and reserve, nothing distributes until the
+  reserve refills); conversion incl. Packs and secondary holders; GRAIL mint/list/reprice/capture and
+  `seedGrail`; buyback single purchase then split; gate (public buy reverts between `openBlock` and
+  `gateEnd`, passes before and after; sell passes; `EngineBuyer` passes; a router is never exempt);
+  anti-snipe decay; bonus ≤ sell fee enforced; season limits; retire path including under
+  `globalWithdrawOnly`; vault fund/repay/shutdown; `activeGame` change refused until repaid.
+- Invariants: custody (rule 7); capital (`cash + inventory backing ≥ principal − booked P&L`, and no
+  outflow while `cash < replacementsOwed + reserveTarget`); ledger (`accepted` = FWA issued per
+  epoch, `units` = delivered pulls per epoch); farm never pays more than allocation + deposits, and a
+  final epoch's claims never change after finality; treasury table always sums to 10,000; policy
+  modules hold nothing.
 - Scenario, on the fork with block/time manipulation (local only): **the full genesis rehearsal**:
   deploy, 48 h pre-market with buys and sells, game open (gate on), 21 epochs of pulls with late
   deliveries and one timeout, daily sync/distribute/buybacks, claims per epoch as they become final,
@@ -324,7 +383,8 @@ budget from them. Record inputs and outputs in `docs/ECONOMICS.md`.
    end. Include anything you found that contradicts this brief.
 6. Contracts, tests, scripts, site, keeper as above; CI green; gas receipts and sizes in the docs.
 7. A final report: what is done, what is not, test counts, sizes, gas, and the exact next steps that
-   need the owner (section 10).
+   need the owner (section 10), including a reminder that the timelock delay is 0 and should be raised
+   before outside money is material.
 
 ## 10. What you must not do (the owner does these)
 
@@ -336,12 +396,14 @@ budget from them. Record inputs and outputs in `docs/ECONOMICS.md`.
 - Publish, post or send messages on the owner's behalf. Provision paid services.
 - Reopen the decisions in section 3. If you believe one is wrong, build it as decided and write the
   argument in `docs/IMPLEMENTOR_DECISIONS.md`.
+- Describe custody as stronger than it is. The docs, Terms and site say exactly what governance can
+  move, where, and with what notice (0 at launch).
 
 ## 11. Verified external facts (2026-10-26)
 
 | Item | Value |
 |---|---|
-| FWA factory | `0xf5a3a153164791ab579c3d9ba5dbecf7cdfd300c`: `poolCreationEnabled` true, `betaAccess` false, creation fee 50,000 FWA, `edgeBps` 500 |
+| FWA factory | `0xf5a3a153164791ab579c3d9ba5dbecf7cdfd300c`: `poolCreationEnabled` true, `betaAccess` false, creation fee 50,000 FWA, `edgeBps` 500. Read on-chain 2026-10-26 from `deployments/dependencies.json`. **Re-verify against FWA's current deployment page before building**: if FWA has moved to a newer factory/implementation, pin the one FWA's site uses, vendor its verified source under `external/`, and re-check every behaviour in this table against that exact bytecode, not the docs. |
 | FWA clone implementation / VRF service / FWA token | `0xeaa4d032908a9734a2c7939c0d211c35ad51eb31` / `0xa4adfc35db18326efb3b5d9bf66a8103ec2d5ee2` / `0xa0df17b5ac76ababa36e1450e2cbcd18a620c845`; VRF request fee 0 today |
 | FWA pool behaviour (vendored source `external/fwa-v2/mainnet/FWAClone/src/userowned/FWAClone.sol`) | owner permanent (`OwnershipLocked`); only owner lists; buyer pays EV × 1.05, owner accrues EV × 1.025; `withdrawListingsTo` needs `unsettledAcquisitionCount == 0`; `retirePool()` keeps callbacks/claims/withdrawals working; records in `acquisitions(requestId)`, `acquisitionMeta(requestId)` (`sequence`, `randomWord`), `requestIdAtSequence`; `MAX_INVENTORY_BATCH` 20; factory can set `globalWithdrawOnly` |
 | v4 PoolManager (mainnet) | verify on the fork before use; the Base build's `ProtocolLiquidity`/`EngineHook` show the integration shape |
