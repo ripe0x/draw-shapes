@@ -41,7 +41,10 @@ contract Deploy is Script, LaunchConfig {
         bool createPool = vm.envOr("CREATE_FWA_POOL", true);
 
         _preflight(c, deployer, createPool);
-        if (createPool) c.fwaFeeEth = fwaFeeQuote(c.fwaFactory, c.poolManager, vm.envOr("FWA_FEE_MARGIN_BPS", uint256(500)));
+        c.createPool = createPool;
+        if (createPool && IFactoryPreflight(c.fwaFactory).poolCreationFee() != 0) {
+            c.fwaFeeEth = fwaFeeQuote(c.fwaFactory, c.poolManager, vm.envOr("FWA_FEE_MARGIN_BPS", uint256(500)));
+        }
         require(deployer.balance > c.fwaFeeEth, "deployer cannot pay the FWA fee purchase");
 
         vm.startBroadcast(deployer);

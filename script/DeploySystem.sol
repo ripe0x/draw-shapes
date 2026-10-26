@@ -46,7 +46,8 @@ abstract contract DeploySystem {
         address poolManager;
         address create2Deployer; // the address that executes `new X{salt: s}` (CREATE2 factory in scripts)
         bytes32 poolSalt;
-        uint256 fwaFeeEth; // ETH to spend buying the FWA creation fee (0: skip pool creation)
+        bool createPool; // create the FWA pool during deployment
+        uint256 fwaFeeEth; // ETH to spend buying the FWA creation fee (0 when the factory charges none)
         // policies
         uint8[] boardKinds;
         uint96[] boardBackings;
@@ -169,9 +170,9 @@ abstract contract DeploySystem {
 
         _wire(c, s);
 
-        if (c.fwaFeeEth != 0) {
+        if (c.createPool) {
             uint256 fee = _poolCreationFee(c);
-            s.feeBuyer.buyTo{value: c.fwaFeeEth}(address(s.game), fee);
+            if (fee != 0) s.feeBuyer.buyTo{value: c.fwaFeeEth}(address(s.game), fee);
             s.game.createPool(c.poolSalt);
         }
     }
@@ -318,7 +319,7 @@ abstract contract DeploySystem {
         _check(a2 == address(s.grailFund) && b2 == c.grailBps, "sink 2");
         _check(uint256(b0) + b1 + b2 == 10_000, "table sum");
         // FWA pool
-        if (c.fwaFeeEth != 0) {
+        if (c.createPool) {
             address pool = address(s.game.pool());
             _check(pool != address(0), "pool");
             _check(IOwnedView(pool).owner() == address(s.game), "pool owner");

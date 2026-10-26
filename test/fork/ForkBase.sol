@@ -51,6 +51,7 @@ abstract contract ForkBase is Test, LaunchConfig {
         setUpFork();
         cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether);
         cfg.create2Deployer = address(this);
+        cfg.createPool = true;
         cfg.fwaFeeEth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
         vm.deal(address(this), cfg.fwaFeeEth + 1 ether);
         sys = _deploySystem(cfg, address(this));
