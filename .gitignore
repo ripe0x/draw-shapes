@@ -22,3 +22,5 @@ deployments/.dry-run-*
 broadcast/**/31337/
 .anvil-*.pid
 .anvil-*.log
+keeper/node_modules/
+site/node_modules/

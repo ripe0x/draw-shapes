@@ -12,7 +12,8 @@ R="http://127.0.0.1:${PORT}"
 set -a; source script/env/anvil.env; set +a
 anvil --fork-url "$FORK_URL" --fork-block-number "$FORK_BLOCK" --chain-id 31337 --port "$PORT" --silent &
 ANVIL=$!
-trap 'kill $ANVIL' EXIT
+# KEEP_ANVIL=1 leaves the fork running after the rehearsal (for the keeper or the site).
+[[ "${KEEP_ANVIL:-0}" == "1" ]] || trap 'kill $ANVIL' EXIT
 sleep 6
 cast rpc anvil_setBalance "$DEPLOYER" 0x56BC75E2D63100000 --rpc-url "$R" >/dev/null
 cast rpc anvil_impersonateAccount "$DEPLOYER" --rpc-url "$R" >/dev/null
@@ -39,4 +40,13 @@ echo "market: launched=$(cast call "$L" 'launched()(bool)' --rpc-url "$R")"
 cast rpc evm_increaseTime 172800 --rpc-url "$R" >/dev/null; cast rpc anvil_mine 1 --rpc-url "$R" >/dev/null
 tl "$G" 0 "$(cast calldata 'openGame()')" 2
 echo "game: openBlock=$(cast call "$F" 'openBlock()(uint256)' --rpc-url "$R") purchases=$(cast call "$P" 'localPurchasesEnabled()(bool)' --rpc-url "$R")"
+# one pull through FWA by an impersonated player, so the keeper has work
+PLAYER=0x00000000000000000000000000000000000b1a7e
+cast rpc anvil_setBalance "$PLAYER" 0x56BC75E2D63100000 --rpc-url "$R" >/dev/null
+cast rpc anvil_impersonateAccount "$PLAYER" --rpc-url "$R" >/dev/null
+read -r FEE _ TOTAL < <(cast call "$P" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 --rpc-url "$R" | awk '{print $1}' | tr '\n' ' ')
+VERSION=$(cast call "$P" 'inventoryVersion()(uint256)' --rpc-url "$R" | awk '{print $1}')
+DEADLINE=$(( $(cast block latest --field timestamp --rpc-url "$R") + 3600 ))
+cast send "$P" 'acquire(address,uint256,uint256,uint256,uint256,uint256)' "$PLAYER" "$FEE" 0 10000 "$VERSION" "$DEADLINE" --value "$TOTAL" --from "$PLAYER" --unlocked --rpc-url "$R" >/dev/null
+echo "pull: issued, lastIssuedSequence=$(cast call "$P" 'lastIssuedSequence()(uint64)' --rpc-url "$R")"
 echo "rehearsal complete"
