@@ -12,8 +12,8 @@ Model (inputs are assumptions; outputs are model results, not forecasts):
   Treasury. LAUNCH_ETH against the 100M ENGINE float. 48 h pre-market with outside buying `pre_buy` ETH/day.
 - Gate: from game open to genesis end the only buyers are prize conversion (a share `convert_share` of the
   backing players win, fee exempt, + 2 % bonus from the 10M pool) and the buyback sinks. Sells always work.
-- Treasury: hook fees + margin lines. distribute daily: 45 % burn, 45 % reward (deposited into that day's
-  epoch), 10 % GRAIL. Buybacks spend at most 0.05 ETH per sink per hour (1.2 ETH/day/sink).
+- Treasury: hook fees + margin lines. distribute daily: 90 % Buyback (one purchase per slice, half burned,
+  half deposited into that day's epoch), 10 % GRAIL. The Buyback spends at most 0.05 ETH per hour.
 - Players: `organic` pulls/day play for prizes regardless of rewards. Farmers add pulls while the ENGINE an
   epoch pays, sold over the next day, returns more ETH per pull than a pull loses (competitive equilibrium).
 - Emission: 100M ENGINE over 21 epochs, linear taper 1.5x -> 0.5x of the average epoch.
@@ -126,7 +126,7 @@ def run(launch_eth=10.0, gwei=1.0, organic=100, markup=0.03, board="shapes-only 
         out["keeper_income"] += pulls * eco["markup"]
         batches = max(1.0, pulls / batch)
         out["keeper_cost"] += (batches * first + (pulls - batches) * extra) * g
-        out["keeper_cost"] += (GAS["distribute"] + 2 * 24 * GAS["process_burn"] / 24 + GAS["process_grail"]) * g
+        out["keeper_cost"] += (GAS["distribute"] + 24 * GAS["process_buyback"] + GAS["process_grail"]) * g
         margin = pulls * eco["margin"]
         # prize conversion: a share of won backing buys ENGINE, fee exempt, + 2 % bonus
         conv_eth = pulls * eco["backing"] * convert_share
@@ -137,21 +137,21 @@ def run(launch_eth=10.0, gwei=1.0, organic=100, markup=0.03, board="shapes-only 
         hook_fees_before = pool.fees
         reward_deposit = 0.0
         day_budget = treasury + margin
-        burn_budget = day_budget * 0.45
+        burn_budget = day_budget * 0.45  # one Buyback slice of up to 0.05 ETH/h, split 50/50 below
         reward_budget = day_budget * 0.45
         grail = day_budget * 0.10
         treasury = 0.0
         for _ in range(24):
             if farm_carry:
                 out["farmer_eth"] += pool.sell(farm_carry / 24)
-            b = min(0.05, burn_budget)
+            b = min(0.025, burn_budget)
+            r = min(0.025, reward_budget)
             burn_budget -= b
-            if b:
-                burned += pool.buy(b, exempt=True)
-            r = min(0.05, reward_budget)
             reward_budget -= r
-            if r:
-                reward_deposit += pool.buy(r, exempt=True)
+            if b + r:
+                got = pool.buy(b + r, exempt=True)
+                burned += got * b / (b + r)
+                reward_deposit += got * r / (b + r)
         treasury += burn_budget + reward_budget  # unspent slices roll over
         farm_carry = (pot + reward_deposit) * sell_share
         new_fees = pool.fees - hook_fees_before
@@ -243,9 +243,140 @@ def main():
         ("reward/pull ETH", lambda r: f"{r['reward_per_pull']:.5f}"),
         ("price (1e-7)", lambda r: f"{r['price'] * 1e7:.3f}"), ("pool ETH", lambda r: f"{r['pool_eth']:.2f}"),
         ("burned (M, cum.)", lambda r: f"{r['burned'] / 1e6:.2f}")]))
+    L += amended_sections()
     path = os.path.join(HERE, "results", "engine-genesis.md")
     open(path, "w").write("\n".join(L))
     print("\n".join(L))
+
+
+# ---------------------------------------------------------------------------------------------- amended brief
+
+import random  # noqa: E402
+
+SHAPES_BOARD = BOARDS["shapes-only launch (80x0.01, 15x0.05, 5x0.1)"]
+
+
+def _draw_cost(rows, markup, rng):
+    """One capture's cost (backing + mint fees), drawn with FWA's inverse-price odds."""
+    items = [(c, b + MINT_FEE * k) for c, b, k in rows]
+    w = [c / (k * (1 + markup)) for c, k in items]
+    tot = sum(w)
+    u = rng.random() * tot
+    for (c, k), wi in zip(items, w):
+        u -= wi
+        if u <= 0:
+            return k
+    return items[-1][1]
+
+
+def shortfall_probability(reserve, pulls_per_day=300, days=21, markup=0.03, seeds=2000, batch=20, rows=SHAPES_BOARD):
+    """P(the game cannot fund a replacement at a maintenance window) over `days`, starting with `reserve` of free
+    cash. Free cash F = cash - replacements owed. Each pull adds its retained expected cost and, while F is below
+    the reserve, its markup and margin lines too (they are not distributed); each capture adds its cost to what is
+    owed. Replacements are paid in batches of `batch` (a maintenance window); a shortfall is a window where cash
+    cannot pay the batch. Outstanding requests and the cooldown only delay listing, which this models as the batch."""
+    eco = board_economics(rows, markup)
+    keep = eco["price"] / (1 + EDGE) * (1 + EDGE / 2)  # owner proceeds per pull
+    lines = eco["markup"] + eco["margin"]
+    rng = random.Random(7)
+    fails = 0
+    n = pulls_per_day * days
+    for _ in range(seeds):
+        free = reserve
+        owed = 0.0
+        failed = False
+        for i in range(n):
+            cost = _draw_cost(rows, markup, rng)
+            proceeds = keep
+            # revenue lines leave only above the reserve
+            free += proceeds - (lines if free - owed >= reserve else 0.0)
+            owed += cost
+            if (i + 1) % batch == 0:
+                if free < owed:
+                    failed = True
+                    break
+                free -= owed
+                owed = 0.0
+        fails += failed
+    return fails / seeds
+
+
+def keeper_budget(pulls_per_day, gwei=1.0, markup=0.03, batch=20, rows=SHAPES_BOARD):
+    """Daily keeper cost of syncing `pulls_per_day` in batches, distribute, 24 buyback slices and one GRAIL forward,
+    against the markup lines those pulls book."""
+    eco = board_economics(rows, markup)
+    g = gwei * 1e-9
+    first, extra = keeper_gas_per_pull()
+    batches = max(1.0, pulls_per_day / batch)
+    sync = (batches * first + max(0.0, pulls_per_day - batches) * extra) * g
+    slices = min(24, max(1, int(pulls_per_day * eco["margin"] * 0.9 / 0.005)))  # small treasuries buy fewer slices
+    other = (GAS["distribute"] + slices * GAS["process_buyback"] + GAS["process_grail"]) * g
+    income = pulls_per_day * eco["markup"]
+    return dict(pulls=pulls_per_day, g=gwei, sync=sync, other=other, cost=sync + other, income=income,
+                net=income - sync - other)
+
+
+def launch_drawdown(launch_eth, sell_share=1.0, organic=100, gwei=1.0):
+    r = run(launch_eth=launch_eth, organic=organic, gwei=gwei, sell_share=sell_share)
+    start = launch_eth / FLOAT
+    low = min(d["price"] for d in r["days"])
+    return dict(launch=launch_eth, sell=sell_share, pulls=r["pulls"], drawdown=1 - low / start,
+                end=r["end_price"] / start - 1, pool_eth=r["end_pool_eth"], mint=r["mint_fees"])
+
+
+def amended_sections():
+    L = []
+    L.append("## Reserve target from adverse sequences\n")
+    L.append("Probability that the game cannot pay a batch of 20 replacements at some maintenance window in 21 days "
+             "at 300 pulls/day, by starting free cash (the reserve), Shapes-only board, markup 3 %, 2,000 seeds. "
+             "Revenue lines stay in the game while free cash is below the reserve (the protected-capital rule).\n")
+    rows = []
+    for reserve in (0.1, 0.2, 0.3, 0.5, 0.75, 1.0):
+        rows.append(dict(r=reserve, p=shortfall_probability(reserve)))
+    L.append(table(rows, [("reserve (ETH)", lambda r: f"{r['r']:.2f}"), ("P(shortfall, 21 d)", lambda r: f"{100 * r['p']:.2f} %")]))
+    L.append("## Keeper budget by daily pulls (1 gwei, batches of 20)\n")
+    kb = [keeper_budget(n) for n in (10, 30, 100, 300)] + [keeper_budget(n, gwei=0.5) for n in (10, 30, 100, 300)]
+    L.append(table(kb, [("pulls/day", lambda r: str(r["pulls"])), ("gwei", lambda r: f"{r['g']:g}"),
+                        ("sync gas cost/day", lambda r: f"{r['sync']:.4f}"),
+                        ("distribute + buyback + GRAIL/day", lambda r: f"{r['other']:.4f}"),
+                        ("markup income/day", lambda r: f"{r['income']:.4f}"),
+                        ("net/day", lambda r: f"{r['net']:+.4f}"),
+                        ("30 days of shortfall (seed to cover)", lambda r: f"{max(0.0, -r['net']) * 30:.3f}")]))
+    L.append("## Post-genesis: is the system operable at 10 / 30 / 100 / 300 pulls/day?\n")
+    L.append("No prize conversion, minimal trading (hook fees 0), farming gone. Operable means: the keeper can be paid "
+             "(markup income plus the seed covers sync and the daily jobs) and replacements stay affordable (the "
+             "reserve absorbs adverse sequences: P(shortfall) for the 0.75 ETH launch reserve over 30 days).\n")
+    pg = []
+    for n in (10, 30, 100, 300):
+        k = keeper_budget(n)
+        pg.append(dict(n=n, net=k["net"], p=shortfall_probability(0.75, pulls_per_day=n, days=30, seeds=800),
+                       treasury=n * board_economics(SHAPES_BOARD, 0.03)["margin"]))
+    L.append(table(pg, [("pulls/day", lambda r: str(r["n"])), ("keeper net/day (1 gwei)", lambda r: f"{r['net']:+.4f}"),
+                        ("treasury margin/day", lambda r: f"{r['treasury']:.4f}"),
+                        ("P(shortfall) 30 d, reserve 0.75", lambda r: f"{100 * r['p']:.2f} %")]))
+    L.append("## LAUNCH_ETH against the farm's selling\n")
+    L.append("The farm can sell up to 100M ENGINE into a pool that starts with 100M. Price drawdown (lowest price in "
+             "genesis vs the launch price) and end-of-genesis change, 100 organic pulls/day, 1 gwei.\n")
+    ld = [launch_drawdown(x, s) for x in (5.0, 10.0, 20.0, 40.0) for s in (1.0, 0.5)]
+    L.append(table(ld, [("LAUNCH_ETH", lambda r: f"{r['launch']:g}"), ("farm sells", lambda r: f"{100 * r['sell']:.0f} %"),
+                        ("pulls (21 d)", lambda r: f"{r['pulls']:,.0f}"), ("max drawdown", lambda r: f"{100 * r['drawdown']:.0f} %"),
+                        ("end vs launch", lambda r: f"{100 * r['end']:+.0f} %"), ("pool ETH at end", lambda r: f"{r['pool_eth']:.1f}"),
+                        ("owner mint fees", lambda r: f"{r['mint']:.2f}")]))
+    e = board_economics(SHAPES_BOARD, 0.03)
+    win_small = 0.0
+    items = [(c, b + MINT_FEE * k, b) for c, b, k in SHAPES_BOARD]
+    w = [c / (k * 1.03) for c, k, _ in items]
+    p_small = w[0] / sum(w)
+    L.append("## Honest baseline\n")
+    L.append(f"- A pull costs {e['price']:.5f} ETH. The common outcome ({100 * p_small:.1f} % of pulls) is a 0.01 ETH Shape: "
+             f"the player loses {100 * (1 - 0.01 / e['price']):.0f} % of the ticket.")
+    L.append(f"- Treasury revenue from the game is the margin line, {e['margin']:.6f} ETH per pull; 90 % of it buys "
+             f"ENGINE back: about {0.9 * e['margin']:.5f} ETH per pull before hook fees.")
+    L.append(f"- The owner's mint fees, {e['mint']:.5f} ETH per pull, are {e['mint'] / e['margin']:.1f}x the treasury's game "
+             "revenue.")
+    L.append("- At 300 pulls/day that is about "
+             f"{300 * 0.9 * e['margin']:.3f} ETH/day of buyback from the game, plus whatever the 3 % hook fee brings.\n")
+    return L
 
 
 if __name__ == "__main__":

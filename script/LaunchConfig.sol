@@ -46,7 +46,7 @@ abstract contract LaunchConfig is DeploySystem {
         c.hookFeeBps = 300;
         c.snipeStartBps = 5_000;
         c.snipeWindow = 60 minutes;
-        c.reserveTarget = 50 * unit; // 0.5 ETH on mainnet; docs/ECONOMICS.md (adverse-sequence sim)
+        c.reserveTarget = 75 * unit; // 0.75 ETH on mainnet; docs/ECONOMICS.md (adverse-sequence sim)
         c.maintenanceInterval = 30 minutes;
         c.buybackBps = 9_000;
         c.grailBps = 1_000;

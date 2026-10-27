@@ -36,7 +36,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 public constant MAX_BOARD = 200;
     uint256 public constant MAX_LIST_BATCH = 20;
     uint256 public constant MAX_MARKUP_BPS = 500;
-    uint256 public constant MAX_BONUS_BPS = 500;
     uint256 public constant MIN_GRAIL_PRICE_BPS = 5_000;
     uint256 public constant MAX_GRAIL_PROB_BPS = 1_000;
     uint256 public constant MAX_MAINTENANCE_INTERVAL = 1 days;
