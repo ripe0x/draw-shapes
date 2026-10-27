@@ -45,7 +45,7 @@ echo "game: openBlock=$(cast call "$F" 'openBlock()(uint256)' --rpc-url "$R") pu
 PLAYER=0x00000000000000000000000000000000000b1a7e
 cast rpc anvil_setBalance "$PLAYER" 0x56BC75E2D63100000 --rpc-url "$R" >/dev/null
 cast rpc anvil_impersonateAccount "$PLAYER" --rpc-url "$R" >/dev/null
-read -r FEE _ TOTAL < <(cast call "$P" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 --rpc-url "$R" | awk '{print $1}' | tr '\n' ' ')
+read -r FEE _ TOTAL < <(cast call "$P" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 --rpc-url "$R" | awk '{print $1}' | tr '\n' ' '; echo)
 VERSION=$(cast call "$P" 'inventoryVersion()(uint256)' --rpc-url "$R" | awk '{print $1}')
 DEADLINE=$(( $(cast block latest --field timestamp --rpc-url "$R") + 3600 ))
 # The quote ran at gas price 0, so it leaves out FWA's VRF fee (gas price x 1.95M); send a margin, FWA refunds the rest.
