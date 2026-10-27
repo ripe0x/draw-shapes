@@ -488,3 +488,19 @@ interface IPurchaseOperator {
 ## 17. Buyback variant delta
 
 `FWACloneBuyback.sol` (2084 lines, at `the buyback implementation (not vendored)`) is a structurally parallel but economically different implementation: instead of a purely notional owner-assigned price with no real backing, every listing is paired with actual ETH `backing` supplied at `listNFT(address collection, uint256 tokenId)` — note this variant's `listNFT` is `payable` (line 718) and takes no `price` argument (the ETH sent IS the backing/price). On a successful draw the purchaser does not receive the NFT automatically; instead they choose between `keepNFT(listingId)` (take the NFT) or `acceptBuyback(listingId)` (take the ETH backing) — functions entirely absent from the standard clone. It adds a settlement/finalization window (`ownerResolveNFTToPurchaser`, `ownerResolveBuyback`, `finalizeUnsettled`, `recoverStuckNFT`) for cases where the purchaser never chooses, plus an owner-fundable auto-reload mechanism (`fundAutoReload`, `setAutoReloadNFTs`, `withdrawAutoReloadETH`, `_tryAutoReload`/`_createAutoReloadListing`) that can automatically relist a new NFT+backing pair when a buyback is taken, and a `claimBuybackETHTo` pull-claim path. It also carries a factory wiring marker (comment near line 44) to prevent it from being mistaken for the standard implementation. The core VRF/sequencing/staging/segment-tree/slippage machinery (§6-§9, §13-§14 above) is otherwise identical between the two contracts.
+
+## 17. Found during the ENGINE build (2026-10-26, fork block 26,279,000)
+
+- **FWA is transfer-locked.** `FWAToken._afterTokenTransfer` allows mints, burns, owner ↔ anyone, distributor ↔ anyone,
+  and PoolManager ↔ anyone within the transient allowance the FWA hook (`0x2C67…6444`) grants during a swap; any other
+  wallet-to-wallet transfer reverts. A contract that must pay the 50,000 FWA creation fee receives it by buying on FWA's
+  v4 pool (exact input only; the hook rejects exact-output swaps) with the output taken straight to it.
+  `src/periphery/FwaFeeBuyer.sol` does this; the factory then pulls the fee to the dead address (a distributor).
+- **The VRF fee scales with gas price.** `FWACloneVRFService.requestFee() = serviceGasEstimate × tx.gasprice ×
+  (10,000 + serviceMarginBps) / 10,000 + serviceFlatWei` = 1,500,000 × gas price × 1.3 + 0 on the fork. It reads 0 in an
+  `eth_call` without a gas price; a quote for a real purchase must use the transaction's gas price.
+- `inventoryChangeCooldown` is 0 on the mainnet factory at the fork block (5 minutes is the documented default).
+  `selectionTimeoutBlocks` 30, `maxAcquisitionsPerTx` 5, `callbackGasLimit` 900,000, `edgeBps` 500.
+- The Sepolia factory (`0xdF0b…4358`) is an older stack: `createPool(bytes32,uint256,address)` reverts there; its
+  creation fee is 0 and `maxPoolsPerWallet` is unlimited.
+- `0xf215…` on mainnet is "Shape Packs" with `MIN_PACK_VALUE` 0.03 ETH (3 units), not the two-unit Draw Packs variant.

@@ -39,14 +39,14 @@ Each figure is the call's execution gas plus the 21,000 base cost.
 | call | gas | ETH at 1 gwei | 5 gwei | 20 gwei |
 |---|---|---|---|---|
 | a player's `acquire` (FWA) | 584,985 | 0.00058 | 0.00292 | 0.0117 |
-| `sync`: 1 pull booked + its replacement minted and listed | 1,117,003 | 0.00112 | 0.00559 | 0.0223 |
-| `sync`: 5 pulls + 5 replacements | 2,833,151 | 0.00283 | 0.01417 | 0.0567 |
-| `sync`: 20 pulls + 20 replacements | 9,814,243 | 0.00981 | 0.04907 | 0.1963 |
+| `sync`: 1 pull booked + its replacement minted and listed | 1,117,021 | 0.00112 | 0.00559 | 0.0223 |
+| `sync`: 5 pulls + 5 replacements | 2,833,153 | 0.00283 | 0.01417 | 0.0567 |
+| `sync`: 20 pulls + 20 replacements | 9,814,185 | 0.00981 | 0.04907 | 0.1963 |
 | `Treasury.distribute` | 197,180 | 0.00020 | 0.00099 | 0.0039 |
 | `Buyback.process` (one slice, burn + deposit) | 434,141 | 0.00043 | 0.00217 | 0.0087 |
-| `GrailFund.process` | 161,136 | 0.00016 | 0.00081 | 0.0032 |
-| `Converter.convert` | 347,744 | 0.00035 | 0.00174 | 0.0070 |
-| `GenesisFarm.claim`, one epoch | 209,681 | 0.00021 | 0.00105 | 0.0042 |
+| `GrailFund.process` | 161,158 | 0.00016 | 0.00081 | 0.0032 |
+| `Converter.convert` | 347,702 | 0.00035 | 0.00174 | 0.0070 |
+| `GenesisFarm.claim`, one epoch | 209,725 | 0.00021 | 0.00105 | 0.0042 |
 
 Per pull, `sync` costs about 1.12M gas for the first pull of a call and about 465k for each further pull
 (`(sync_20 − sync_5) / 15`). Almost all of it is the replacement: a Shapes mint and an FWA listing (FWA's segment

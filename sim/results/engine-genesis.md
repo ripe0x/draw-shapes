@@ -22,7 +22,7 @@ Rewards worth more than this per pull (in ETH at the price farmers sell) attract
 
 ## Keeper gas against the 3 % markup
 
-`sync` gas: 1,117,003 for the first pull of a call (booking + replacement mint + listing + routing + tip), 465,406 for each further pull in the same call.
+`sync` gas: 1,117,021 for the first pull of a call (booking + replacement mint + listing + routing + tip), 465,402 for each further pull in the same call.
 
 | basefee | 1-pull sync | per extra pull | per pull, batches of 20 | markup line / pull | covered? |
 |---|---|---|---|---|---|

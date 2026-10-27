@@ -39,30 +39,30 @@ contract CustodyInvariants is ForkBase {
         assertGe(lhs, rhs, "solvency");
     }
 
-    /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; `units` = delivered
-    ///         pulls the walk has resolved per epoch; resolved never exceeds accepted.
+    /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; `units` never exceed the
+    ///         pulls FWA delivered, and the difference is at most the requests still open (FWA can deliver one
+    ///         between two syncs); resolved never exceeds accepted.
     function invariant_ledgerMatchesFwa() public view {
         uint256 open = sys.farm.openBlock();
         uint256[64] memory accepted;
-        uint256[64] memory deliveredResolved;
+        uint256[64] memory fulfilled;
         uint256 n = sys.game.seenSeq();
         for (uint64 sq = 1; sq < n; ++sq) {
             (, uint256 requestBlock,,, IFWAPool.AcquisitionStatus st) = pool.acquisitions(pool.requestIdAtSequence(sq));
             uint256 e = (requestBlock - open) / 7_200;
             if (e >= 64) continue;
             ++accepted[e];
-            if (st == IFWAPool.AcquisitionStatus.Fulfilled && !_isOpen(sq)) ++deliveredResolved[e];
+            if (st == IFWAPool.AcquisitionStatus.Fulfilled) ++fulfilled[e];
         }
+        uint256 gap;
         for (uint256 e; e < 64; ++e) {
             (uint256 acc, uint256 res, uint256 units) = sys.game.epochTotals(e);
             assertEq(acc, accepted[e], "accepted = FWA issued");
             assertLe(res, acc, "resolved <= accepted");
-            assertEq(units, deliveredResolved[e], "units = delivered pulls resolved");
+            assertLe(units, fulfilled[e], "units <= delivered pulls");
+            gap += fulfilled[e] - units;
         }
-    }
-
-    function _isOpen(uint64) internal pure returns (bool) {
-        return false; // a Fulfilled request is never left open: the walk resolves it on sight
+        assertLe(gap, sys.game.openCount(), "unbooked deliveries are open requests");
     }
 
     /// @notice I4 the farm never pays more than allocation + deposits, and its balance reconciles.
