@@ -130,7 +130,9 @@ because the public endpoints rate-limit.
   gate lifting by itself, then three post-genesis days with no rewards and no trading fees (prizes replenished), a
   second game, and shutdown.
 - **Deploy dry run**: `script/rehearse-anvil.sh` on an anvil fork: full `deploy.sh anvil` broadcast with postflight,
-  then market launch, 28 ETH opening capital, board fill and `openGame` through the real timelock (results below).
+  then market launch, 28 ETH opening capital, board fill and `openGame` through the real timelock, and one player pull
+  through FWA. It passed: 37.5M gas estimated for the deploy script; supply, governance and FWA pool owner read back;
+  100 listings with 12.85 ETH cash; purchases open; sequence 1 issued.
 - **Keeper and site**: keeper unit checks (`npm run check`); site typecheck and production build.
 - **Sims**: `python3 sim/sustainability.py` (seeded; `sim/results/sustainability.md`). It covers:
   - reference economics and board comparison;
