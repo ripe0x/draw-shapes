@@ -46,9 +46,11 @@ abstract contract LaunchConfig is DeploySystem {
         c.hookFeeBps = 300;
         c.snipeStartBps = 5_000;
         c.snipeWindow = 60 minutes;
-        c.burnBps = 4_500;
-        c.rewardBps = 4_500;
+        c.reserveTarget = 50 * unit; // 0.5 ETH on mainnet; docs/ECONOMICS.md (adverse-sequence sim)
+        c.maintenanceInterval = 30 minutes;
+        c.buybackBps = 9_000;
         c.grailBps = 1_000;
+        c.burnShareBps = 5_000;
         c.sliceWei = 5 * unit;
         c.minSpacing = 1 hours;
         c.maxImpactBps = 300;
@@ -59,8 +61,10 @@ abstract contract LaunchConfig is DeploySystem {
             maxBounty: 0.002 ether,
             rampSeconds: 6 hours,
             gasOverhead: 40_000,
-            keeperTargetWei: 0.5 ether
+            keeperTargetWei: 0.5 ether,
+            maintenanceFloor: 0.05 ether
         });
+        c.keeperSeed = 0; // set by the environment (KEEPER_SEED)
         c.shutdownDelay = 30 days;
         c.lpMaxImpactBps = 500;
     }

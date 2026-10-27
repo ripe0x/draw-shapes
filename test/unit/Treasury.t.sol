@@ -35,7 +35,7 @@ contract TreasuryTest is Test {
     SinkStub c;
 
     function _params() internal pure returns (KeeperFund.Params memory) {
-        return KeeperFund.Params(2_000, 30 gwei, 0.01 ether, 0.002 ether, 6 hours, 40_000, 0.5 ether);
+        return KeeperFund.Params(2_000, 30 gwei, 0.01 ether, 0.002 ether, 6 hours, 40_000, 0.5 ether, 0);
     }
 
     function setUp() public {
@@ -126,11 +126,38 @@ contract TreasuryTest is Test {
 
     function test_tipFormula() public {
         vm.fee(10 gwei);
-        // (100k + 40k) × 10 gwei × 1.2 = 0.00168 ETH, + bounty 0.002 × 3h/6h = 0.001
-        assertEq(kf.quoteTip(100_000, 3 hours), 0.00168 ether + 0.001 ether);
+        // (100k + 40k) × 10 gwei × 1.2 = 0.00168 ETH, + bounty 0.002 × 3h/6h × 20/20 = 0.001
+        assertEq(kf.quoteTip(100_000, 3 hours, 20), 0.00168 ether + 0.001 ether);
+        // the bounty is per unit of progress: 5 items earn a quarter of it
+        assertEq(kf.quoteTip(100_000, 3 hours, 5), 0.00168 ether + 0.00025 ether);
+        assertEq(kf.quoteTip(100_000, 3 hours, 0), 0, "no progress, no tip");
         vm.fee(100 gwei); // basefee capped at 30 gwei
-        assertEq(kf.quoteTip(100_000, 0), 140_000 * 30 gwei * 12_000 / 10_000);
-        assertEq(kf.quoteTip(10_000_000, 7 hours), 0.01 ether + 0.002 ether, "tip cap + full bounty");
+        assertEq(kf.quoteTip(100_000, 0, 1), 140_000 * 30 gwei * 12_000 / 10_000);
+        assertEq(kf.quoteTip(10_000_000, 7 hours, 50), 0.01 ether + 0.002 ether, "tip cap + full bounty");
+    }
+
+    function test_splittingWorkEarnsNoMoreBounty() public {
+        vm.fee(0);
+        // one call with 20 items after 6 h vs 20 calls of 1 item: the first call takes the age, the rest none
+        uint256 one = kf.quoteTip(0, 6 hours, 20);
+        uint256 split = kf.quoteTip(0, 6 hours, 1) + 19 * kf.quoteTip(0, 0, 1);
+        assertLe(split, one);
+    }
+
+    function test_maintenanceFloorOnlyForRetirement() public {
+        KeeperFund.Params memory p = _params();
+        p.maintenanceFloor = 0.05 ether;
+        vm.prank(tl);
+        kf.setParams(p);
+        vm.deal(address(kf), 0.06 ether);
+        vm.fee(10 gwei);
+        address keeper = makeAddr("keeper");
+        vm.prank(address(treasury));
+        assertEq(kf.tip(keeper, 10_000_000, 6 hours, 20, false), 0.01 ether, "down to the floor");
+        vm.prank(address(treasury));
+        assertEq(kf.tip(keeper, 10_000_000, 6 hours, 20, false), 0, "not below it");
+        vm.prank(address(treasury));
+        assertGt(kf.tip(keeper, 10_000_000, 6 hours, 20, true), 0, "retirement may spend it");
     }
 
     function test_tipPaysWhatItCanAndNeverReverts() public {
@@ -138,12 +165,12 @@ contract TreasuryTest is Test {
         vm.deal(address(kf), 0.001 ether);
         address keeper = makeAddr("keeper");
         vm.prank(address(treasury));
-        assertEq(kf.tip(keeper, 1_000_000, 6 hours), 0.001 ether);
+        assertEq(kf.tip(keeper, 1_000_000, 6 hours, 1, false), 0.001 ether);
         assertEq(keeper.balance, 0.001 ether);
         vm.prank(address(treasury));
-        assertEq(kf.tip(keeper, 1_000_000, 6 hours), 0);
+        assertEq(kf.tip(keeper, 1_000_000, 6 hours, 1, false), 0);
         vm.expectRevert(KeeperFund.NotPayer.selector);
-        kf.tip(keeper, 1, 1);
+        kf.tip(keeper, 1, 1, 1, false);
     }
 
     function test_failedPushIsCredited() public {
@@ -151,9 +178,9 @@ contract TreasuryTest is Test {
         vm.deal(address(kf), 1 ether);
         Rejecter r = new Rejecter();
         vm.prank(address(treasury));
-        uint256 paid = kf.tip(address(r), 100_000, 0);
+        uint256 paid = kf.tip(address(r), 100_000, 0, 1, false);
         assertEq(kf.tipCredit(address(r)), paid);
-        assertEq(kf.available(), 1 ether - paid);
+        assertEq(kf.available(false), 1 ether - paid);
         // the keeper pulls it; Solady's force transfer delivers even to a rejecting receiver
         vm.prank(address(r));
         kf.withdrawTips();
@@ -183,6 +210,10 @@ contract TreasuryTest is Test {
         kf.setParams(p);
         p = _params();
         p.rampSeconds = 0;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        kf.setParams(p);
+        p = _params();
+        p.maintenanceFloor = 0.6 ether; // above the target
         vm.expectRevert(Governed.OutOfBounds.selector);
         kf.setParams(p);
         p = _params();

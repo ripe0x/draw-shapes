@@ -35,7 +35,7 @@ contract FarmTest is Test {
         engine = new EngineToken(tl, to, amt, address(r));
         assertEq(address(engine), predicted);
         ledger = new TestLedger();
-        farm.wire(address(ledger), depositor, address(new StubKeeper()));
+        farm.wire(address(ledger), depositor, address(ledger), address(new StubKeeper()));
         vm.prank(depositor);
         engine.approve(address(farm), type(uint256).max);
     }
@@ -208,7 +208,7 @@ contract FarmTest is Test {
     }
 
     function test_bonusFromLedgerOnly() public {
-        vm.expectRevert(GenesisFarm.NotLedger.selector);
+        vm.expectRevert(GenesisFarm.NotBonusPayer.selector);
         farm.payBonus(alice, 1);
         assertEq(ledger.bonus(farm, alice, 5 ether), 5 ether);
         assertEq(engine.balanceOf(alice), 5 ether);
@@ -217,22 +217,33 @@ contract FarmTest is Test {
         assertEq(ledger.bonus(farm, alice, 1), 0);
     }
 
-    function test_seasonsFromReserveOnly() public {
+    function test_seasonsFromReserveOnlyWithLimits() public {
         _open();
+        uint256 avg = GENESIS / 21;
         vm.startPrank(tl);
         vm.expectRevert(GenesisFarm.InvalidSeason.selector);
         farm.scheduleSeason(10, 10, 1_000 ether); // inside genesis
+        vm.stopPrank();
+        _toEpoch(20);
+        vm.startPrank(tl);
+        vm.expectRevert(GenesisFarm.InvalidSeason.selector);
+        farm.scheduleSeason(26, 10, 1_000 ether); // less than 7 epochs of notice
+        vm.expectRevert(GenesisFarm.InvalidSeason.selector);
+        farm.scheduleSeason(30, 2, 2 * avg + 2); // more than the genesis average per epoch
         vm.expectRevert(GenesisFarm.ExceedsReserve.selector);
         farm.scheduleSeason(30, 10, RESERVE + 1);
         farm.scheduleSeason(30, 10, 1_000 ether);
+        vm.expectRevert(GenesisFarm.InvalidSeason.selector);
+        farm.scheduleSeason(35, 10, 1_000 ether); // overlaps
+        farm.scheduleSeason(40, 10, 1_000 ether); // adjacent is fine
         vm.stopPrank();
-        assertEq(farm.reserve(), RESERVE - 1_000 ether);
+        assertEq(farm.reserve(), RESERVE - 2_000 ether);
         assertEq(farm.seasonAllocationOf(30), 100 ether);
-        assertEq(farm.seasonAllocationOf(40), 0);
+        assertEq(farm.seasonAllocationOf(45), 100 ether);
+        assertEq(farm.seasonAllocationOf(50), 0);
         ledger.add(31, bob, 1);
         _toEpoch(32);
         assertEq(_claim(bob, 31), 100 ether);
-        // burnReserve is the only other outflow
         uint256 supply = engine.totalSupply();
         vm.prank(tl);
         farm.burnReserve(1 ether);
@@ -241,32 +252,46 @@ contract FarmTest is Test {
         farm.burnReserve(1);
     }
 
-    function test_snapshotProtectsSettledEpochFromScheduleChange() public {
+    function test_finalEpochClaimsNeverChange() public {
         _open();
         ledger.add(0, alice, 1);
         ledger.add(0, bob, 1);
         _toEpoch(1);
+        uint256 before = farm.rewardOf(0, bob);
+        // nothing that can happen after finality moves a final epoch's pot: deposits land in the current epoch
+        vm.prank(depositor);
+        farm.deposit(1_000 ether);
         uint256 a = _claim(alice, 0);
-        // a new schedule that would double epoch 0
-        DoubleSchedule d = new DoubleSchedule();
-        vm.prank(tl);
-        farm.setSchedule(address(d));
-        assertEq(_claim(bob, 0), a, "snapshotted pot");
+        assertEq(farm.rewardOf(0, bob), before);
+        assertEq(_claim(bob, 0), a);
     }
 
     function test_genesisCommitmentCapsBadSchedule() public {
-        _open();
+        // a farm built with a schedule that over-allocates still pays at most the genesis budget
         DoubleSchedule d = new DoubleSchedule();
-        vm.prank(tl);
-        farm.setSchedule(address(d));
+        EngineRenderer r = new EngineRenderer();
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        GenesisFarm f2 = new GenesisFarm(tl, predicted, GENESIS, BONUS, RESERVE, address(d));
+        address[] memory to = new address[](1);
+        uint256[] memory amt = new uint256[](1);
+        (to[0], amt[0]) = (address(f2), 1_000_000_000 ether);
+        EngineToken t2 = new EngineToken(tl, to, amt, address(r));
+        assertEq(address(t2), predicted);
+        TestLedger l2 = new TestLedger();
+        f2.wire(address(l2), depositor, address(l2), address(new StubKeeper()));
+        vm.roll(1000);
+        l2.start(f2);
         for (uint256 e; e < 21; ++e) {
-            ledger.add(e, alice, 1);
+            l2.add(e, alice, 1);
         }
-        _toEpoch(21);
+        vm.roll(f2.openBlock() + 21 * 7_200);
         uint256 total;
+        uint256[] memory es = new uint256[](1);
         for (uint256 e; e < 21; ++e) {
-            if (farm.potOf(e) == 0) break;
-            total += _claim(alice, e);
+            if (f2.potOf(e) == 0) break;
+            es[0] = e;
+            vm.prank(alice);
+            total += f2.claim(es);
         }
         assertLe(total, GENESIS, "never more than the genesis budget");
     }
@@ -277,11 +302,9 @@ contract FarmTest is Test {
         vm.expectRevert(Governed.NotGovernance.selector);
         farm.setDepositor(address(1), true);
         vm.expectRevert(Governed.NotGovernance.selector);
-        farm.setSchedule(address(schedule));
-        vm.expectRevert(Governed.NotGovernance.selector);
         farm.scheduleSeason(30, 1, 1);
         vm.expectRevert(Governed.NotDeployer.selector);
-        farm.wire(address(1), address(1), address(1));
+        farm.wire(address(1), address(1), address(1), address(1));
         vm.startPrank(tl);
         farm.addLedger(address(new TestLedger()));
         farm.addLedger(address(new TestLedger()));
@@ -316,7 +339,7 @@ contract DoubleSchedule {
 }
 
 contract StubKeeper {
-    function tip(address, uint256, uint256) external pure returns (uint256) {
+    function tip(address, uint256, uint256, uint256, bool) external pure returns (uint256) {
         return 0;
     }
 }

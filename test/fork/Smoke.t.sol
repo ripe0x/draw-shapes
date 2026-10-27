@@ -12,7 +12,7 @@ contract SmokeTest is ForkBase {
     function test_smoke() public {
         fundAndFill(3 ether);
         emit log_named_uint("live", sys.game.liveCount());
-        emit log_named_uint("bankroll", sys.game.bankroll());
+        emit log_named_uint("cash", sys.game.cash());
         openMarket(10 ether);
         openGame();
         address alice = makeAddr("alice");

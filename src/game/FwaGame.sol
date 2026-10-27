@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
-import {IShapePacks} from "draw-packs/interfaces/IShapePacks.sol";
 import {Governed} from "../Governed.sol";
 import {IFWAPool, IFWAFactory, FWA_ACQUISITIONS_ENABLED} from "../interfaces/IFWA.sol";
 import {
@@ -20,19 +19,18 @@ import {
 } from "../interfaces/IDrawShapes.sol";
 
 /// @title FwaGame
-/// @notice Creates and permanently owns the Draw Shapes FWA V2 pool. It mints prizes (Shapes, Packs) with
-///         vault ETH and lists them; walks FWA's acquisition sequence to book every pull (`sync`), crediting
-///         the farm's ledger and routing revenue; replaces won prizes; lists GRAILs from the GRAIL reserve;
-///         converts delivered Shapes into ENGINE; and on retirement returns everything to the vault.
-/// @dev Every policy question is asked of a module (BoardPolicy, PricingPolicy, GrailPolicy, EngineBuyer);
-///      every bound is enforced here. ETH leaves only to the vault, the Shapes/Packs contracts (mint cost),
-///      the Treasury (margin line), KeeperFund (markup line), and EngineBuyer (a converting player's own
-///      backing, with the ENGINE going to that player). Revenue routing: docs/IMPLEMENTOR_DECISIONS.md D7.
+/// @notice Creates and permanently owns the Draw Shapes FWA V2 pool. It mints prizes (Shapes) with vault ETH and
+///         lists them; walks FWA's request sequence (`sync`) to count every pull in the farm's ledger and
+///         book its economics; protects its working capital before routing revenue; replaces won prizes at
+///         maintenance windows; lists GRAILs from the GRAIL reserve; and on retirement returns everything to the
+///         vault. Prize conversion lives in the Converter module, which reads delivery from FWA's own records.
+/// @dev Every policy question goes to a module (BoardPolicy, PricingPolicy, GrailPolicy, EngineBuyer); every
+///      bound is enforced here. ETH leaves only to the vault, the Shapes contract (mint cost), the Treasury
+///      (margin line) and KeeperFund (markup line). Revenue: docs/IMPLEMENTOR_DECISIONS.md D7 and D23; the walk: D6 and D24.
 contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant WEIGHT_NUMERATOR = 1e36; // FWA's inverse-weight numerator
     uint8 internal constant KIND_SHAPE = 0;
-    uint8 internal constant KIND_PACK = 1;
     uint16 internal constant GRAIL_ROW = type(uint16).max;
 
     uint256 public constant MAX_BOARD = 200;
@@ -41,9 +39,13 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 public constant MAX_BONUS_BPS = 500;
     uint256 public constant MIN_GRAIL_PRICE_BPS = 5_000;
     uint256 public constant MAX_GRAIL_PROB_BPS = 1_000;
+    uint256 public constant MAX_MAINTENANCE_INTERVAL = 1 days;
+    uint256 public constant MAX_RESERVE_TARGET = 1_000 ether;
+    /// @notice Blocks after a request before a delivery still pending counts as resolved without a unit: FWA's
+    ///         7-day refund window plus one epoch.
+    uint256 public constant DELIVERY_GRACE_BLOCKS = 50_400 + 7_200;
 
     IShapes public immutable shapes;
-    IShapePacks public immutable packs;
     IFWAFactory public immutable factory;
     address public immutable expectedImplementation;
     IPrizeVault public immutable vault;
@@ -56,7 +58,9 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     IBoardPolicy public board;
     IPricingPolicy public pricing;
     IGrailPolicy public grail;
-    IEngineBuyer public buyer;
+    IEngineBuyer public buyer; // read by the Converter
+    uint256 public reserveTarget;
+    uint256 public maintenanceInterval;
 
     /// @notice One record per listing this game made.
     struct Item {
@@ -65,7 +69,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         uint80 cost; // backing + mint fees paid
         uint16 row; // board row, or GRAIL_ROW
         uint16 markupBps;
-        uint8 kind;
         bool live;
     }
 
@@ -76,16 +79,25 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     /// @notice Board rows with a live listing, one bit per row.
     uint256 public liveRows;
 
-    // ledger
-    uint64 public nextSeq = 1;
-    mapping(uint256 epoch => uint256) public epochBooked;
-    mapping(uint256 epoch => uint256) internal _epochUnits;
-    mapping(uint256 epoch => mapping(address => uint256)) internal _userUnits;
+    // ledger: every issued request is seen once (accepted), then resolved once it is terminal
+    struct Open {
+        uint64 seq;
+        uint32 epoch;
+        bool rewardResolved; // counted resolved (without a unit) after the delivery grace period
+    }
+
+    uint64 public seenSeq = 1;
+    Open[] internal _open;
+    mapping(uint256 epoch => uint256) public epochAccepted;
+    mapping(uint256 epoch => uint256) public epochResolved;
+    mapping(uint256 epoch => uint256) public epochUnits;
+    mapping(uint256 epoch => mapping(address => uint256)) public userUnits;
     uint256 public pullsBooked;
 
-    // accounting
+    // capital and revenue
     uint256 public lent;
     uint256 public inventoryBacking;
+    uint256 public replacementsOwed;
     uint256 public mintFeesPaid;
     uint256 public markupRouted;
     uint256 public marginRouted;
@@ -101,30 +113,24 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 public grailStep;
     uint256 public grailListedAtPull;
 
-    /// @notice 1 = a Shape this pool delivered, 2 = converted.
-    mapping(uint256 tokenId => uint8) public delivered;
-
     bool public retiring;
     bool public retired;
     uint256 public lastSyncAt;
+    uint256 public lastMaintenanceAt;
 
     event PoolCreated(address pool, uint256 creationFee);
     event Funded(uint256 amount);
     event GrailFunded(address indexed from, uint256 amount);
     event GameOpened(uint256 openBlock);
-    event Listed(uint256 indexed listingId, uint256 indexed row, uint256 tokenId, uint256 backing, uint256 cost, uint256 price);
-    event Booked(uint256 indexed sequence, uint256 indexed epoch, address indexed purchaser, uint8 status);
-    event Captured(
-        uint256 indexed listingId, uint256 row, uint256 paid, uint256 markup, uint256 margin, uint256 expectedCost, uint256 cost
-    );
-    event Recovered(uint256 indexed listingId);
+    event Listed(uint256 indexed listingId, uint256 indexed row, uint256 price);
+    event Resolved(uint256 indexed sequence, uint256 indexed epoch, uint8 status, bool unit);
+    event Captured(uint256 indexed listingId, uint256 markup, uint256 margin, uint256 expectedCost);
     event RevenueRouted(uint256 markup, uint256 margin);
     event GrailRepriced(uint256 indexed listingId, uint256 price);
-    event Converted(address indexed player, uint256 indexed tokenId, uint256 backing, uint256 engineOut, uint256 bonus);
     event RetireStarted();
-    event Withdrawn(uint256 indexed listingId);
     event Retired(uint256 returned);
     event ModuleSet(bytes32 indexed kind, address module);
+    event CapitalSet(uint256 reserveTarget, uint256 maintenanceInterval);
 
     error PoolExists();
     error NoPool();
@@ -132,38 +138,43 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     error Retiring();
     error NotRetiring();
     error NoWork();
-    error NotConvertible();
-    error BonusUnavailable();
 
-    constructor(
-        address governance_,
-        address shapes_,
-        address packs_,
-        address factory_,
-        address expectedImplementation_,
-        address vault_,
-        address farm_,
-        address treasury_,
-        address keeperFund_,
-        address[4] memory modules // board, pricing, grail, buyer
-    ) Governed(governance_, false) {
+    /// @notice Constructor arguments.
+    struct Config {
+        address governance;
+        address shapes;
+        address factory;
+        address expectedImplementation;
+        address vault;
+        address farm;
+        address treasury;
+        address keeperFund;
+        address board;
+        address pricing;
+        address grail;
+        address buyer;
+        uint256 reserveTarget;
+        uint256 maintenanceInterval;
+    }
+
+    constructor(Config memory c) Governed(c.governance, false) {
         if (
-            shapes_ == address(0) || factory_ == address(0) || vault_ == address(0) || farm_ == address(0)
-                || treasury_ == address(0) || keeperFund_ == address(0)
+            c.shapes == address(0) || c.factory == address(0) || c.vault == address(0) || c.farm == address(0)
+                || c.treasury == address(0) || c.keeperFund == address(0)
         ) revert ZeroAddress();
-        shapes = IShapes(shapes_);
-        packs = IShapePacks(packs_);
-        factory = IFWAFactory(factory_);
-        expectedImplementation = expectedImplementation_;
-        vault = IPrizeVault(vault_);
-        farm = IGenesisFarm(farm_);
-        treasury = treasury_;
-        keeperFund = IKeeperFund(keeperFund_);
-        EPOCH_BLOCKS = IGenesisFarm(farm_).EPOCH_BLOCKS();
-        _setModule("board", modules[0]);
-        _setModule("pricing", modules[1]);
-        _setModule("grail", modules[2]);
-        _setModule("buyer", modules[3]);
+        shapes = IShapes(c.shapes);
+        factory = IFWAFactory(c.factory);
+        expectedImplementation = c.expectedImplementation;
+        vault = IPrizeVault(c.vault);
+        farm = IGenesisFarm(c.farm);
+        treasury = c.treasury;
+        keeperFund = IKeeperFund(c.keeperFund);
+        EPOCH_BLOCKS = IGenesisFarm(c.farm).EPOCH_BLOCKS();
+        _setModule("board", c.board);
+        _setModule("pricing", c.pricing);
+        _setModule("grail", c.grail);
+        _setModule("buyer", c.buyer);
+        _setCapital(c.reserveTarget, c.maintenanceInterval);
         lastSyncAt = block.timestamp;
     }
 
@@ -185,7 +196,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         created = factory.createPool(salt, fee, expectedImplementation);
         pool = IFWAPool(created);
         shapes.setApprovalForAll(created, true);
-        if (address(packs) != address(0)) packs.setApprovalForAll(created, true);
         uint256 left = SafeTransferLib.balanceOf(fwa, address(this));
         if (left != 0) IBurnable(fwa).burn(left);
         emit PoolCreated(created, fee);
@@ -198,7 +208,8 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         emit Funded(msg.value);
     }
 
-    /// @notice Adds to the GRAIL reserve (the GrailFund sink). Not while retiring.
+    /// @notice Adds to the GRAIL reserve: the GrailFund sink, or the owner seeding the first GRAIL. Not while
+    ///         retiring.
     function fundGrail() external payable {
         if (retiring) revert Retiring();
         grailReserve += msg.value;
@@ -222,18 +233,20 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
 
     // ------------------------------------------------------------------ keeper work
 
-    /// @notice Settles and books up to `maxCount` pulls, routes revenue, lists replacements and steps the
-    ///         GRAIL. Anyone may call; tipped from KeeperFund. Reverts `NoWork` when there is nothing to do.
+    /// @notice Sees and resolves up to `maxCount` requests, routes distributable revenue and, at a maintenance
+    ///         window, lists replacements and steps the GRAIL. Anyone may call; tipped per item of progress.
+    ///         Reverts `NoWork` when there is nothing to do.
     function sync(uint256 maxCount) external nonReentrant returns (uint256 work) {
         uint256 gasStart = gasleft();
         if (address(pool) == address(0)) revert NoPool();
         if (retiring) revert Retiring();
         work = _advance(maxCount);
-        if (!pool.retired() && !factory.globalWithdrawOnly()) {
-            work += _restock();
-            work += _grailStep();
+        if (!pool.retired() && !factory.globalWithdrawOnly() && _maintenanceDue()) {
+            uint256 changes = _restock() + _grailStep();
+            if (changes != 0) lastMaintenanceAt = block.timestamp;
+            work += changes;
         }
-        _tip(gasStart, work);
+        _tip(gasStart, work, false);
     }
 
     /// @notice Retirement, step by step: settle and book, then withdraw and burn every prize, then return
@@ -244,7 +257,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         bool caughtUp = true;
         if (address(pool) != address(0)) {
             work = _advance(maxCount);
-            caughtUp = pool.unsettledAcquisitionCount() == 0 && nextSeq > pool.lastIssuedSequence();
+            caughtUp = pool.unsettledAcquisitionCount() == 0 && seenSeq > pool.lastIssuedSequence() && _open.length == 0;
             if (caughtUp && _live.length != 0) work += _withdrawSome();
         }
         while (_relist.length != 0) {
@@ -257,11 +270,14 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             retired = true;
             uint256 amount = address(this).balance;
             grailReserve = 0;
+            pendingMarkup = 0;
+            pendingMargin = 0;
+            replacementsOwed = 0;
             vault.repay{value: amount}(true);
             emit Retired(amount);
             ++work;
         }
-        _tip(gasStart, work);
+        _tip(gasStart, work, true);
     }
 
     /// @notice Starts retirement. Called by the vault (`PrizeVault.retireGame`, timelock).
@@ -273,68 +289,152 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         emit RetireStarted();
     }
 
-    function _tip(uint256 gasStart, uint256 work) internal {
+    function _tip(uint256 gasStart, uint256 work, bool retirement) internal {
         if (work == 0) revert NoWork();
         uint256 age = block.timestamp - lastSyncAt;
         lastSyncAt = block.timestamp;
-        keeperFund.tip(msg.sender, gasStart - gasleft(), age);
+        keeperFund.tip(msg.sender, gasStart - gasleft(), age, work, retirement);
     }
 
-    /// @dev Cranks FWA settlement, books terminal pulls, collects owner proceeds and routes revenue.
-    function _advance(uint256 maxCount) internal returns (uint256 walked) {
+    /// @dev Cranks FWA settlement, sees new requests, resolves terminal ones, collects owner proceeds and routes
+    ///      what is distributable.
+    function _advance(uint256 maxCount) internal returns (uint256 work) {
         try pool.processAcquisitions(maxCount) {} catch {}
-        walked = _walk(maxCount);
+        uint256 edge = factory.edgeBps();
+        work = _resolveOpen(maxCount, edge);
+        work += _see(maxCount, edge);
         if (pool.ownerProceeds() != 0) pool.withdrawOwnerProceeds();
-        uint256 markup = pendingMarkup;
-        uint256 margin = pendingMargin;
-        if (markup + margin != 0 && address(this).balance >= markup + margin) {
-            pendingMarkup = 0;
-            pendingMargin = 0;
-            markupRouted += markup;
-            marginRouted += margin;
-            if (markup != 0) keeperFund.fundKeeper{value: markup}();
-            if (margin != 0) SafeTransferLib.forceSafeTransferETH(treasury, margin);
-            emit RevenueRouted(markup, margin);
-        }
+        _route();
     }
 
-    /// @dev Walks FWA's request sequence from the last booked one while requests are terminal.
-    function _walk(uint256 maxCount) internal returns (uint256 n) {
-        uint64 seq = nextSeq;
+    /// @notice Cash the game may spend on prizes: its balance less the GRAIL reserve.
+    function cash() public view returns (uint256) {
+        uint256 bal = address(this).balance;
+        return bal > grailReserve ? bal - grailReserve : 0;
+    }
+
+    /// @notice What may leave the game now: cash beyond the replacements owed and the reserve target.
+    function distributable() public view returns (uint256) {
+        uint256 c = cash();
+        uint256 keep = replacementsOwed + reserveTarget;
+        return c > keep ? c - keep : 0;
+    }
+
+    /// @notice Cash plus the backing of every prize this game holds or has listed.
+    function nav() external view returns (uint256) {
+        return cash() + inventoryBacking;
+    }
+
+    /// @dev Routes the booked markup and margin lines, markup first, up to what is distributable. The rest waits.
+    function _route() internal {
+        uint256 room = distributable();
+        uint256 markup = pendingMarkup < room ? pendingMarkup : room;
+        room -= markup;
+        uint256 margin = pendingMargin < room ? pendingMargin : room;
+        if (markup + margin == 0) return;
+        pendingMarkup -= markup;
+        pendingMargin -= margin;
+        markupRouted += markup;
+        marginRouted += margin;
+        if (markup != 0) keeperFund.fundKeeper{value: markup}();
+        if (margin != 0) SafeTransferLib.forceSafeTransferETH(treasury, margin);
+        emit RevenueRouted(markup, margin);
+    }
+
+    /// @dev First cursor: every issued request is seen once, counted accepted in its epoch, and resolved at once
+    ///      if it is already terminal; otherwise it joins the open set.
+    function _see(uint256 maxCount, uint256 edge) internal returns (uint256 n) {
+        uint64 seq = seenSeq;
         uint64 last = pool.lastIssuedSequence();
         uint256 open = farm.openBlock();
-        uint256 edge = factory.edgeBps();
         while (n < maxCount && seq <= last) {
-            (address purchaser, uint256 requestBlock, uint256 paid, uint256 listingId, IFWAPool.AcquisitionStatus st) =
-                pool.acquisitions(pool.requestIdAtSequence(seq));
-            if (
-                st == IFWAPool.AcquisitionStatus.Pending || st == IFWAPool.AcquisitionStatus.Ready
-                    || st == IFWAPool.AcquisitionStatus.DeliveryPending
-            ) break;
+            uint256 requestId = pool.requestIdAtSequence(seq);
+            uint256 requestBlock = _request(requestId).requestBlock;
             uint256 epoch = open == 0 || requestBlock < open ? 0 : (requestBlock - open) / EPOCH_BLOCKS;
-            ++epochBooked[epoch];
-            if (st == IFWAPool.AcquisitionStatus.Fulfilled) {
-                ++_epochUnits[epoch];
-                ++_userUnits[epoch][purchaser];
-                ++pullsBooked;
-                _bookCapture(listingId, paid, edge);
-            } else if (st == IFWAPool.AcquisitionStatus.DeliveryRefunded) {
-                pool.recoverRefundedNFT(listingId);
-                _removeLive(listingId);
-                if (items[listingId].row == GRAIL_ROW) {
-                    // A recovered GRAIL goes back to the reserve; the next step lists a fresh one.
-                    grailReserve += items[listingId].backing;
-                    _burnItem(listingId);
-                } else {
-                    _relist.push(listingId);
-                }
-                emit Recovered(listingId);
-            }
-            emit Booked(seq, epoch, purchaser, uint8(st));
+            ++epochAccepted[epoch];
+            Open memory o = Open(seq, uint32(epoch), false);
+            if (!_tryResolve(o, requestId, edge)) _open.push(o);
             ++seq;
             ++n;
         }
-        nextSeq = seq;
+        seenSeq = seq;
+    }
+
+    /// @dev Second cursor: resolves open requests that have become terminal, in any order.
+    function _resolveOpen(uint256 maxCount, uint256 edge) internal returns (uint256 n) {
+        uint256 i;
+        while (i < _open.length && n < maxCount) {
+            Open memory o = _open[i];
+            bool wasResolved = o.rewardResolved;
+            if (_tryResolve(o, pool.requestIdAtSequence(o.seq), edge)) {
+                _open[i] = _open[_open.length - 1];
+                _open.pop();
+                ++n;
+            } else {
+                if (!wasResolved && o.rewardResolved) {
+                    _open[i].rewardResolved = true; // grace passed: resolved for rewards, still open
+                    ++n;
+                }
+                ++i;
+            }
+        }
+    }
+
+    /// @dev Resolves `o` if its request is terminal. A delivery still pending after the grace period is counted
+    ///      resolved without a unit and stays open until its economics settle.
+    struct Req {
+        address purchaser;
+        uint256 requestBlock;
+        uint256 paid;
+        uint256 listingId;
+        IFWAPool.AcquisitionStatus status;
+    }
+
+    function _request(uint256 requestId) internal view returns (Req memory r) {
+        (r.purchaser, r.requestBlock, r.paid, r.listingId, r.status) = pool.acquisitions(requestId);
+    }
+
+    function _tryResolve(Open memory o, uint256 requestId, uint256 edge) internal returns (bool done) {
+        Req memory r = _request(requestId);
+        IFWAPool.AcquisitionStatus st = r.status;
+        if (
+            st == IFWAPool.AcquisitionStatus.Pending || st == IFWAPool.AcquisitionStatus.Ready
+                || st == IFWAPool.AcquisitionStatus.None
+        ) return false;
+        if (st == IFWAPool.AcquisitionStatus.DeliveryPending) {
+            if (!o.rewardResolved && block.number > r.requestBlock + DELIVERY_GRACE_BLOCKS) {
+                ++epochResolved[o.epoch];
+                o.rewardResolved = true;
+                emit Resolved(o.seq, o.epoch, uint8(st), false);
+            }
+            return false;
+        }
+        bool unit = st == IFWAPool.AcquisitionStatus.Fulfilled && !o.rewardResolved;
+        if (!o.rewardResolved) ++epochResolved[o.epoch];
+        if (st == IFWAPool.AcquisitionStatus.Fulfilled) {
+            if (unit) {
+                ++epochUnits[o.epoch];
+                ++userUnits[o.epoch][r.purchaser];
+            }
+            ++pullsBooked;
+            _bookCapture(r.listingId, r.paid, edge);
+        } else if (st == IFWAPool.AcquisitionStatus.DeliveryRefunded) {
+            _recover(r.listingId);
+        }
+        emit Resolved(o.seq, o.epoch, uint8(st), unit);
+        return true;
+    }
+
+    function _recover(uint256 listingId) internal {
+        pool.recoverRefundedNFT(listingId);
+        _removeLive(listingId);
+        if (items[listingId].row == GRAIL_ROW) {
+            // A recovered GRAIL goes back to the reserve; the next window lists a fresh one.
+            grailReserve += items[listingId].backing;
+            _burnItem(listingId);
+        } else {
+            _relist.push(listingId);
+        }
     }
 
     function _bookCapture(uint256 listingId, uint256 paid, uint256 edge) internal {
@@ -354,28 +454,36 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             grailCapturedBacking += it.backing;
         } else {
             liveRows &= ~(uint256(1) << it.row);
+            replacementsOwed += it.cost;
             if (expected >= it.cost) bookedGain += expected - it.cost;
             else bookedLoss += it.cost - expected;
         }
-        if (it.kind == KIND_SHAPE) delivered[it.tokenId] = 1;
-        emit Captured(listingId, it.row, paid, markup, margin, expected, it.cost);
+        emit Captured(listingId, markup, margin, expected);
     }
 
     // ------------------------------------------------------------------ inventory
 
-    /// @notice ETH available to mint board prizes: the balance less the GRAIL reserve and unrouted revenue.
-    function bankroll() public view returns (uint256) {
-        uint256 held = grailReserve + pendingMarkup + pendingMargin;
-        uint256 bal = address(this).balance;
-        return bal > held ? bal - held : 0;
+    /// @notice True when replacements may be listed now: a full batch is waiting, or `maintenanceInterval` has
+    ///         passed since the last inventory change. Every FWA inventory change restarts its purchase cooldown
+    ///         and invalidates in-flight purchases, so changes are batched (docs/IMPLEMENTOR_DECISIONS.md D25).
+    function _maintenanceDue() internal view returns (bool) {
+        if (block.timestamp >= lastMaintenanceAt + maintenanceInterval) return true;
+        uint256 rows = board.rowCount();
+        if (rows > MAX_BOARD) rows = MAX_BOARD;
+        uint256 waiting = _relist.length + rows - _popcount(liveRows & ((uint256(1) << rows) - 1));
+        uint256 batch = board.listBatch();
+        return waiting >= (batch > MAX_LIST_BATCH ? MAX_LIST_BATCH : batch);
     }
 
-    /// @notice Bankroll plus the backing of every prize this game holds or has listed.
-    function nav() external view returns (uint256) {
-        return bankroll() + inventoryBacking;
+    function _popcount(uint256 x) internal pure returns (uint256 c) {
+        while (x != 0) {
+            x &= x - 1;
+            ++c;
+        }
     }
 
-    /// @dev Lists recovered prizes, then mints and lists prizes for board rows without a live listing.
+    /// @dev Lists recovered prizes, then mints and lists prizes for board rows without a live listing, while cash
+    ///      pays for them.
     function _restock() internal returns (uint256 count) {
         uint256 maxList = board.listBatch();
         if (maxList > MAX_LIST_BATCH) maxList = MAX_LIST_BATCH;
@@ -392,30 +500,12 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             ++count;
         }
         uint256 bits = liveRows;
-        uint256 mintFee = shapes.mintFee();
         for (uint256 r; r < rows && count < maxList; ++r) {
             if (bits & (uint256(1) << r) != 0) continue;
-            (uint8 kind, uint96 backing) = board.rowAt(r);
-            Item memory it;
-            if (kind == KIND_SHAPE) {
-                it.cost = uint80(backing + mintFee);
-                if (bankroll() < it.cost) break;
-                it.tokenId = uint48(shapes.mintTo{value: it.cost}(backing, address(this)));
-            } else if (address(packs) != address(0)) {
-                uint32[] memory makeup = packs.defaultMakeup(backing);
-                (,, uint256 total,) = packs.quoteMint(makeup);
-                if (bankroll() < total) break;
-                it.cost = uint80(total);
-                it.tokenId = uint48(packs.createPackTo{value: total}(new uint256[](0), makeup, address(this)));
-            } else {
-                continue;
-            }
-            it.backing = uint80(backing);
-            it.row = uint16(r);
-            it.kind = kind;
+            (Item memory it, bool stop) = _mintRow(r);
+            if (stop) break;
+            if (it.cost == 0) continue;
             bits |= uint256(1) << r;
-            inventoryBacking += backing;
-            mintFeesPaid += it.cost - backing;
             (inputs[count], made[count]) = _input(it);
             ++count;
         }
@@ -427,14 +517,29 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         _list(inputs, made);
     }
 
+    /// @dev Mints the Shape of board row `r` if cash pays for it. `stop` when it does not; a zero-cost item for a row
+    ///      this game cannot mint (Pack rows: docs/IMPLEMENTOR_DECISIONS.md D3).
+    function _mintRow(uint256 r) internal returns (Item memory it, bool stop) {
+        (uint8 kind, uint96 backing) = board.rowAt(r);
+        if (kind != KIND_SHAPE) return (it, false);
+        it.cost = uint80(backing + shapes.mintFee());
+        if (cash() < it.cost) return (it, true);
+        it.tokenId = uint48(shapes.mintTo{value: it.cost}(backing, address(this)));
+        it.backing = uint80(backing);
+        it.row = uint16(r);
+        inventoryBacking += backing;
+        mintFeesPaid += it.cost - backing;
+        replacementsOwed = replacementsOwed > it.cost ? replacementsOwed - it.cost : 0;
+    }
+
     /// @dev Prices an item within bounds: at least its cost, at most cost × (1 + MAX_MARKUP_BPS).
     function _input(Item memory it) internal view returns (IFWAPool.ListingInput memory input, Item memory out) {
-        uint256 price = pricing.listPrice(it.kind, it.backing, it.cost);
+        uint256 price = pricing.listPrice(KIND_SHAPE, it.backing, it.cost);
         uint256 cap = uint256(it.cost) * (BPS + MAX_MARKUP_BPS) / BPS;
         if (price < it.cost) price = it.cost;
         if (price > cap) price = cap;
         it.markupBps = uint16((price - it.cost) * BPS / it.cost);
-        input = IFWAPool.ListingInput(_collection(it.kind), it.tokenId, price);
+        input = IFWAPool.ListingInput(address(shapes), it.tokenId, price);
         out = it;
     }
 
@@ -446,12 +551,8 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             items[ids[i]] = it;
             _liveIndex[ids[i]] = _live.length + 1;
             _live.push(ids[i]);
-            emit Listed(ids[i], it.row, it.tokenId, it.backing, it.cost, inputs[i].price);
+            emit Listed(ids[i], it.row, inputs[i].price);
         }
-    }
-
-    function _collection(uint8 kind) internal view returns (address) {
-        return kind == KIND_SHAPE ? address(shapes) : address(packs);
     }
 
     function _removeLive(uint256 listingId) internal {
@@ -476,7 +577,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         for (uint256 i; i < n; ++i) {
             _removeLive(ids[i]);
             _burnItem(ids[i]);
-            emit Withdrawn(ids[i]);
         }
     }
 
@@ -485,8 +585,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         if (it.row != GRAIL_ROW) liveRows &= ~(uint256(1) << it.row);
         else if (grailListing == listingId) grailListing = 0;
         inventoryBacking -= it.backing;
-        if (it.kind == KIND_SHAPE) shapes.burn(it.tokenId);
-        else packs.redeem(it.tokenId);
+        shapes.burn(it.tokenId);
         delete items[listingId];
     }
 
@@ -508,9 +607,8 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             it.tokenId = uint48(shapes.mintTo{value: cost}(backing, address(this)));
             inventoryBacking += backing;
             mintFeesPaid += cost - backing;
-            uint256 price = _grailPrice(backing, 0, 0);
             IFWAPool.ListingInput[] memory inputs = new IFWAPool.ListingInput[](1);
-            inputs[0] = IFWAPool.ListingInput(address(shapes), it.tokenId, price);
+            inputs[0] = IFWAPool.ListingInput(address(shapes), it.tokenId, _grailPrice(backing, 0, 0));
             Item[] memory made = new Item[](1);
             made[0] = it;
             _list(inputs, made);
@@ -519,7 +617,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             return 1;
         }
         if (pool.unsettledAcquisitionCount() != 0) return 0;
-        (,,,, uint256 weight, uint256 current,, IFWAPool.ListingStatus status) = pool.listings(id);
+        (uint256 weight, uint256 current, IFWAPool.ListingStatus status) = _listing(id);
         if (status != IFWAPool.ListingStatus.Active) return 0;
         uint256 newPrice = _grailPrice(items[id].backing, pullsBooked - grailListedAtPull, weight);
         if (newPrice == current) return 0;
@@ -528,9 +626,12 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         return 1;
     }
 
-    /// @notice GRAIL price within the hard bounds: at least MIN_GRAIL_PRICE_BPS of backing, and high enough
-    ///         that its win probability is at most MAX_GRAIL_PROB_BPS. `ownWeight` is the GRAIL's current
-    ///         weight in the pool (0 when not active).
+    function _listing(uint256 id) internal view returns (uint256 weight, uint256 price, IFWAPool.ListingStatus status) {
+        (,,,, weight, price,, status) = pool.listings(id);
+    }
+
+    /// @dev GRAIL price within the hard bounds: at least MIN_GRAIL_PRICE_BPS of backing, and high enough that its
+    ///      win probability is at most MAX_GRAIL_PROB_BPS. `ownWeight` is its current weight in the pool.
     function _grailPrice(uint256 backing, uint256 pulls, uint256 ownWeight) internal view returns (uint256 price) {
         price = grail.grailPrice(backing, pulls);
         uint256 floor = backing * MIN_GRAIL_PRICE_BPS / BPS;
@@ -544,63 +645,24 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
     }
 
-    // ------------------------------------------------------------------ conversion
-
-    /// @notice Converts a Shape this pool delivered into ENGINE: burns it for its backing, buys ENGINE with
-    ///         that ETH (fee-exempt) for the caller, and adds the conversion bonus from the farm's bonus pool
-    ///         at the executed price. Once per token. Reverts if the bonus pool cannot cover the bonus unless
-    ///         `allowNoBonus`, in which case whatever the pool holds is paid.
-    function convert(uint256 tokenId, uint256 minEngineOut, bool allowNoBonus)
-        external
-        nonReentrant
-        returns (uint256 engineOut, uint256 bonus)
-    {
-        if (delivered[tokenId] != 1) revert NotConvertible();
-        delivered[tokenId] = 2;
-        shapes.transferFrom(msg.sender, address(this), tokenId);
-        uint256 before = address(this).balance;
-        shapes.burn(tokenId);
-        uint256 value = address(this).balance - before;
-        uint256 spent;
-        (engineOut, spent) = buyer.buy{value: value}(minEngineOut, msg.sender, BPS);
-        if (spent < value) SafeTransferLib.forceSafeTransferETH(msg.sender, value - spent);
-        uint256 bps = pricing.conversionBonusBps();
-        if (bps > MAX_BONUS_BPS) bps = MAX_BONUS_BPS;
-        bonus = engineOut * bps / BPS;
-        if (bonus != 0) {
-            if (farm.bonusPool() < bonus && !allowNoBonus) revert BonusUnavailable();
-            bonus = farm.payBonus(msg.sender, bonus);
-        }
-        emit Converted(msg.sender, tokenId, value, engineOut, bonus);
-    }
-
     // ------------------------------------------------------------------ ledger
 
-    function epochUnits(uint256 epoch) external view returns (uint256) {
-        return _epochUnits[epoch];
+    /// @notice `(accepted, resolved, units)` of `epoch`.
+    function epochTotals(uint256 epoch) external view returns (uint256, uint256, uint256) {
+        return (epochAccepted[epoch], epochResolved[epoch], epochUnits[epoch]);
     }
 
-    function userUnits(uint256 epoch, address purchaser) external view returns (uint256) {
-        return _userUnits[epoch][purchaser];
-    }
-
-    /// @notice `(booked, units)` of `epoch`: pulls booked in it (any terminal status) and delivered pulls.
-    function epochTotals(uint256 epoch) external view returns (uint256 booked, uint256 units) {
-        return (epochBooked[epoch], _epochUnits[epoch]);
-    }
-
-    /// @notice True once `epoch` has ended and every request made in it is terminal and booked
-    ///         (docs/IMPLEMENTOR_DECISIONS.md D6).
+    /// @notice True once `epoch` has ended, every request FWA issued in it has been seen (accepted), and every
+    ///         accepted request is resolved.
     function isEpochFinal(uint256 epoch) external view returns (bool) {
         uint256 open = farm.openBlock();
         if (open == 0) return false;
         uint256 end = open + (epoch + 1) * EPOCH_BLOCKS;
-        if (block.number < end) return false;
+        if (block.number < end || epochAccepted[epoch] != epochResolved[epoch]) return false;
         if (address(pool) == address(0)) return true;
-        uint64 seq = nextSeq;
+        uint64 seq = seenSeq;
         if (seq > pool.lastIssuedSequence()) return true;
-        (, uint256 requestBlock,,,) = pool.acquisitions(pool.requestIdAtSequence(seq));
-        return requestBlock >= end;
+        return _request(pool.requestIdAtSequence(seq)).requestBlock >= end;
     }
 
     function liveCount() external view returns (uint256) {
@@ -615,10 +677,34 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         return _relist.length;
     }
 
+    function openCount() external view returns (uint256) {
+        return _open.length;
+    }
+
     // ------------------------------------------------------------------ governance
 
     function setModule(bytes32 kind, address module) external onlyGovernance {
         _setModule(kind, module);
+    }
+
+    /// @notice Sets the reserve target (at least twice the cost of the board's most expensive prize) and the
+    ///         maintenance interval.
+    function setCapital(uint256 reserveTarget_, uint256 maintenanceInterval_) external onlyGovernance {
+        _setCapital(reserveTarget_, maintenanceInterval_);
+    }
+
+    function _setCapital(uint256 reserveTarget_, uint256 maintenanceInterval_) internal {
+        if (reserveTarget_ > MAX_RESERVE_TARGET || maintenanceInterval_ > MAX_MAINTENANCE_INTERVAL) revert OutOfBounds();
+        uint256 rows = board.rowCount();
+        uint256 maxBacking;
+        for (uint256 r; r < rows && r < MAX_BOARD; ++r) {
+            (, uint96 b) = board.rowAt(r);
+            if (b > maxBacking) maxBacking = b;
+        }
+        if (reserveTarget_ < 2 * maxBacking) revert OutOfBounds();
+        reserveTarget = reserveTarget_;
+        maintenanceInterval = maintenanceInterval_;
+        emit CapitalSet(reserveTarget_, maintenanceInterval_);
     }
 
     function _setModule(bytes32 kind, address module) internal {

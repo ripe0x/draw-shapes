@@ -10,10 +10,13 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 ///         line of every booked pull up to `keeperTargetWei`; anything above the target goes to the Treasury.
 /// @dev Tip formula (BUILD_PROMPT 4.6):
 ///        tip = min(tipCap, (gasUsed + gasOverhead) × min(basefee, basefeeCap) × (10,000 + premiumBps) / 10,000)
-///            + maxBounty × min(age, rampSeconds) / rampSeconds
-///      A registered payer (a holder or sink running a keeper job) calls `tip`. The fund pays what it can
-///      and never reverts for lack of balance. Tips are pushed with a gas stipend; a failed push is
-///      credited and withdrawn by the keeper (`withdrawTips`). Outflows: keepers and the Treasury.
+///            + maxBounty × min(age, rampSeconds) / rampSeconds × min(items, BOUNTY_ITEMS) / BOUNTY_ITEMS
+///      The bounty is paid per unit of progress (`items`: requests seen or resolved, listings made, slices
+///      bought), so splitting work across calls earns no more than one call; a call with no progress earns
+///      nothing. A registered payer (a holder or sink running a keeper job) calls `tip`. The fund pays what it
+///      can and never reverts for lack of balance; it keeps `maintenanceFloor` that only retirement steps may
+///      spend. Tips are pushed with a gas stipend; a failed push is credited and withdrawn by the keeper
+///      (`withdrawTips`). Outflows: keepers and the Treasury.
 contract KeeperFund is Governed, ReentrancyGuard {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant PUSH_GAS = 50_000;
@@ -25,6 +28,8 @@ contract KeeperFund is Governed, ReentrancyGuard {
     uint256 public constant MAX_RAMP = 7 days;
     uint256 public constant MAX_GAS_OVERHEAD = 200_000;
     uint256 public constant MAX_TARGET = 100 ether;
+    uint256 public constant MAX_FLOOR = 10 ether;
+    uint256 public constant BOUNTY_ITEMS = 20;
 
     address public immutable treasury;
 
@@ -35,6 +40,7 @@ contract KeeperFund is Governed, ReentrancyGuard {
     uint256 public rampSeconds;
     uint256 public gasOverhead;
     uint256 public keeperTargetWei;
+    uint256 public maintenanceFloor;
 
     mapping(address payer => bool) public isPayer;
     mapping(address keeper => uint256) public tipCredit;
@@ -51,7 +57,8 @@ contract KeeperFund is Governed, ReentrancyGuard {
         uint256 maxBounty,
         uint256 rampSeconds,
         uint256 gasOverhead,
-        uint256 keeperTargetWei
+        uint256 keeperTargetWei,
+        uint256 maintenanceFloor
     );
     event PayerSet(address indexed payer, bool allowed);
 
@@ -66,9 +73,11 @@ contract KeeperFund is Governed, ReentrancyGuard {
         uint256 rampSeconds;
         uint256 gasOverhead;
         uint256 keeperTargetWei;
+        uint256 maintenanceFloor;
     }
 
-    constructor(address governance_, address treasury_, Params memory p) Governed(governance_, true) {
+    /// @dev Payable so the deploy script can seed the fund (`KEEPER_SEED`).
+    constructor(address governance_, address treasury_, Params memory p) payable Governed(governance_, true) {
         if (treasury_ == address(0)) revert ZeroAddress();
         treasury = treasury_;
         _setParams(p);
@@ -94,26 +103,34 @@ contract KeeperFund is Governed, ReentrancyGuard {
         }
     }
 
-    /// @notice The tip for a job that used `gasUsed` gas after waiting `age` seconds, before the
-    ///         balance limit.
-    function quoteTip(uint256 gasUsed, uint256 age) public view returns (uint256 amount) {
+    /// @notice The tip for a job that used `gasUsed` gas and made `items` units of progress after waiting `age`
+    ///         seconds, before the balance limit.
+    function quoteTip(uint256 gasUsed, uint256 age, uint256 items) public view returns (uint256 amount) {
+        if (items == 0) return 0;
         uint256 fee = block.basefee < basefeeCap ? block.basefee : basefeeCap;
         amount = (gasUsed + gasOverhead) * fee * (BPS + premiumBps) / BPS;
         if (amount > tipCap) amount = tipCap;
         uint256 ramp = rampSeconds;
-        amount += maxBounty * (age < ramp ? age : ramp) / ramp;
+        amount += maxBounty * (age < ramp ? age : ramp) / ramp * (items < BOUNTY_ITEMS ? items : BOUNTY_ITEMS) / BOUNTY_ITEMS;
     }
 
-    /// @notice Balance available for tips (excludes credited, unwithdrawn tips).
-    function available() public view returns (uint256) {
-        return address(this).balance - tipCreditTotal;
+    /// @notice Balance available for tips (excludes credited, unwithdrawn tips). Ordinary jobs may not spend the
+    ///         maintenance floor; retirement steps may.
+    function available(bool retirement) public view returns (uint256) {
+        uint256 bal = address(this).balance - tipCreditTotal;
+        uint256 floor = retirement ? 0 : maintenanceFloor;
+        return bal > floor ? bal - floor : 0;
     }
 
     /// @notice Pays `keeper` for a job. Registered payers only. Pays at most the available balance.
-    function tip(address keeper, uint256 gasUsed, uint256 age) external nonReentrant returns (uint256 paid) {
+    function tip(address keeper, uint256 gasUsed, uint256 age, uint256 items, bool retirement)
+        external
+        nonReentrant
+        returns (uint256 paid)
+    {
         if (!isPayer[msg.sender]) revert NotPayer();
-        paid = quoteTip(gasUsed, age);
-        uint256 avail = available();
+        paid = quoteTip(gasUsed, age, items);
+        uint256 avail = available(retirement);
         if (paid > avail) paid = avail;
         if (paid == 0 || keeper == address(0)) return 0;
         totalTipsPaid += paid;
@@ -152,7 +169,8 @@ contract KeeperFund is Governed, ReentrancyGuard {
         if (
             p.premiumBps > MAX_PREMIUM_BPS || p.basefeeCap > MAX_BASEFEE_CAP || p.tipCap > MAX_TIP_CAP
                 || p.maxBounty > MAX_BOUNTY || p.rampSeconds == 0 || p.rampSeconds > MAX_RAMP
-                || p.gasOverhead > MAX_GAS_OVERHEAD || p.keeperTargetWei > MAX_TARGET
+                || p.gasOverhead > MAX_GAS_OVERHEAD || p.keeperTargetWei > MAX_TARGET || p.maintenanceFloor > MAX_FLOOR
+                || p.maintenanceFloor > p.keeperTargetWei
         ) revert OutOfBounds();
         premiumBps = p.premiumBps;
         basefeeCap = p.basefeeCap;
@@ -161,8 +179,16 @@ contract KeeperFund is Governed, ReentrancyGuard {
         rampSeconds = p.rampSeconds;
         gasOverhead = p.gasOverhead;
         keeperTargetWei = p.keeperTargetWei;
+        maintenanceFloor = p.maintenanceFloor;
         emit ParamsSet(
-            p.premiumBps, p.basefeeCap, p.tipCap, p.maxBounty, p.rampSeconds, p.gasOverhead, p.keeperTargetWei
+            p.premiumBps,
+            p.basefeeCap,
+            p.tipCap,
+            p.maxBounty,
+            p.rampSeconds,
+            p.gasOverhead,
+            p.keeperTargetWei,
+            p.maintenanceFloor
         );
     }
 

@@ -38,6 +38,7 @@ contract Deploy is Script, LaunchConfig {
             IShapes(vm.envAddress("SHAPES")).unit()
         );
         c.create2Deployer = CREATE2_DEPLOYER;
+        c.keeperSeed = vm.envOr("KEEPER_SEED", uint256(0));
         bool createPool = vm.envOr("CREATE_FWA_POOL", true);
 
         _preflight(c, deployer, createPool);
@@ -45,7 +46,7 @@ contract Deploy is Script, LaunchConfig {
         if (createPool && IFactoryPreflight(c.fwaFactory).poolCreationFee() != 0) {
             c.fwaFeeEth = fwaFeeQuote(c.fwaFactory, c.poolManager, vm.envOr("FWA_FEE_MARGIN_BPS", uint256(500)));
         }
-        require(deployer.balance > c.fwaFeeEth, "deployer cannot pay the FWA fee purchase");
+        require(deployer.balance > c.fwaFeeEth + c.keeperSeed, "deployer cannot pay the FWA fee and keeper seed");
 
         vm.startBroadcast(deployer);
         System memory s = _deploySystem(c, deployer);
@@ -93,9 +94,9 @@ contract Deploy is Script, LaunchConfig {
         k.serialize("grailPolicy", address(s.grail));
         k.serialize("vault", address(s.vault));
         k.serialize("game", address(s.game));
+        k.serialize("converter", address(s.converter));
         k.serialize("fwaPool", address(s.game.pool()));
-        k.serialize("buybackBurn", address(s.buybackBurn));
-        k.serialize("buybackReward", address(s.buybackReward));
+        k.serialize("buyback", address(s.buyback));
         k.serialize("grailFund", address(s.grailFund));
         k.serialize("feeBuyer", address(s.feeBuyer));
         k.serialize("shapes", c.shapes);

@@ -158,35 +158,38 @@ contract Handler is Test {
     function keeperSync(uint256 seed, uint256 maxCount) external {
         (uint256 i, address a) = _actor(seed);
         Snap memory b = _snap();
+        uint256 routed = s.game.markupRouted() + s.game.marginRouted();
         vm.prank(a);
         try s.game.sync(bound(maxCount, 1, 50)) {
             ++calls["sync"];
         } catch {}
         Snap memory x = _snap();
         _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
+        // capital rule: revenue leaves only while cash covers the replacements owed and the reserve
+        if (s.game.markupRouted() + s.game.marginRouted() > routed) {
+            if (s.game.cash() < s.game.replacementsOwed() + s.game.reserveTarget()) _flag("revenue left below the reserve");
+        }
     }
 
     function convert(uint256 seed) external {
         (uint256 i, address a) = _actor(seed);
-        uint256 n = shapes.balanceOf(a);
-        if (n == 0) return;
-        // find a delivered Shape the actor holds among recent ids
-        uint256 tokenId = type(uint256).max;
+        uint256 listingId;
+        uint256 tokenId;
         for (uint256 lid = 1; lid < 400; ++lid) {
-            (uint48 t,,,,,,) = s.game.items(lid);
-            if (t != 0 && s.game.delivered(t) == 1 && _ownerOf(t) == a) {
-                tokenId = t;
+            (bool ok, address collection, uint256 t) = s.converter.convertible(lid);
+            if (ok && collection == address(shapes) && _ownerOf(t) == a) {
+                (listingId, tokenId) = (lid, t);
                 break;
             }
         }
-        if (tokenId == type(uint256).max) return;
+        if (listingId == 0) return;
         uint256 value = shapes.valueOf(tokenId);
         Snap memory b = _snap();
         vm.startPrank(a);
-        shapes.approve(address(s.game), tokenId);
+        shapes.approve(address(s.converter), tokenId);
         uint256 out;
         uint256 bonus;
-        try s.game.convert(tokenId, 0, true) returns (uint256 o, uint256 bo) {
+        try s.converter.convert(listingId, 0, true) returns (uint256 o, uint256 bo) {
             (out, bonus) = (o, bo);
             ++calls["convert"];
         } catch {}
@@ -204,7 +207,7 @@ contract Handler is Test {
     function burnOwnShape(uint256 seed) external {
         (uint256 i, address a) = _actor(seed);
         for (uint256 lid = 1; lid < 400; ++lid) {
-            (uint48 t,,,,,,) = s.game.items(lid);
+            (uint48 t,,,,,) = s.game.items(lid);
             if (t != 0 && _ownerOf(t) == a) {
                 uint256 value = shapes.valueOf(t);
                 Snap memory b = _snap();
@@ -260,19 +263,13 @@ contract Handler is Test {
         _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
     }
 
-    function buyback(uint256 seed, bool burnSide) external {
+    function buyback(uint256 seed) external {
         (uint256 i, address a) = _actor(seed);
         Snap memory b = _snap();
-        vm.prank(a);
-        if (burnSide) {
-            try s.buybackBurn.process(0) {
-                ++calls["burn"];
-            } catch {}
-        } else {
-            try s.buybackReward.process(0) {
-                ++calls["reward"];
-            } catch {}
-        }
+                vm.prank(a);
+        try s.buyback.process(0) {
+            ++calls["buyback"];
+        } catch {}
         Snap memory x = _snap();
         _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
         if (x.vault < b.vault || x.game < b.game) _flag("buyback moved game ETH");
@@ -369,7 +366,7 @@ contract Handler is Test {
         else if (fn == 3) (target, data) = (address(s.game), abi.encodeCall(s.game.retire, ()));
         else if (fn == 4) (target, data) = (address(s.game), abi.encodeCall(s.game.setModule, ("buyer", address(this))));
         else if (fn == 5) (target, data) = (address(s.treasury), abi.encodeCall(s.treasury.draw, (1)));
-        else if (fn == 6) (target, data) = (address(s.keeperFund), abi.encodeCall(s.keeperFund.tip, (a, 1e6, 1e6)));
+        else if (fn == 6) (target, data) = (address(s.keeperFund), abi.encodeCall(s.keeperFund.tip, (a, 1e6, 1e6, 20, true)));
         else if (fn == 7) (target, data) = (address(s.farm), abi.encodeCall(s.farm.payBonus, (a, 1)));
         else if (fn == 8) (target, data) = (address(s.farm), abi.encodeCall(s.farm.burnReserve, (1)));
         else if (fn == 9) (target, data) = (address(s.buyer), abi.encodeCall(s.buyer.buy, (0, a, 100)));

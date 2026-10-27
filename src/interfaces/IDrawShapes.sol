@@ -39,7 +39,9 @@ interface ITreasury {
 }
 
 interface IKeeperFund {
-    function tip(address keeper, uint256 gasUsed, uint256 age) external returns (uint256 paid);
+    function tip(address keeper, uint256 gasUsed, uint256 age, uint256 items, bool retirement)
+        external
+        returns (uint256 paid);
     function fundKeeper() external payable;
 }
 

@@ -20,13 +20,9 @@ solc_version = "0.8.28"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
-# Every contract in src/ uses the legacy pipeline (BUILD_PROMPT rule 3). Only lib/draw-packs, which fork
-# tests deploy as the two-unit Draw Packs variant, is compiled with via_ir, as in its own repository.
+# Every contract uses the legacy pipeline (BUILD_PROMPT rule 3). Only the lib/draw-packs interface is imported;
+# nothing is deployed from its source, so it needs no via_ir profile.
 via_ir = false
-additional_compiler_profiles = [{ name = "via-ir", via_ir = true, optimizer_runs = 200 }]
-compilation_restrictions = [
-    { paths = "lib/draw-packs/src/**", via_ir = true },
-]
 bytecode_hash = "none"
 cbor_metadata = false
 gas_limit = "18446744073709551615"

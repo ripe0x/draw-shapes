@@ -10,7 +10,7 @@ import {FwaGame} from "./game/FwaGame.sol";
 import {GenesisFarm} from "./token/GenesisFarm.sol";
 import {Treasury} from "./treasury/Treasury.sol";
 import {KeeperFund} from "./treasury/KeeperFund.sol";
-import {BuybackSink, GrailFund} from "./treasury/Sinks.sol";
+import {Buyback, GrailFund} from "./treasury/Sinks.sol";
 import {SwapPolicy} from "./policy/SwapPolicy.sol";
 import {ProtocolLiquidity} from "./token/ProtocolLiquidity.sol";
 
@@ -24,8 +24,7 @@ contract Lens {
         GenesisFarm farm;
         Treasury treasury;
         KeeperFund keeperFund;
-        BuybackSink buybackBurn;
-        BuybackSink buybackReward;
+        Buyback buyback;
         GrailFund grailFund;
         SwapPolicy swapPolicy;
         ProtocolLiquidity liquidity;
@@ -39,13 +38,16 @@ contract Lens {
         uint256 liveListings;
         uint256 boardRows;
         uint256 liveRows;
-        uint256 bankroll;
         uint256 nav;
         uint256 inventoryBacking;
         uint256 grailReserve;
         uint256 grailListing;
         uint256 pullsBooked;
-        uint256 nextSeq;
+        uint256 seenSeq;
+        uint256 openRequests;
+        uint256 cash;
+        uint256 distributable;
+        uint256 replacementsOwed;
         uint256 lastIssuedSeq;
         uint256 quoteFee;
         uint256 quoteVrf;
@@ -64,13 +66,13 @@ contract Lens {
     }
 
     struct WorkView {
-        uint256 syncable; // terminal pulls waiting to be booked (up to 50 counted)
+        uint256 syncable; // requests waiting to be seen plus open requests (up to 50 counted)
         uint256 unlistedRows;
         uint256 syncAge;
         uint256 unallocated;
         uint256 distributeAge;
-        bool burnReady;
-        bool rewardReady;
+        bool buybackReady;
+        uint256 buybackSlice;
         uint256 grailOwed;
         bool retireUnearnedReady;
         uint256 keeperFundAvailable;
@@ -95,13 +97,16 @@ contract Lens {
         v.liveListings = g.liveCount();
         v.boardRows = g.board().rowCount();
         v.liveRows = _popcount(g.liveRows());
-        v.bankroll = g.bankroll();
         v.nav = g.nav();
         v.inventoryBacking = g.inventoryBacking();
         v.grailReserve = g.grailReserve();
         v.grailListing = g.grailListing();
         v.pullsBooked = g.pullsBooked();
-        v.nextSeq = g.nextSeq();
+        v.seenSeq = g.seenSeq();
+        v.openRequests = g.openCount();
+        v.cash = g.cash();
+        v.distributable = g.distributable();
+        v.replacementsOwed = g.replacementsOwed();
         if (address(p) != address(0)) {
             v.acquisitionsEnabled = p.localPurchasesEnabled();
             v.lastIssuedSeq = p.lastIssuedSequence();
@@ -199,27 +204,20 @@ contract Lens {
         IFWAPool p = g.pool();
         if (address(p) != address(0)) {
             uint64 last = p.lastIssuedSequence();
-            for (uint64 s = g.nextSeq(); s <= last && w.syncable < 50; ++s) {
-                (,,,, IFWAPool.AcquisitionStatus st) = p.acquisitions(p.requestIdAtSequence(s));
-                if (st == IFWAPool.AcquisitionStatus.Pending || st == IFWAPool.AcquisitionStatus.DeliveryPending) break;
-                ++w.syncable; // Ready counts: sync settles it first
-            }
+            uint64 seen = g.seenSeq();
+            w.syncable = (last >= seen ? last - seen + 1 : 0) + g.openCount();
         }
         uint256 rows = g.board().rowCount();
         w.unlistedRows = rows - _popcount(g.liveRows() & ((rows >= 256 ? 0 : (uint256(1) << rows)) - 1));
         w.syncAge = block.timestamp - g.lastSyncAt();
         w.unallocated = a.treasury.unallocated();
         w.distributeAge = block.timestamp - a.treasury.lastDistributeAt();
-        w.burnReady = _sinkReady(a.treasury, a.buybackBurn);
-        w.rewardReady = _sinkReady(a.treasury, a.buybackReward);
+        w.buybackSlice = a.buyback.nextSlice();
+        w.buybackReady = w.buybackSlice != 0 && block.timestamp >= a.buyback.lastRunAt() + a.buyback.minSpacing();
         w.grailOwed = a.treasury.owed(address(a.grailFund));
         GenesisFarm f = a.farm;
         w.retireUnearnedReady = !f.unearnedRetired() && f.openBlock() != 0 && block.number >= f.genesisEndBlock();
-        w.keeperFundAvailable = a.keeperFund.available();
-    }
-
-    function _sinkReady(Treasury t, BuybackSink s) internal view returns (bool) {
-        return t.owed(address(s)) != 0 && block.timestamp >= s.lastRunAt() + s.minSpacing();
+        w.keeperFundAvailable = a.keeperFund.available(false);
     }
 
     function _popcount(uint256 x) internal pure returns (uint256 c) {

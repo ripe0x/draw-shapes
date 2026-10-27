@@ -51,7 +51,8 @@ contract GasReceipts is ForkBase {
         deliverWord(pool.requestIdAtSequence(1), 1);
         pool.processAcquisitions(10);
 
-        // sync: book 1 pull and list its replacement
+        // sync: book 1 pull and list its replacement (at a maintenance window)
+        vm.warp(block.timestamp + 30 minutes);
         g = gasleft();
         vm.prank(keeper);
         sys.game.sync(50);
@@ -59,11 +60,13 @@ contract GasReceipts is ForkBase {
 
         // sync: 5 and 20 pulls in one call
         _pulls(5);
+        vm.warp(block.timestamp + 30 minutes);
         g = gasleft();
         vm.prank(keeper);
         sys.game.sync(50);
         _record("sync_5", g - gasleft() + 21_000);
         _pulls(20);
+        vm.warp(block.timestamp + 30 minutes);
         g = gasleft();
         vm.prank(keeper);
         sys.game.sync(50);
@@ -78,31 +81,28 @@ contract GasReceipts is ForkBase {
         _record("distribute", g - gasleft() + 21_000);
         g = gasleft();
         vm.prank(keeper);
-        sys.buybackBurn.process(0);
-        _record("process_burn", g - gasleft() + 21_000);
-        g = gasleft();
-        vm.prank(keeper);
-        sys.buybackReward.process(0);
-        _record("process_reward", g - gasleft() + 21_000);
+        sys.buyback.process(0);
+        _record("process_buyback", g - gasleft() + 21_000);
         g = gasleft();
         vm.prank(keeper);
         sys.grailFund.process();
         _record("process_grail", g - gasleft() + 21_000);
 
         // convert a delivered Shape
+        uint256 lid;
         uint256 tokenId;
-        for (uint256 lid = 1; lid < 200; ++lid) {
-            (uint48 t,,,,,,) = sys.game.items(lid);
-            if (t != 0 && sys.game.delivered(t) == 1 && shapes.ownerOf(t) == alice) {
-                tokenId = t;
+        for (uint256 l = 1; l < 200; ++l) {
+            (bool ok,, uint256 t) = sys.converter.convertible(l);
+            if (ok && shapes.ownerOf(t) == alice) {
+                (lid, tokenId) = (l, t);
                 break;
             }
         }
         vm.prank(alice);
-        shapes.approve(address(sys.game), tokenId);
+        shapes.approve(address(sys.converter), tokenId);
         g = gasleft();
         vm.prank(alice);
-        sys.game.convert(tokenId, 0, true);
+        sys.converter.convert(lid, 0, true);
         _record("convert", g - gasleft() + 21_000);
 
         // claim one final epoch

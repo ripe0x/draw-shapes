@@ -83,7 +83,7 @@ contract Treasury is Governed, ReentrancyGuard {
         uint256 age = block.timestamp - lastDistributeAt;
         lastDistributeAt = block.timestamp;
         emit Distributed(amount);
-        if (address(keeperFund) != address(0)) keeperFund.tip(msg.sender, gasStart - gasleft(), age);
+        if (address(keeperFund) != address(0)) keeperFund.tip(msg.sender, gasStart - gasleft(), age, n, false);
     }
 
     /// @notice A registered sink draws up to its allocation.

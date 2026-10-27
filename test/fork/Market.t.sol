@@ -6,7 +6,7 @@ import {Swapper} from "../utils/Swapper.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {EngineBuyer} from "../../src/token/EngineBuyer.sol";
-import {BuybackSink} from "../../src/treasury/Sinks.sol";
+import {Buyback} from "../../src/treasury/Sinks.sol";
 import {PrizeVault} from "../../src/game/PrizeVault.sol";
 
 /// @notice The ENGINE market on the real v4 PoolManager: launch, fees, gate, anti-snipe, buybacks, liquidity.
@@ -89,6 +89,7 @@ contract MarketForkTest is ForkBase {
 
     function test_gateClosesPublicBuysOnlyUntilGenesisEnd() public {
         vm.warp(block.timestamp + 2 hours);
+        assertFalse(sys.swapPolicy.gated(), "pre-market is open both ways");
         uint256 got = _buy(0.5 ether); // pre-market buy works
         openGame();
         assertTrue(sys.swapPolicy.gated());
@@ -98,9 +99,9 @@ contract MarketForkTest is ForkBase {
         // sells always work
         assertGt(_sell(got / 2), 0);
         // the exempt buy path works (buyback buyer)
-        vm.deal(address(sys.buybackBurn), 0.1 ether);
-        vm.prank(address(sys.buybackBurn));
-        (uint256 out,) = sys.buyer.buy{value: 0.1 ether}(1, address(sys.buybackBurn), 10_000);
+        vm.deal(address(sys.buyback), 0.1 ether);
+        vm.prank(address(sys.buyback));
+        (uint256 out,) = sys.buyer.buy{value: 0.1 ether}(1, address(sys.buyback), 10_000);
         assertGt(out, 0);
         // genesis end re-opens buys
         vm.roll(sys.farm.genesisEndBlock());
@@ -121,57 +122,57 @@ contract MarketForkTest is ForkBase {
         IPoolManager(POOL_MANAGER).initialize(key, 2 ** 96);
     }
 
-    function test_buybacksSplitBurnAndReward() public {
+    function test_buybackOnePurchaseSplitBurnAndReward() public {
         vm.warp(block.timestamp + 2 hours);
         openGame();
-        // revenue arrives (hook fees, margins); distribute by the table
         vm.deal(address(sys.treasury), address(sys.treasury).balance + 1 ether);
         uint256 total = sys.treasury.unallocated();
         sys.treasury.distribute();
-        assertEq(sys.treasury.owed(address(sys.buybackBurn)), total * 4_500 / 10_000);
-        assertEq(sys.treasury.owed(address(sys.buybackReward)), total * 4_500 / 10_000);
-        assertEq(
-            sys.treasury.owed(address(sys.grailFund)), total - 2 * (total * 4_500 / 10_000), "GRAIL takes the remainder"
-        );
-        // burn slice
+        assertEq(sys.treasury.owed(address(sys.buyback)), total * 9_000 / 10_000);
+        assertEq(sys.treasury.owed(address(sys.grailFund)), total - total * 9_000 / 10_000);
         uint256 supply = sys.engine.totalSupply();
-        uint256 burned = sys.buybackBurn.process(1);
-        assertEq(sys.engine.totalSupply(), supply - burned);
-        assertEq(sys.buybackBurn.totalSpent(), 0.05 ether);
-        assertEq(address(sys.buybackBurn).balance, 0);
-        vm.expectRevert(BuybackSink.TooSoon.selector);
-        sys.buybackBurn.process(1);
-        // reward slice into the current epoch
         uint256 e = sys.farm.currentEpoch();
-        uint256 rewarded = sys.buybackReward.process(1);
-        assertEq(sys.farm.deposits(e), rewarded);
-        assertEq(sys.engine.balanceOf(address(sys.buybackReward)), 0);
-        // GRAIL fund forwards to the game
+        uint256 out = sys.buyback.process(1);
+        uint256 burned = out * 5_000 / 10_000;
+        assertEq(sys.engine.totalSupply(), supply - burned, "burn share burned");
+        assertEq(sys.farm.deposits(e), out - burned, "the rest deposited in the current epoch");
+        assertEq(sys.buyback.totalSpent(), 0.05 ether, "one slice");
+        assertEq(address(sys.buyback).balance, 0);
+        assertEq(sys.engine.balanceOf(address(sys.buyback)), 0);
+        vm.expectRevert(Buyback.TooSoon.selector);
+        sys.buyback.process(1);
         uint256 reserve = sys.game.grailReserve();
         uint256 g = sys.grailFund.process();
         assertEq(sys.game.grailReserve(), reserve + g);
-        assertEq(address(sys.grailFund).balance, 0);
-        // spacing passes: the next slice
         vm.warp(block.timestamp + 1 hours);
-        assertGt(sys.buybackBurn.process(1), 0);
+        assertGt(sys.buyback.process(1), 0);
+    }
+
+    function test_buybackSliceShrinksWithBalance() public {
+        vm.warp(block.timestamp + 2 hours);
+        vm.deal(address(sys.treasury), 0.08 ether);
+        sys.treasury.distribute();
+        uint256 owed = sys.treasury.owed(address(sys.buyback));
+        assertEq(sys.buyback.nextSlice(), owed / 4, "a quarter of a small allocation");
+        sys.buyback.process(1);
+        assertEq(sys.buyback.totalSpent(), owed / 4);
     }
 
     function test_buybackImpactCapLeavesRestInTreasury() public {
         vm.warp(block.timestamp + 2 hours);
         vm.prank(address(sys.timelock));
-        sys.buybackBurn.setParams(10 ether, 0, 10); // 0.1% impact cap, big slice
-        vm.deal(address(sys.treasury), 20 ether);
+        sys.buyback.setParams(10 ether, 0, 10, 5_000); // 0.1% impact cap, big slice
+        vm.deal(address(sys.treasury), 80 ether);
         sys.treasury.distribute();
-        uint256 owed = sys.treasury.owed(address(sys.buybackBurn));
+        uint256 slice = sys.buyback.nextSlice();
         uint256 tBefore = address(sys.treasury).balance;
-        sys.buybackBurn.process(1);
-        uint256 spent = sys.buybackBurn.totalSpent();
-        assertLt(spent, owed, "stopped by the impact cap");
-        assertEq(address(sys.buybackBurn).balance, 0);
-        // the whole allocation was drawn; what the cap left unspent is back in the treasury, unallocated
-        assertEq(sys.treasury.owed(address(sys.buybackBurn)), 0);
+        uint256 unallocBefore = sys.treasury.unallocated();
+        sys.buyback.process(1);
+        uint256 spent = sys.buyback.totalSpent();
+        assertLt(spent, slice, "stopped by the impact cap");
+        assertEq(address(sys.buyback).balance, 0);
         assertEq(address(sys.treasury).balance, tBefore - spent);
-        assertEq(sys.treasury.unallocated(), owed - spent);
+        assertEq(sys.treasury.unallocated(), unallocBefore + slice - spent, "unspent back, unallocated");
     }
 
     function test_vaultShutdownToLiquidity() public {

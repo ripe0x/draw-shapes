@@ -87,8 +87,7 @@ contract GenesisRehearsal is ForkBase {
         vm.startPrank(keeper);
         try sys.game.sync(100) {} catch {}
         try sys.treasury.distribute() {} catch {}
-        try sys.buybackBurn.process(0) {} catch {}
-        try sys.buybackReward.process(0) {} catch {}
+        try sys.buyback.process(0) {} catch {}
         try sys.grailFund.process() {} catch {}
         vm.stopPrank();
     }
@@ -234,10 +233,12 @@ contract GenesisRehearsal is ForkBase {
         sys.farm.retireUnearned();
         _claimAll();
         uint256 earned;
+        uint256 deposited;
         for (uint256 e; e < 8; ++e) {
             earned += sys.schedule.allocationOf(e, 100_000_000 ether);
+            deposited += sys.farm.deposits(e);
         }
-        assertApproxEqAbs(claimedTotal, earned + sys.farm.totalDeposited(), 1e9, "only the first 8 epochs paid");
+        assertApproxEqAbs(claimedTotal, earned + deposited, 1e9, "only the first 8 epochs paid");
         assertEq(sys.farm.totalBurned(), 100_000_000 ether - earned + 10_000_000 ether - sys.farm.totalBonusPaid());
     }
 
@@ -259,16 +260,22 @@ contract GenesisRehearsal is ForkBase {
 
     function _secondGame() internal returns (FwaGame g2) {
         g2 = new FwaGame(
-            address(sys.timelock),
-            SHAPES,
-            SHAPE_PACKS,
-            FACTORY,
-            FWA_IMPL,
-            address(sys.vault),
-            address(sys.farm),
-            address(sys.treasury),
-            address(sys.keeperFund),
-            [address(sys.board), address(sys.pricing), address(sys.grail), address(sys.buyer)]
+            FwaGame.Config({
+                governance: address(sys.timelock),
+                shapes: SHAPES,
+                factory: FACTORY,
+                expectedImplementation: FWA_IMPL,
+                vault: address(sys.vault),
+                farm: address(sys.farm),
+                treasury: address(sys.treasury),
+                keeperFund: address(sys.keeperFund),
+                board: address(sys.board),
+                pricing: address(sys.pricing),
+                grail: address(sys.grail),
+                buyer: address(sys.buyer),
+                reserveTarget: cfg.reserveTarget,
+                maintenanceInterval: cfg.maintenanceInterval
+            })
         );
         uint256 eth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
         vm.deal(address(this), eth);
@@ -277,7 +284,6 @@ contract GenesisRehearsal is ForkBase {
         vm.startPrank(address(sys.timelock));
         sys.farm.addLedger(address(g2));
         sys.keeperFund.setPayer(address(g2), true);
-        sys.buyer.setCaller(address(g2), true);
         sys.grailFund.setGame(address(g2));
         sys.vault.setActiveGame(address(g2));
         vm.stopPrank();

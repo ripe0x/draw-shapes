@@ -119,7 +119,7 @@ abstract contract ForkBase is Test, LaunchConfig {
             if (id == 0) continue;
             (,,,, uint256 weight,,, IFWAPool.ListingStatus st) = pool.listings(id);
             if (st != IFWAPool.ListingStatus.Active) continue;
-            (, uint80 backing,,,,,) = sys.game.items(id);
+            (, uint80 backing,,,,) = sys.game.items(id);
             if (backing == wantBacking || wantBacking == 0) return prefix;
             prefix += weight;
         }

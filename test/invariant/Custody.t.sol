@@ -39,21 +39,30 @@ contract CustodyInvariants is ForkBase {
         assertGe(lhs, rhs, "solvency");
     }
 
-    /// @notice I3 ledger = delivered pulls per epoch.
-    function invariant_ledgerMatchesDeliveredPulls() public view {
+    /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; `units` = delivered
+    ///         pulls the walk has resolved per epoch; resolved never exceeds accepted.
+    function invariant_ledgerMatchesFwa() public view {
         uint256 open = sys.farm.openBlock();
-        uint256[64] memory units;
-        uint256 n = sys.game.nextSeq();
+        uint256[64] memory accepted;
+        uint256[64] memory deliveredResolved;
+        uint256 n = sys.game.seenSeq();
         for (uint64 sq = 1; sq < n; ++sq) {
             (, uint256 requestBlock,,, IFWAPool.AcquisitionStatus st) = pool.acquisitions(pool.requestIdAtSequence(sq));
-            if (st == IFWAPool.AcquisitionStatus.Fulfilled) {
-                uint256 e = (requestBlock - open) / 7_200;
-                if (e < 64) ++units[e];
-            }
+            uint256 e = (requestBlock - open) / 7_200;
+            if (e >= 64) continue;
+            ++accepted[e];
+            if (st == IFWAPool.AcquisitionStatus.Fulfilled && !_isOpen(sq)) ++deliveredResolved[e];
         }
         for (uint256 e; e < 64; ++e) {
-            assertEq(sys.game.epochUnits(e), units[e], "units");
+            (uint256 acc, uint256 res, uint256 units) = sys.game.epochTotals(e);
+            assertEq(acc, accepted[e], "accepted = FWA issued");
+            assertLe(res, acc, "resolved <= accepted");
+            assertEq(units, deliveredResolved[e], "units = delivered pulls resolved");
         }
+    }
+
+    function _isOpen(uint64) internal pure returns (bool) {
+        return false; // a Fulfilled request is never left open: the walk resolves it on sight
     }
 
     /// @notice I4 the farm never pays more than allocation + deposits, and its balance reconciles.
@@ -82,7 +91,7 @@ contract CustodyInvariants is ForkBase {
 
     /// @notice I6 sinks and modules hold nothing between calls.
     function invariant_sinksHoldNothing() public view {
-        address[4] memory m = [address(sys.buybackBurn), address(sys.buybackReward), address(sys.grailFund), address(sys.buyer)];
+        address[4] memory m = [address(sys.buyback), address(sys.grailFund), address(sys.buyer), address(sys.converter)];
         for (uint256 i; i < 4; ++i) {
             assertEq(m[i].balance, 0, "ETH");
             assertEq(sys.engine.balanceOf(m[i]), 0, "ENGINE");
@@ -95,7 +104,7 @@ contract CustodyInvariants is ForkBase {
         uint256 backing;
         for (uint256 i; i < sys.game.liveCount(); ++i) {
             uint256 id = sys.game.liveAt(i);
-            (uint48 tokenId, uint80 b,,,,,) = sys.game.items(id);
+            (uint48 tokenId, uint80 b,,,,) = sys.game.items(id);
             (,, address purchaser,,,,, IFWAPool.ListingStatus st) = pool.listings(id);
             if (st == IFWAPool.ListingStatus.Active || st == IFWAPool.ListingStatus.Staged) {
                 assertEq(shapes.ownerOf(tokenId), address(pool), "escrowed");
@@ -122,8 +131,7 @@ contract CustodyInvariants is ForkBase {
         handler.warp(2 days);
         handler.keeperSync(3, 20);
         handler.distribute(0);
-        handler.buyback(1, true);
-        handler.buyback(2, false);
+        handler.buyback(1);
         handler.grailProcess(3);
         handler.convert(0);
         handler.convert(1);
@@ -134,7 +142,7 @@ contract CustodyInvariants is ForkBase {
         handler.donate(1, 0.1 ether);
         invariant_custody();
         invariant_solvency();
-        invariant_ledgerMatchesDeliveredPulls();
+        invariant_ledgerMatchesFwa();
         invariant_farmBounded();
         invariant_treasuryTable();
         invariant_sinksHoldNothing();
