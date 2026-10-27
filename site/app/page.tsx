@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAccount, useReadContract, useWriteContract, usePublicClient } from "wagmi";
 import { deployment, lensAddresses } from "./lib/deployment";
 import { lensAbi, poolAbi } from "./lib/abi";
@@ -18,11 +18,30 @@ export default function Play() {
   const { data: market } = useReadContract({ address: deployment.lens, abi: lensAbi, functionName: "market", args: [lensAddresses], query: { enabled: deployment.deployed, refetchInterval: 15_000 } });
   const { data: refund } = useReadContract({ address: deployment.fwaPool, abi: poolAbi, functionName: "acquisitionRefundCredit", args: [address ?? "0x0000000000000000000000000000000000000000"], query: { enabled: deployment.deployed && !!address } });
   const { writeContract, data: hash, error, isPending } = useWriteContract();
+  const [quote, setQuote] = useState<{ fee: bigint; vrf: bigint } | undefined>();
+
+  // FWA's VRF fee scales with the transaction's gas price (FWACloneVRFService.requestFee reads tx.gasprice), so the
+  // quote is read at the current max fee per gas. FWA refunds anything sent above the exact cost.
+  async function quoteNow(n: number) {
+    if (!client) return undefined;
+    const { maxFeePerGas } = await client.estimateFeesPerGas();
+    const [fee, vrf, total] = await client.readContract({
+      address: deployment.fwaPool, abi: poolAbi, functionName: "quoteAcquisitionPrice", args: [BigInt(n)], gasPrice: maxFeePerGas,
+    } as Parameters<typeof client.readContract>[0]) as readonly [bigint, bigint, bigint];
+    return { fee, vrf, total };
+  }
+
+  useEffect(() => {
+    if (!deployment.deployed) return;
+    quoteNow(1).then((q) => q && setQuote({ fee: q.fee, vrf: q.vrf })).catch(() => setQuote(undefined));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, game?.inventoryVersion]);
 
   async function pull() {
     if (!address || !client) return;
-    // Quote with the pool's own view at send time; the version binds the purchase to the board the player saw.
-    const [fee, , total] = await client.readContract({ address: deployment.fwaPool, abi: poolAbi, functionName: "quoteAcquisitionPrice", args: [BigInt(count)] });
+    const q = await quoteNow(count);
+    if (!q) return;
+    const { fee, total } = q;
     const version = await client.readContract({ address: deployment.fwaPool, abi: poolAbi, functionName: "inventoryVersion" });
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
     if (count === 1) {
@@ -41,7 +60,8 @@ export default function Play() {
         During genesis every delivered pull earns ENGINE. Pulls made on FWA's own site count the same.</p>
       <NotDeployed>
         <div className="grid">
-          <div className="stat"><b>{eth(game ? game.quoteFee + game.quoteVrf : undefined, 5)}</b><span>ETH per pull</span></div>
+          <div className="stat"><b>{eth(quote?.fee ?? game?.quoteFee, 5)}</b><span>ETH per pull (prize draw)</span></div>
+          <div className="stat"><b>{eth(quote?.vrf, 5)}</b><span>+ VRF fee at current gas</span></div>
           <div className="stat"><b>{game ? String(game.pullsBooked) : "…"}</b><span>pulls booked</span></div>
           <div className="stat"><b>{market ? (market.gated ? "closed" : "open") : "…"}</b><span>public ENGINE buys</span></div>
           <div className="stat"><b>{pct(market?.feeBps)}</b><span>ENGINE swap fee</span></div>
@@ -62,6 +82,7 @@ export default function Play() {
           </div>
         ) : null}
         <p className="note">A pull costs more than the average prize is worth; the usual outcome is the smallest Shape.
+          FWA's VRF fee pays the oracle callback and rises with gas prices: pull when gas is cheap.
           Your prize arrives in your wallet when the VRF word lands (usually within a minute).</p>
       </NotDeployed>
     </>

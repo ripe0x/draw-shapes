@@ -12,7 +12,7 @@ routine, so what is tested is what is broadcast. Nobody but the owner broadcasts
 | Deploy gas | ~34M gas (measured on the anvil fork) | deploy wallet | during deploy |
 | `KEEPER_SEED` | 0.5 ETH recommended (docs/ECONOMICS.md section 4) | deploy wallet | during deploy (KeeperFund constructor) |
 | Opening capital | 3.0 ETH recommended: board 2.15 ETH incl. mint fees + reserve 0.75 + 0.1 | anyone, sent to PrizeVault | launch step 1 |
-| `LAUNCH_ETH` | 10 ETH recommended (docs/ECONOMICS.md section 6) | governance, through the timelock | launch step 2 |
+| `LAUNCH_ETH` | 5 ETH recommended (docs/ECONOMICS.md section 6) | governance, through the timelock | launch step 2 |
 
 The deploy wallet keeps nothing: postflight checks it holds no role and no ENGINE and that every `deployer()` is 0.
 

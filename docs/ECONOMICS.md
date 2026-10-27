@@ -13,10 +13,11 @@ results under stated assumptions, not forecasts of demand.
 | Markup | 300 bps | section 3 decision; covers keeper gas at ≈ 0.75 gwei (section 4) |
 | Reserve target | 0.75 ETH | adverse-sequence sim, P(shortfall) 0.05 % over 21 days at 300 pulls/day (section 5) |
 | Opening capital | 3.0 ETH (board 2.15 incl. mint fees + reserve 0.75 + 0.1) | sections 2 and 5 |
+| VRF fee (FWA's) | 1,500,000 gas × gas price × 1.3 per pull, paid by the player | FWACloneVRFService on the fork (section 8) |
 | Maintenance interval / list batch | 30 min / 20 | D25; batching is what makes the markup cover replacement gas |
 | Keeper | premium 20 %, basefee cap 30 gwei, tip cap 0.01, bounty 0.002 over 6 h, overhead 40k gas, target 0.5 ETH, floor 0.05 ETH | BUILD_PROMPT 4.6; floor from the amendment |
 | `KEEPER_SEED` | 0.5 ETH recommended | covers ~30 days of keeper shortfall at 100 pulls/day and 1 gwei (section 4) |
-| `LAUNCH_ETH` | 10 ETH recommended | section 6 |
+| `LAUNCH_ETH` | 5 ETH recommended | section 6 |
 | Buyback | 90 % of treasury; slice 0.05 ETH, 1 h spacing, 3 % impact cap, burn share 50 % | section 3 decision as amended |
 
 ## 2. Per-pull economics
@@ -120,22 +121,23 @@ The farm can sell up to 100M ENGINE into a pool that starts with 100M. Price dra
 
 | LAUNCH_ETH | farm sells | pulls (21 d) | max drawdown | end vs launch | pool ETH at end | owner mint fees |
 |---|---|---|---|---|---|---|
-| 5 | 100 % | 2,732 | 15 % | -14 % | 4.6 | 2.73 |
-| 5 | 50 % | 2,161 | 0 % (price rose) | +52 % | 6.2 | 2.16 |
-| 10 | 100 % | 3,663 | 40 % | -40 % | 7.8 | 3.66 |
-| 10 | 50 % | 2,513 | 2 % | -1 % | 9.9 | 2.51 |
-| 20 | 100 % | 5,999 | 49 % | -49 % | 14.2 | 6.00 |
-| 20 | 50 % | 3,704 | 21 % | -21 % | 17.7 | 3.70 |
-| 40 | 100 % | 11,092 | 52 % | -52 % | 27.6 | 11.09 |
-| 40 | 50 % | 6,661 | 28 % | -28 % | 34.0 | 6.66 |
+| 5 | 100 % | 2,183 | 21 % | -19 % | 4.5 | 2.18 |
+| 5 | 50 % | 2,100 | -43 % | +51 % | 6.1 | 2.10 |
+| 10 | 100 % | 2,471 | 47 % | -47 % | 7.3 | 2.47 |
+| 10 | 50 % | 2,106 | 7 % | -6 % | 9.7 | 2.11 |
+| 20 | 100 % | 3,386 | 58 % | -58 % | 12.9 | 3.39 |
+| 20 | 50 % | 2,427 | 30 % | -30 % | 16.8 | 2.43 |
+| 40 | 100 % | 5,732 | 63 % | -63 % | 24.4 | 5.73 |
+| 40 | 50 % | 3,660 | 39 % | -39 % | 31.3 | 3.66 |
 
 The farm can sell up to 100M ENGINE (genesis) into a pool that starts with 100M against `LAUNCH_ETH`. More launch
 ETH buys more farming (the same ENGINE realises more ETH, so more pulls are worth farming) and more owner mint fees,
 but it is protocol-owned and locked, and the price falls further in proportion when farmers sell everything.
-Recommendation: **10 ETH** if the owner's capital budget allows it (start price 1e-7 ETH per ENGINE; in the model
-a 40 % drawdown when farmers sell everything, about none when they sell half); 5 ETH if the acceptable drawdown is
-lower and the budget smaller; 20 ETH or more only if the owner wants farming to carry play and accepts a ~50 %
-drawdown.
+Recommendation: **5 ETH** (start price 5e-8 ETH per ENGINE). With FWA's VRF fee in every pull's cost, farming pays
+only at low gas, so extra launch ETH mostly becomes ETH that farmers sell into: going from 5 to 10 ETH adds about 13 %
+pulls but more than doubles the model drawdown (21 % → 47 % when farmers sell everything). 10 ETH is reasonable if
+the owner's budget is larger and a ~50 % drawdown is acceptable; 20 ETH or more only if the owner wants farming to
+carry play and accepts ~60 %.
 
 ## 7. 21-day runs
 
@@ -144,54 +146,57 @@ Organic pulls/day are players who play for prizes regardless of rewards; farm pu
 
 | LAUNCH_ETH | organic/day | gwei | pulls (21 d) | pulls/day avg | owner mint fees | treasury in | keeper: markup in / gas out | ENGINE burned | end price (1e-7 ETH) | start price | end pool ETH |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 5 | 50 | 1 | 2,273 | 108 | 2.27 | 0.96 | 0.90 / 1.36 | 6.9M | 0.35 | 0.50 | 4.2 |
-| 5 | 50 | 5 | 1,343 | 64 | 1.34 | 0.61 | 0.53 / 4.47 | 5.8M | 0.29 | 0.50 | 3.8 |
-| 5 | 150 | 1 | 3,438 | 164 | 3.44 | 1.38 | 1.35 / 1.94 | 9.4M | 0.55 | 0.50 | 5.2 |
+| 5 | 50 | 1 | 1,408 | 67 | 1.41 | 0.64 | 0.55 / 0.93 | 5.8M | 0.30 | 0.50 | 3.9 |
+| 5 | 50 | 5 | 1,050 | 50 | 1.05 | 0.50 | 0.41 / 3.75 | 5.5M | 0.28 | 0.50 | 3.8 |
+| 5 | 150 | 1 | 3,150 | 150 | 3.15 | 1.27 | 1.24 / 1.79 | 9.3M | 0.54 | 0.50 | 5.2 |
 | 5 | 150 | 5 | 3,150 | 150 | 3.15 | 1.27 | 1.24 / 8.97 | 9.3M | 0.54 | 0.50 | 5.2 |
 | 5 | 300 | 1 | 6,300 | 300 | 6.30 | 2.42 | 2.48 / 3.36 | 11.8M | 0.99 | 0.50 | 7.0 |
 | 5 | 300 | 5 | 6,300 | 300 | 6.30 | 2.42 | 2.48 / 16.82 | 11.8M | 0.99 | 0.50 | 7.0 |
-| 10 | 50 | 1 | 3,450 | 164 | 3.45 | 1.47 | 1.36 / 1.94 | 6.6M | 0.56 | 1.00 | 7.5 |
-| 10 | 50 | 5 | 1,762 | 84 | 1.76 | 0.84 | 0.69 / 5.52 | 4.8M | 0.44 | 1.00 | 6.7 |
-| 10 | 150 | 1 | 4,139 | 197 | 4.14 | 1.71 | 1.63 / 2.29 | 7.9M | 0.68 | 1.00 | 8.3 |
-| 10 | 150 | 5 | 3,227 | 154 | 3.23 | 1.37 | 1.27 / 9.17 | 7.5M | 0.64 | 1.00 | 8.0 |
-| 10 | 300 | 1 | 6,425 | 306 | 6.42 | 2.53 | 2.53 / 3.43 | 10.3M | 1.03 | 1.00 | 10.1 |
+| 10 | 50 | 1 | 1,889 | 90 | 1.89 | 0.89 | 0.74 / 1.17 | 4.9M | 0.45 | 1.00 | 6.7 |
+| 10 | 50 | 5 | 1,074 | 51 | 1.07 | 0.59 | 0.42 / 3.81 | 4.2M | 0.41 | 1.00 | 6.4 |
+| 10 | 150 | 1 | 3,273 | 156 | 3.27 | 1.38 | 1.29 / 1.86 | 7.5M | 0.64 | 1.00 | 8.0 |
+| 10 | 150 | 5 | 3,150 | 150 | 3.15 | 1.34 | 1.24 / 8.97 | 7.5M | 0.63 | 1.00 | 8.0 |
+| 10 | 300 | 1 | 6,300 | 300 | 6.30 | 2.48 | 2.48 / 3.36 | 10.2M | 1.02 | 1.00 | 10.1 |
 | 10 | 300 | 5 | 6,300 | 300 | 6.30 | 2.48 | 2.48 / 16.82 | 10.2M | 1.02 | 1.00 | 10.1 |
-| 20 | 50 | 1 | 5,986 | 285 | 5.99 | 2.54 | 2.36 / 3.21 | 6.6M | 1.01 | 2.00 | 14.2 |
-| 20 | 50 | 5 | 2,818 | 134 | 2.82 | 1.38 | 1.11 / 8.15 | 4.3M | 0.77 | 2.00 | 12.4 |
-| 20 | 150 | 1 | 6,179 | 294 | 6.18 | 2.61 | 2.43 / 3.30 | 6.8M | 1.05 | 2.00 | 14.5 |
-| 20 | 150 | 5 | 3,782 | 180 | 3.78 | 1.72 | 1.49 / 10.55 | 5.7M | 0.90 | 2.00 | 13.4 |
-| 20 | 300 | 1 | 7,620 | 363 | 7.62 | 3.12 | 3.00 / 4.02 | 8.2M | 1.28 | 2.00 | 16.0 |
-| 20 | 300 | 5 | 6,324 | 301 | 6.32 | 2.63 | 2.49 / 16.88 | 7.9M | 1.22 | 2.00 | 15.6 |
-| 40 | 50 | 1 | 11,092 | 528 | 11.09 | 4.71 | 4.37 / 5.75 | 6.6M | 1.91 | 4.00 | 27.6 |
-| 40 | 50 | 5 | 5,181 | 247 | 5.18 | 2.55 | 2.04 / 14.03 | 4.2M | 1.45 | 4.00 | 24.0 |
-| 40 | 150 | 1 | 11,092 | 528 | 11.09 | 4.71 | 4.37 / 5.75 | 6.6M | 1.91 | 4.00 | 27.6 |
-| 40 | 150 | 5 | 5,560 | 265 | 5.56 | 2.68 | 2.19 / 14.97 | 4.6M | 1.50 | 4.00 | 24.5 |
-| 40 | 300 | 1 | 11,561 | 551 | 11.56 | 4.87 | 4.55 / 5.98 | 6.9M | 1.99 | 4.00 | 28.2 |
-| 40 | 300 | 5 | 7,298 | 348 | 7.30 | 3.29 | 2.87 / 19.30 | 5.8M | 1.73 | 4.00 | 26.3 |
+| 20 | 50 | 1 | 3,077 | 147 | 3.08 | 1.48 | 1.21 / 1.76 | 4.5M | 0.78 | 2.00 | 12.5 |
+| 20 | 50 | 5 | 1,242 | 59 | 1.24 | 0.80 | 0.49 / 4.22 | 3.1M | 0.67 | 2.00 | 11.6 |
+| 20 | 150 | 1 | 3,946 | 188 | 3.95 | 1.78 | 1.55 / 2.19 | 5.7M | 0.91 | 2.00 | 13.5 |
+| 20 | 150 | 5 | 3,150 | 150 | 3.15 | 1.48 | 1.24 / 8.97 | 5.4M | 0.87 | 2.00 | 13.2 |
+| 20 | 300 | 1 | 6,378 | 304 | 6.38 | 2.65 | 2.51 / 3.40 | 7.9M | 1.22 | 2.00 | 15.6 |
+| 20 | 300 | 5 | 6,300 | 300 | 6.30 | 2.62 | 2.48 / 16.82 | 7.9M | 1.21 | 2.00 | 15.6 |
+| 40 | 50 | 1 | 5,687 | 271 | 5.69 | 2.73 | 2.24 / 3.06 | 4.5M | 1.48 | 4.00 | 24.4 |
+| 40 | 50 | 5 | 1,776 | 85 | 1.78 | 1.30 | 0.70 / 5.55 | 2.6M | 1.22 | 4.00 | 22.1 |
+| 40 | 150 | 1 | 5,985 | 285 | 5.98 | 2.84 | 2.36 / 3.21 | 4.7M | 1.53 | 4.00 | 24.7 |
+| 40 | 150 | 5 | 3,242 | 154 | 3.24 | 1.82 | 1.28 / 9.20 | 3.8M | 1.38 | 4.00 | 23.5 |
+| 40 | 300 | 1 | 7,582 | 361 | 7.58 | 3.40 | 2.99 / 4.00 | 5.9M | 1.75 | 4.00 | 26.4 |
+| 40 | 300 | 5 | 6,300 | 300 | 6.30 | 2.92 | 2.48 / 16.82 | 5.6M | 1.69 | 4.00 | 26.0 |
 
 
 ## 8. Farming break-even
 
+Rewards worth more than this per pull (in ETH at the price farmers sell) attract farming. The VRF fee is FWA's, charged per pull in proportion to the transaction's gas price.
 
-Rewards worth more than this per pull (in ETH at the price farmers sell) attract farming.
+| basefee | VRF fee / pull | acquire gas / pull | all-in ticket | loss / pull (ETH) | ENGINE / pull to break even at 1e-7 ETH |
+|---|---|---|---|---|---|
+| 0.5 gwei | 0.00098 | 0.00029 | 0.01517 | 0.00334 | 33,376 |
+| 1 gwei | 0.00195 | 0.00058 | 0.01615 | 0.00461 | 46,051 |
+| 5 gwei | 0.00975 | 0.00292 | 0.02395 | 0.01474 | 147,450 |
+| 20 gwei | 0.03900 | 0.01170 | 0.05320 | 0.05277 | 527,698 |
 
-| basefee | loss / pull (ETH) | ENGINE / pull to break even at 1e-7 ETH |
-|---|---|---|
-| 1 gwei | 0.00266 | 26,551 |
-| 5 gwei | 0.00499 | 49,950 |
-| 20 gwei | 0.01377 | 137,698 |
+The brief's reference figures (0.0021 / 0.0029 / 0.0059 ETH at 1 / 5 / 20 gwei) leave out FWA's VRF fee, which is
+`1,500,000 × gas price × 1.3` per pull (`FWACloneVRFService.requestFee`; "VRF request fee 0 today" holds only for a
+zero gas price). With it, and the measured gas of a single `acquire`, a pull loses 0.0046 ETH at 1 gwei and 0.0147 at
+5 gwei, so farming genesis rewards needs cheap gas: above a few gwei almost no pull is worth farming and play comes
+from people who want the prizes. A farmer using `acquireBatch` saves part of the acquire gas, not the VRF fee.
 
-The brief's reference figures (0.0021 / 0.0029 / 0.0059 ETH at 1 / 5 / 20 gwei) are for the reference board without
-markup and a cheaper per-pull gas figure. Here the loss includes the 3 % markup and the measured gas of a single
-`acquire` (585k: FWA's VRF request, escrow and sequencing), which dominates at 5 and 20 gwei. A farmer using
-`acquireBatch` of 5 pays less gas per pull, so these figures are an upper bound on the farmer's loss.
 
 ## Honest baseline (as the amended brief asks)
 
-- A pull costs 0.01420 ETH. The common outcome (95.5 % of pulls) is a 0.01 ETH Shape: the player loses 30 % of the ticket.
+- A pull costs 0.01420 ETH plus FWA's VRF fee (0.00195 ETH at 1 gwei, 0.0097 at 5 gwei). The common outcome (95.5 % of pulls) is a 0.01 ETH Shape: at 1 gwei the player loses 38 % of what they paid (30 % of the ticket alone).
 - Treasury revenue from the game is the margin line, 0.000338 ETH per pull; 90 % of it buys ENGINE back: about 0.00030 ETH per pull before hook fees.
 - The owner's mint fees, 0.00100 ETH per pull, are 3.0x the treasury's game revenue.
 - At 300 pulls/day that is about 0.091 ETH/day of buyback from the game, plus whatever the 3 % hook fee brings.
+
 
 ## 9. Model limits
 

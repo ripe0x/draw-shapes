@@ -484,6 +484,6 @@ choices the brief left open are in `docs/IMPLEMENTOR_DECISIONS.md`.
 60. **Later, not now** (decided 2026-10-26). Pulls paid in ENGINE through our site; a second season from the reserve;
     a "buy and stake FWA" sink; the collection-coin machine. Nothing designed beyond the module seams.
 
-Open for the owner after the build (see the final report): `LAUNCH_ETH` (recommended 10), opening capital
+Open for the owner after the build (see the final report): `LAUNCH_ETH` (recommended 5), opening capital
 (recommended 3 ETH), `KEEPER_SEED` (recommended 0.5 ETH), whether to add Packs (needs a new game, D3), and when to
 raise the timelock delay.

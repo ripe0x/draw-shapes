@@ -248,32 +248,39 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         _tip(gasStart, work, false);
     }
 
-    /// @notice Retirement, step by step: settle and book, then withdraw and burn every prize, then return
-    ///         everything to the vault. Anyone may call; tipped. Works while the factory is withdraw-only.
+    /// @notice Retirement, step by step: settle and book, then withdraw and burn every prize FWA still holds for
+    ///         us, then return everything to the vault. A prize stuck in FWA's delivery quarantine does not block it:
+    ///         later calls sweep whatever it yields (proceeds, or the recovered prize burned) to the vault. Anyone may
+    ///         call; tipped (retirement may spend the keeper floor). Works while the factory is withdraw-only.
     function retireStep(uint256 maxCount) external nonReentrant returns (uint256 work) {
         uint256 gasStart = gasleft();
-        if (!retiring || retired) revert NotRetiring();
+        if (!retiring) revert NotRetiring();
         bool caughtUp = true;
         if (address(pool) != address(0)) {
             work = _advance(maxCount);
-            caughtUp = pool.unsettledAcquisitionCount() == 0 && seenSeq > pool.lastIssuedSequence() && _open.length == 0;
-            if (caughtUp && _live.length != 0) work += _withdrawSome();
+            caughtUp = pool.unsettledAcquisitionCount() == 0 && seenSeq > pool.lastIssuedSequence();
         }
+        uint256 left;
+        if (caughtUp && !retired) (work, left) = (work + _withdrawSome(), _withdrawable());
         while (_relist.length != 0) {
             uint256 id = _relist[_relist.length - 1];
             _relist.pop();
             _burnItem(id);
             ++work;
         }
-        if (caughtUp && _live.length == 0) {
-            retired = true;
-            uint256 amount = address(this).balance;
+        uint256 amount = address(this).balance;
+        if (caughtUp && left == 0 && (!retired || amount != 0)) {
             grailReserve = 0;
             pendingMarkup = 0;
             pendingMargin = 0;
             replacementsOwed = 0;
-            vault.repay{value: amount}(true);
-            emit Retired(amount);
+            if (!retired) {
+                retired = true;
+                vault.repay{value: amount}(true);
+                emit Retired(amount);
+            } else {
+                SafeTransferLib.forceSafeTransferETH(address(vault), amount); // a late settlement after retirement
+            }
             ++work;
         }
         _tip(gasStart, work, true);
@@ -565,18 +572,33 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         items[listingId].live = false;
     }
 
-    /// @dev Withdraws up to MAX_LIST_BATCH live listings and burns them for their backing.
+    /// @dev Withdraws up to MAX_LIST_BATCH listings FWA still holds as Active or Staged and burns them for backing.
     function _withdrawSome() internal returns (uint256 n) {
-        n = _live.length < MAX_LIST_BATCH ? _live.length : MAX_LIST_BATCH;
-        uint256[] memory ids = new uint256[](n);
-        for (uint256 i; i < n; ++i) {
-            ids[i] = _live[_live.length - 1 - i];
+        uint256[] memory ids = new uint256[](MAX_LIST_BATCH);
+        for (uint256 i = _live.length; i != 0 && n < MAX_LIST_BATCH; --i) {
+            if (_withdrawableListing(_live[i - 1])) ids[n++] = _live[i - 1];
+        }
+        if (n == 0) return 0;
+        assembly ("memory-safe") {
+            mstore(ids, n)
         }
         pool.withdrawListingsTo(ids, address(this));
         for (uint256 i; i < n; ++i) {
             _removeLive(ids[i]);
             _burnItem(ids[i]);
         }
+    }
+
+    /// @dev Live listings FWA still holds as Active or Staged (others are in delivery quarantine).
+    function _withdrawable() internal view returns (uint256 n) {
+        for (uint256 i; i < _live.length; ++i) {
+            if (_withdrawableListing(_live[i])) ++n;
+        }
+    }
+
+    function _withdrawableListing(uint256 id) internal view returns (bool) {
+        (,, IFWAPool.ListingStatus st) = _listing(id);
+        return st == IFWAPool.ListingStatus.Active || st == IFWAPool.ListingStatus.Staged;
     }
 
     function _burnItem(uint256 listingId) internal {

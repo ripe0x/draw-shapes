@@ -18,7 +18,7 @@
 - Use `forge test --match-path <affected-test-file>` for changed behavior. Keep Solidity 0.8.28, legacy codegen (no
   `via_ir` for any contract), remappings and dependency pins in `foundry.toml`; fork tests pin `FORK_BLOCK`
   (26,279,000) and read `MAINNET_RPC_URL` (an archive endpoint). Check deployed sizes (`forge build --sizes --skip test`)
-  when runtime code changes; FwaGame has ~3.3 KB of headroom.
+  when runtime code changes; FwaGame has ~3 KB of headroom.
 - Release gates: real Shapes, FWA and the v4 PoolManager on the pinned fork; unit, fork, invariant (custody stays in CI)
   and the genesis rehearsal; gas receipts (`test/fork/Gas.t.sol --isolate` → `docs/receipts/gas.json`); Sepolia
   simulation (everything except FWA).

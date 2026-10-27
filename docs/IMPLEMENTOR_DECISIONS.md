@@ -189,7 +189,7 @@ only when a full batch (`listBatch`, launch 20) is waiting or `maintenanceInterv
 measured 23.1 KB, then failed with stack-too-deep (it had been compiled through a via-ir profile that the
 `lib/draw-packs` restriction pulled in; that restriction is gone since nothing deploys Draw Packs from source).
 To get headroom: constructor arguments in a struct, wide FWA tuples read through small helpers, conversion moved
-to the Converter module, Pack minting removed (D3), smaller event payloads. FwaGame is 21,223 bytes (3,353 bytes
+to the Converter module, Pack minting removed (D3), smaller event payloads. FwaGame is 21,495 bytes (3,081 bytes
 under EIP-170). Lowering optimizer runs saved under 200 bytes and was not used.
 
 **D27. Exempt senders.** The swap policy exempts `EngineBuyer` (callable only by the Converter and the Buyback)
@@ -203,3 +203,17 @@ deployment page. This build verified on-chain at the pinned block (`implementati
 `betaAccess`, `poolCreationEnabled`, VRF service, `inventoryChangeCooldown` 0) and against the vendored verified
 source; it did not consult FWA's site. The deploy script refuses if `implementation()` differs from the pinned
 value.
+
+**D29. FWA's VRF fee is not zero.** The brief's fact table says "VRF request fee 0 today". The fee is
+`serviceGasEstimate × tx.gasprice × (1 + serviceMarginBps) + serviceFlatWei` (`FWACloneVRFService.requestFee`; on the
+fork 1,500,000 gas, 3,000 bps, 0), so it reads 0 only in an `eth_call` with gas price 0. A real pull pays about
+0.00195 ETH at 1 gwei (14 % on top of the 0.0142 ticket) and 0.0098 at 5 gwei. Consequences: the farming break-even
+nearly doubles at 1 gwei; the site quotes at the current max fee per gas and shows the VRF fee separately (FWA refunds
+any excess); the sims include it; `LAUNCH_ETH` is recommended at 5 ETH instead of 10 (docs/ECONOMICS.md section 6).
+Nothing in our contracts can change it; it goes to FWA's VRF service, not to the game.
+
+**D30. A delivery stuck forever cannot block retirement.** Found in review after the amendment: the first amended
+`retireStep` waited for the open set to empty, so a delivery that keeps failing while its purchaser never claims the
+refund would have held the vault's capital forever. Retirement now withdraws only listings FWA still holds as Active
+or Staged, completes without a quarantined prize, and later `retireStep` calls sweep whatever that prize eventually
+yields (owner proceeds, or the recovered Shape burned) to the vault.

@@ -42,7 +42,7 @@ Holders (no upgrade path): `PrizeVault`, `FwaGame`, `GenesisFarm`, `Treasury`, `
 `EngineBuyer`, `Converter`, `EngineRenderer`, the sinks `Buyback` and `GrailFund`. Read-only: `Lens`.
 Deploy helper: `FwaFeeBuyer`. Shared base: `Governed` (immutable `governance`, one-shot `wire` by the deployer).
 
-Runtime sizes (legacy codegen, optimizer 200): FwaGame 21,223; GenesisFarm 10,070; Lens 10,806;
+Runtime sizes (legacy codegen, optimizer 200): FwaGame 21,495; GenesisFarm 10,070; Lens 10,806;
 ProtocolLiquidity 8,578; EngineHook 5,308; EngineBuyer 4,190; KeeperFund 4,132; Treasury 3,855; Converter 3,489;
 Buyback 3,497; EngineToken 2,940; PrizeVault 2,787 bytes. All under 24,576.
 
@@ -90,9 +90,10 @@ Treasury, KeeperFund, the four modules, `reserveTarget`, `maintenanceInterval`).
   mint and list it; reprice at windows from `GrailPolicy.grailPrice(backing, pullsSinceListed)`. Hard bounds:
   price ≥ 50 % of backing (`MIN_GRAIL_PRICE_BPS`), win probability ≤ 10 % (`MAX_GRAIL_PROB_BPS`).
 - Retirement: `retire()` (vault only) retires the FWA pool; `retireStep(maxCount)` anyone, tipped (may spend the
-  keeper floor): advance; once FWA has nothing unsettled, every sequence is seen and nothing is open, withdraw up to
-  20 listings per call to itself and burn them for backing; then repay the whole balance to the vault (`final`).
-  Works while the factory is `globalWithdrawOnly` (tested).
+  keeper floor): advance; once FWA has nothing unsettled and every sequence is seen, withdraw up to 20 listings FWA
+  still holds as Active or Staged per call and burn them for backing; then repay the whole balance to the vault
+  (`final`). A prize stuck in FWA's delivery quarantine does not block this; later calls sweep whatever it yields to
+  the vault (D30). Works while the factory is `globalWithdrawOnly` (tested).
 - Governance: `setModule("board"|"pricing"|"grail"|"buyer", addr)`; `setCapital(reserveTarget, maintenanceInterval)`
   with `reserveTarget ∈ [2 × max board backing, 1,000 ETH]`, `maintenanceInterval ≤ 1 day`.
 - Hard bounds: board ≤ 200 rows (`MAX_BOARD`), ≤ 20 listings per window (`MAX_LIST_BATCH`), markup ≤ 500 bps.

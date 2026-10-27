@@ -519,6 +519,28 @@ contract GameForkTest is ForkBase {
 
     // ------------------------------------------------------------------ retirement
 
+    function test_stuckDeliveryDoesNotBlockRetirement() public {
+        (, uint256 listingId) = _failDelivery(alice);
+        vm.prank(address(sys.timelock));
+        sys.vault.retireGame();
+        vm.roll(block.number + 40);
+        for (uint256 i; i < 20 && !sys.game.retired(); ++i) {
+            sys.game.retireStep(50);
+        }
+        assertTrue(sys.game.retired(), "retired with a prize still in delivery quarantine");
+        assertEq(sys.vault.activeGame(), address(0));
+        assertEq(sys.game.liveCount(), 1, "only the quarantined prize remains");
+        // a week later the purchaser takes the refund; the next step recovers the Shape, burns it and sweeps it
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(alice);
+        pool.refundFailedDelivery(listingId);
+        uint256 vaultBefore = address(sys.vault).balance;
+        sys.game.retireStep(10);
+        assertEq(address(sys.vault).balance - vaultBefore, 0.01 ether, "the recovered prize's backing reaches the vault");
+        assertEq(address(sys.game).balance, 0);
+        assertEq(sys.game.liveCount(), 0);
+    }
+
     function test_retireReturnsEverythingToVault() public {
         _retire(false);
     }

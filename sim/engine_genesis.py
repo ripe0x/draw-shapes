@@ -27,6 +27,9 @@ GAS = json.load(open(os.path.join(ROOT, "docs", "receipts", "gas.json")))
 
 MINT_FEE = 0.001
 EDGE = 0.05
+# FWA's VRF service charges serviceGasEstimate × tx.gasprice × (1 + serviceMarginBps) per pull
+# (FWACloneVRFService.requestFee; read on the fork: 1,500,000 gas, 3,000 bps, flat 0).
+VRF_GAS = 1_500_000 * 1.3
 BOARDS = {
     "shapes-only launch (80x0.01, 15x0.05, 5x0.1)": [(80, 0.01, 1), (15, 0.05, 1), (5, 0.1, 1)],
     "reference with packs (62x0.01, 26x0.02P, 7x0.03P, 4x0.05, 1x0.1)": [(62, 0.01, 1), (26, 0.02, 2), (7, 0.03, 3), (4, 0.05, 1), (1, 0.1, 1)],
@@ -96,7 +99,8 @@ def run(launch_eth=10.0, gwei=1.0, organic=100, markup=0.03, board="shapes-only 
     eco = board_economics(BOARDS[board], markup)
     g = gwei * 1e-9
     acquire_gas = GAS["acquire"] * g
-    loss = eco["price"] - eco["backing"] + acquire_gas  # a pull's all-in loss to a player (prize at backing)
+    vrf = VRF_GAS * g
+    loss = eco["price"] - eco["backing"] + acquire_gas + vrf  # a pull's all-in loss to a player (prize at backing)
     pool = Pool(launch_eth, FLOAT)
     treasury = 0.0
     # 48 h pre-market: outside buying, buys allowed (anti-snipe ignored after the first hour)
@@ -122,7 +126,7 @@ def run(launch_eth=10.0, gwei=1.0, organic=100, markup=0.03, board="shapes-only 
         # pulls pay the pool; owner (operator) earns the replacement mint fees
         out["pulls"] += pulls
         out["mint_fees"] += pulls * eco["mint"]
-        out["player_eth_in"] += pulls * eco["price"]
+        out["player_eth_in"] += pulls * (eco["price"] + vrf)
         out["keeper_income"] += pulls * eco["markup"]
         batches = max(1.0, pulls / batch)
         out["keeper_cost"] += (batches * first + (pulls - batches) * extra) * g
@@ -190,13 +194,18 @@ def main():
         ("E[mint fees] (owner)", lambda r: f"{r['mint']:.5f}"), ("markup line (keeper)", lambda r: f"{r['markup']:.6f}"),
         ("margin line (treasury)", lambda r: f"{r['margin']:.6f}"), ("FWA", lambda r: f"{r['fwa']:.6f}")]))
 
-    L.append("## Farming break-even: a pull's all-in loss (price − E[backing] + acquire gas)\n")
+    L.append("## Farming break-even: a pull's all-in loss (price + VRF fee − E[backing] + acquire gas)\n")
     be = []
-    for gw in (1, 5, 20):
+    for gw in (0.5, 1, 5, 20):
         e = board_economics(BOARDS["shapes-only launch (80x0.01, 15x0.05, 5x0.1)"], 0.03)
-        be.append(dict(g=gw, loss=e["price"] - e["backing"] + GAS["acquire"] * gw * 1e-9))
-    L.append("Rewards worth more than this per pull (in ETH at the price farmers sell) attract farming.\n")
-    L.append(table(be, [("basefee", lambda r: f"{r['g']} gwei"), ("loss / pull (ETH)", lambda r: f"{r['loss']:.5f}"),
+        vrf = VRF_GAS * gw * 1e-9
+        gas = GAS["acquire"] * gw * 1e-9
+        be.append(dict(g=gw, vrf=vrf, gas=gas, loss=e["price"] - e["backing"] + gas + vrf, ticket=e["price"] + vrf))
+    L.append("Rewards worth more than this per pull (in ETH at the price farmers sell) attract farming. The VRF fee "
+             "is FWA's, charged per pull in proportion to the transaction's gas price.\n")
+    L.append(table(be, [("basefee", lambda r: f"{r['g']} gwei"), ("VRF fee / pull", lambda r: f"{r['vrf']:.5f}"),
+                        ("acquire gas / pull", lambda r: f"{r['gas']:.5f}"), ("all-in ticket", lambda r: f"{r['ticket']:.5f}"),
+                        ("loss / pull (ETH)", lambda r: f"{r['loss']:.5f}"),
                         ("ENGINE / pull to break even at 1e-7 ETH", lambda r: f"{r['loss'] / 1e-7:,.0f}")]))
 
     first, extra = keeper_gas_per_pull()
@@ -367,9 +376,12 @@ def amended_sections():
     items = [(c, b + MINT_FEE * k, b) for c, b, k in SHAPES_BOARD]
     w = [c / (k * 1.03) for c, k, _ in items]
     p_small = w[0] / sum(w)
+    vrf1 = VRF_GAS * 1e-9
     L.append("## Honest baseline\n")
-    L.append(f"- A pull costs {e['price']:.5f} ETH. The common outcome ({100 * p_small:.1f} % of pulls) is a 0.01 ETH Shape: "
-             f"the player loses {100 * (1 - 0.01 / e['price']):.0f} % of the ticket.")
+    L.append(f"- A pull costs {e['price']:.5f} ETH plus FWA's VRF fee ({vrf1:.5f} ETH at 1 gwei, {5 * vrf1:.4f} at 5 gwei). "
+             f"The common outcome ({100 * p_small:.1f} % of pulls) is a 0.01 ETH Shape: at 1 gwei the player loses "
+             f"{100 * (1 - 0.01 / (e['price'] + vrf1)):.0f} % of what they paid ({100 * (1 - 0.01 / e['price']):.0f} % of the ticket "
+             "alone).")
     L.append(f"- Treasury revenue from the game is the margin line, {e['margin']:.6f} ETH per pull; 90 % of it buys "
              f"ENGINE back: about {0.9 * e['margin']:.5f} ETH per pull before hook fees.")
     L.append(f"- The owner's mint fees, {e['mint']:.5f} ETH per pull, are {e['mint'] / e['margin']:.1f}x the treasury's game "
