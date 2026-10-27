@@ -251,7 +251,7 @@ expected replacement cost `C = base / (1 + markup)`, not of the prize won: price
 0.03C, expected margin 0.04625C. It is accrued as an expense, paid to KeeperFund once replacements are covered, and
 KeeperFund's overflow above its 0.5 ETH target returns to the game (`returnOps`), reducing the net expense, so an
 operating reserve is treated the same way going in and coming out. Measured on the fork (`test_operatingAllocation
-AgainstMeasuredKeeperGas`): it pays the keeper gas of a sync per 10 pulls up to a 2.12 gwei base fee. Above that, tips
+AgainstMeasuredKeeperGas`): it pays the keeper gas of a sync per 10 pulls up to about a 1.6 gwei base fee (1.60 to 1.66 gwei, measured with each call its own transaction; warm-storage runs read 2.1). Above that, tips
 are capped by what KeeperFund holds and keepers wait for cheaper blocks; settlement never depends on tips.
 
 **D34. Genesis farm rebuilt: ticket ETH, two caps, fixed end.** Weight is eligible ticket ETH: the FWA fee escrowed by

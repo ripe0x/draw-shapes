@@ -423,7 +423,7 @@ def main():
       f"further pull (booking plus the replacement's mint and listing). The operating allocation, "
       f"{e100['ops']:.6f} ETH per pull, pays that up to a base fee of about "
       f"{e100['ops'] / SYNC_PER_PULL / 1.2 * 1e9:.2f} gwei with the 20% tip premium "
-      f"(fork measurement: break-even 2.12 gwei, test/fork/Accounting.t.sol).\n")
+      f"(fork measurement with cold storage per call: break-even about 1.6 gwei, test/fork/Accounting.t.sol).\n")
 
     w("## 4. The game over 60 days, no trading fees\n")
     w(f"Capital = board cost + reserve target ({RESERVE:g} ETH). Keeper at a {BASEFEE:g} gwei base fee. 40 seeded "

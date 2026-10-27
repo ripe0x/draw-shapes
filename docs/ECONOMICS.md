@@ -85,9 +85,10 @@ and an FWA listing). The player also pays FWA's VRF fee (1.95M gas-equivalents Ã
 
 The allocation is 3% of C (C = the quote's expected replacement cost), 0.000820 ETH per pull. Measured on the fork
 (`test_operatingAllocationAgainstMeasuredKeeperGas`: 120 pulls, a sync per 10 pulls with replacements, 12 syncs,
-48.7M gas): it covers the keeper gas plus overhead up to a **2.12 gwei** base fee. In the 60-day models at 1 gwei,
+62.3M gas, each call its own transaction with cold storage as on mainnet): it covers the keeper gas plus overhead up
+to about a **1.6 gwei** base fee (1.66 locally, 1.60 in CI on forge 1.8.6). In the 60-day models at 1 gwei,
 keeper cost (gas Ã— 1.2 premium + bounty) was 1.9 to 2.7 ETH per 100 ETH of turnover against an allocation of 2.72, and
-KeeperFund never ran short. Above about 2 gwei the allocation does not pay for every sync. Tips are capped by what
+KeeperFund never ran short. Above about 1.6 gwei the allocation does not pay for every sync. Tips are capped by what
 KeeperFund holds, keepers wait for cheaper blocks (the bounty ramps over 6 h), and settlement never waits on tips.
 Unspent allocation above KeeperFund's 0.5 ETH target returns to the game and raises realised profit.
 

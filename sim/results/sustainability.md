@@ -61,7 +61,7 @@ FWA allows at most 5 requests per transaction and, at the pinned block, 10 outst
 | 5 gwei | 0.00975 ETH | 0.03988 ETH | 66.02% |
 | 20 gwei | 0.03900 ETH | 0.06913 ETH | 38.08% |
 
-Keeper gas: a sync costs 1,233,895 gas for its first pull and about 451,889 gas per further pull (booking plus the replacement's mint and listing). The operating allocation, 0.000820 ETH per pull, pays that up to a base fee of about 1.51 gwei with the 20% tip premium (fork measurement: break-even 2.12 gwei, test/fork/Accounting.t.sol).
+Keeper gas: a sync costs 1,233,895 gas for its first pull and about 451,889 gas per further pull (booking plus the replacement's mint and listing). The operating allocation, 0.000820 ETH per pull, pays that up to a base fee of about 1.51 gwei with the 20% tip premium (fork measurement with cold storage per call: break-even about 1.6 gwei, test/fork/Accounting.t.sol).
 
 ## 4. The game over 60 days, no trading fees
 

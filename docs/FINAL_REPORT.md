@@ -72,7 +72,7 @@ Each was checked against the vendored source, the fork, or both.
 - `setBool` does not bump FWA's inventory version. A pool has at most 10 outstanding VRF requests. A failed delivery can
   stay pending forever; only the purchaser can refund it (docs/external/fwa-v2.md section 18).
 - VRF fee: 1.5M gas × gas price × 1.3 per pull, paid by the player (0.00195 ETH at 1 gwei).
-- Keeper cost: the operating allocation pays a sync per 10 pulls up to 2.12 gwei (fork measurement).
+- Keeper cost: the operating allocation pays a sync per 10 pulls up to about 1.6 gwei (fork measurement with each call its own transaction, as on mainnet).
 - FWA is practical, so no venue change was made. The mint-after-result alternative was not needed and is not built.
 
 ## Recommended launch configuration and capital
@@ -165,7 +165,7 @@ From docs/ECONOMICS.md.
 
 - **No audit.** The accounting and admission code is new and should be reviewed independently.
 - **FwaGame size.** FwaGame is 23,489 bytes, about 1.1 KB under the limit; further features need another module split.
-- **Keeper gas.** At base fees above about 2 gwei the operating allocation does not pay for every sync. Keepers wait;
+- **Keeper gas.** At base fees above about 1.6 gwei the operating allocation does not pay for every sync. Keepers wait;
   settlement does not.
 - **Buyback price check.** It defeats a same-block sandwich, not a manipulation held across a block boundary; the slice
   and the impact cap bound that.
