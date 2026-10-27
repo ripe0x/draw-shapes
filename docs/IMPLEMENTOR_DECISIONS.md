@@ -4,9 +4,11 @@ A running list of every decision the build brief left open, with what was chosen
 plus everything found to contradict the brief. The owner reviews this once at the end. Numbering is stable;
 an entry the build later changed is marked **Revised** and keeps its number.
 
-Sources: the task text the build was issued with, `docs/BUILD_PROMPT.md` at 4d3e811 (module seams), and the
+Sources: the task text the build was issued with, `docs/BUILD_PROMPT.md` at 4d3e811 (module seams), the
 amendment ecdc9eb ("amend the build prompt after design review", committed to the branch while the build was
-running). The task text says it is authoritative where they differ; see D2 for how the amendment was handled.
+running), and the sustainability follow-up to PR #9 (D31 onward), which wins over older instructions on revenue
+routing, ordinary prizes, farming and post-genesis rewards. Entries it replaced are marked **Superseded** or
+**Removed** and kept for the record.
 
 ## Process and sources
 
@@ -31,7 +33,7 @@ room for indirection it does not need (D26). Not taken: `scheduleSeason(ledger, 
 to a ledger (D11 makes all ledgers share one clock, so there is nothing to collide). Not taken:
 `convertPack` (D3).
 
-**D3. Draw Packs. Revised.** `0xf21514b0…` on mainnet is "Shape Packs" with `MIN_PACK_VALUE = 0.03 ETH`
+**D3. Draw Packs. Revised; Pack rows now rejected by BoardPolicy (D35).** `0xf21514b0…` on mainnet is "Shape Packs" with `MIN_PACK_VALUE = 0.03 ETH`
 (3 units), not the two-unit Draw Packs variant (checked on the fork: `MIN_PACK_VALUE()` = 3e16). Per the brief,
 the board is Shapes only until the owner decides. FwaGame lists Shapes only: a Pack row in the board policy is
 skipped, never minted. An earlier version of FwaGame minted and listed Packs; it was removed to keep FwaGame
@@ -62,7 +64,7 @@ sequence once and counts it in the epoch of its `requestBlock`. An epoch is fina
 passed, every request issued in it has been seen, and `accepted == resolved`. `epochTotals(e)` returns
 `(accepted, resolved, units)`.
 
-**D7. Revenue is booked at expectation; variance stays with the house.** The owner proceeds of a pull are fixed
+**D7. Revenue is booked at expectation; variance stays with the house. Superseded by D32.** The owner proceeds of a pull are fixed
 by FWA from the pool's expected value at request time, but the prize is random, so `proceeds − backing − mint
 line` is negative for every large prize and cannot be routed. Per booked capture FwaGame computes, from the
 escrowed `paid` and the live `edgeBps`: `base = paid × 10,000 / (10,000 + edgeBps)`, `proceeds = paid − (paid −
@@ -96,23 +98,23 @@ cannot be one FwaGame. GenesisFarm holds `openBlock` (set once by the first regi
 sums units over up to four registered ledgers; every game derives epochs from the farm's `openBlock`. Ledgers
 are added, never removed (removal would change past rewards). Tested with a second game in the rehearsal.
 
-**D12. Taper fixed on 21 epochs; schedule immutable. Revised.** `EmissionSchedule.allocationOf(e)` is the
+**D12. Taper fixed on 21 epochs; schedule immutable. Superseded by D34.** `EmissionSchedule.allocationOf(e)` is the
 1.5× → 0.5× taper over the original 21 epochs regardless of shortening; `shorten` cuts the tail and burns the
 cut epochs at once (re-tapering would change epochs already played). The schedule address is immutable in the
 farm, so a final epoch's pot can no longer change: deposits land only in the current epoch, rollovers only
 move empty epochs, and the pot is snapshotted at the first claim. The farm still caps committed genesis
 allocations at the budget (tested with an over-allocating schedule).
 
-**D13. Empty epochs.** Genesis epochs with no units are burned by `retireUnearned`. A final epoch with no units
+**D13. Empty epochs. Superseded by D34.** Genesis epochs with no units are burned by `retireUnearned`. A final epoch with no units
 can roll its non-genesis part (deposits, season allocation, rolled-in amounts) into the current epoch (anyone,
 `rollover`), so buyback rewards are never stranded.
 
-**D14. Seasons. Revised.** `scheduleSeason(startEpoch, epochs, amount)`: after genesis, at least 7 epochs
+**D14. Seasons. Removed (D34).** `scheduleSeason(startEpoch, epochs, amount)`: after genesis, at least 7 epochs
 (50,400 blocks) of notice, at most the genesis average per epoch, no overlap with another season, at most 8
 seasons. Seasons cannot be cancelled (a partly played season would need a rule); the reserve's only other
 outflow is `burnReserve`.
 
-**D15. Treasury allocates; sinks draw. Revised.** One `Buyback` sink (90 %) and `GrailFund` (10 %).
+**D15. Treasury allocates; sinks draw. Removed (D31, D39).** One `Buyback` sink (90 %) and `GrailFund` (10 %).
 `Treasury.distribute()` allocates the unallocated balance to sinks by the table (`owed[sink]`); a sink's
 `process` draws what it spends in the same call and returns anything unspent. So the Buyback's allocation waits
 in the Treasury between slices and no sink holds ETH between calls (the invariant suite checks it). The Buyback
@@ -121,7 +123,7 @@ rest deposited into the farm's current epoch. A new table returns every allocati
 When the impact cap stops a slice early, the unspent part returns to the unallocated balance and is re-split by
 the table at the next `distribute` (a small leak from the buyback share to GRAIL; accepted).
 
-**D16. KeeperFund. Revised.** A holder of the keeper allowance, seeded at deploy (`KEEPER_SEED`), funded by the
+**D16. KeeperFund. Revised (funding and overflow: D33).** A holder of the keeper allowance, seeded at deploy (`KEEPER_SEED`), funded by the
 markup line up to `keeperTargetWei` (overflow to the Treasury). Tip = gas part + bounty, where the bounty is
 `maxBounty × min(age, ramp)/ramp × min(items, 20)/20`, `items` being units of progress (requests seen or
 resolved, listings made, slices bought); a call with no progress reverts `NoWork` and pays nothing, and splitting
@@ -164,7 +166,7 @@ final report reminds the owner to raise the delay before outside money is materi
 `DRY_RUN=1` simulates every other contract, the wiring and the postflight against Sepolia Shapes and the Sepolia
 v4 PoolManager with `CREATE_FWA_POOL=false`. Nothing was broadcast to Sepolia (no keys in this build).
 
-**D23. Protected working capital.** FwaGame tracks `cash` (balance less the GRAIL reserve), `replacementsOwed`
+**D23. Protected working capital. Superseded by D32 and D36.** FwaGame tracks `cash` (balance less the GRAIL reserve), `replacementsOwed`
 (cost of captured board prizes not yet replaced) and `reserveTarget` (timelock, bounded: at least twice the
 board's most expensive prize, at most 1,000 ETH). Only `distributable = cash − replacementsOwed − reserveTarget`
 may leave, markup line first; owed lines wait otherwise. Expensive wins are paid from cash and the reserve, and
@@ -192,7 +194,7 @@ To get headroom: constructor arguments in a struct, wide FWA tuples read through
 to the Converter module, Pack minting removed (D3), smaller event payloads. FwaGame is 21,495 bytes (3,081 bytes
 under EIP-170). Lowering optimizer runs saved under 200 bytes and was not used.
 
-**D27. Exempt senders.** The swap policy exempts `EngineBuyer` (callable only by the Converter and the Buyback)
+**D27. Exempt senders. Revised: fixed at wiring (D38).** The swap policy exempts `EngineBuyer` (callable only by the Converter and the Buyback)
 and `ProtocolLiquidity` (whose only swap is the half-swap inside `addLiquidity`, callable by the vault and the
 timelock). No public router is exempt. The amendment says EngineBuyer is the only exempt sender; ProtocolLiquidity
 is added because otherwise the vault's shutdown into the liquidity position would revert during genesis and pay
@@ -217,3 +219,104 @@ Nothing in our contracts can change it; it goes to FWA's VRF service, not to the
 refund would have held the vault's capital forever. Retirement now withdraws only listings FWA still holds as Active
 or Staged, completes without a quarantined prize, and later `retireStep` calls sweep whatever that prize eventually
 yields (owner proceeds, or the recovered Shape burned) to the vault.
+
+## Sustainability follow-up (PR #9)
+
+**D31. Three funding routes, kept apart.** Trading fees and every other inflow that is not earned by the game are
+capital: the hook pays its fee to the PrizeVault (`feeRecipient`), which counts PoolManager inflows as `tradingFees` and
+everything else as `contributions`, and `fund()` passes the whole balance to the game as `capitalIn`, even above any
+capital target. Profit is the only thing that leaves for the token, and only to the burn-only `Buyback`. Promotions
+have their own budget (D37). The `Treasury` and its sink table were removed: a governance-settable table could route
+revenue anywhere, including a recurring player reward or a founder skim, and the follow-up allows neither. The
+`BuybackReward` half (burn share 50%, the rest deposited into farm epochs) is gone with it; nothing had been earned
+under it (no deployment exists), so no entitlement changed. Alternative considered: keep the Treasury with a fixed
+one-sink table; rejected as dead weight. Reporting caveat: `tradingFees` counts every ETH the PoolManager sends the
+vault, so someone who routes their own swap output to the vault is counted there too; it is capital either way.
+
+**D32. Cumulative profit and loss in FwaGame.** Inventory is capital carried at cost. A captured board prize books owner
+proceeds as revenue and its carried cost (backing + mint fee) as the one expense; replacing it is a purchase of
+inventory, not a second expense, so a replacement cost is recognised exactly once, when that replacement is itself won.
+The initial fill and inventory bought with trading fees are capital, never free: they become expense when won. Burning
+a held prize writes off its mint fee. Profit is `revenue + opsReturned − prizeExpense − opsAccrued`, signed and
+cumulative, so losses carry and capital contributions cannot reset or disguise them. A distribution needs both
+undistributed profit and cash above `replacementsOwed + opsOwed + reserveTarget + exposure` (unsettled requests × the
+largest prize cost), so deferred obligations come first and an adverse run stops distributions by itself. Player claims,
+refunds and escrow stay in FWA and are never counted as the game's. Booked proceeds use `base = paid / (1 + edge)`,
+which is never above FWA's own split (FWA rounds its fee down from the base), so revenue is never overstated; the wei
+difference stays in cash unbooked. Limitation: if FWA changes its edge between a request and its booking, that
+request's proceeds are computed with the new edge; admission closes on an edge above `maxEdgeBps` (D36).
+
+**D33. Operating allocation: 3% of the expected replacement cost.** `PricingPolicy.opsBps` (≤ the markup) of the quote's
+expected replacement cost `C = base / (1 + markup)`, not of the prize won: price 1.1025C, owner proceeds 1.07625C, ops
+0.03C, expected margin 0.04625C. It is accrued as an expense, paid to KeeperFund once replacements are covered, and
+KeeperFund's overflow above its 0.5 ETH target returns to the game (`returnOps`), reducing the net expense, so an
+operating reserve is treated the same way going in and coming out. Measured on the fork (`test_operatingAllocation
+AgainstMeasuredKeeperGas`): it pays the keeper gas of a sync per 10 pulls up to a 2.12 gwei base fee. Above that, tips
+are capped by what KeeperFund holds and keepers wait for cheaper blocks; settlement never depends on tips.
+
+**D34. Genesis farm rebuilt: ticket ETH, two caps, fixed end.** Weight is eligible ticket ETH: the FWA fee escrowed by
+delivered pulls, after refunds. VRF fees, gas, donations, conversions, transfers and refunded or undelivered draws add
+nothing, and the prize won does not affect weight. Per epoch `pot = min(allocationCap, eligibleETH × rateCap)`; 14
+steady epochs at F/17.5, then 87.5% … 12.5% on both caps; the last epoch takes the rounding so the caps sum to F; rewards
+round down. The rate cap is fixed at deploy so a steady epoch pays at most 10% of ticket ETH in ENGINE at the launch
+price (16M ENGINE per ETH at LAUNCH_ETH 5); a single pull earns its rate, never a whole day's pot. `finalize` fixes a
+final epoch's pot and burns the rest of its cap, which nobody can earn any more; earned pots and every unfinalized cap
+stay reserved (`reserved()`); claims never expire; finality comes from the game's own walk, and a stuck delivery holds
+only its own epoch. Requests accepted before the end keep their epoch; at or after `genesisEndBlock` the cap is zero.
+Removed: seasons, the 79% reserve, deposits, rollover, `shorten`, `retireUnearned` and `EmissionSchedule`. Alternative:
+weight by pulls (the PR #9 rule); rejected because the follow-up asks for ETH weight and a per-pull unit rewards cheap
+boards over value.
+
+**D35. Launch board: the 100-item form of 6 / 9 / 5.** 30 × 0.01, 45 × 0.05, 25 × 0.5 ETH Shapes at 5% markup has the
+same probabilities, price (0.03012685 ETH), headline odds (1 in 73.34) and return (87.38%) as the 20-item mix, at five
+times the inventory (15.15 vs 3.03 ETH). The deciding evidence is FWA's ordered settlement: each cheap prize won ahead
+of a request raises the live fee 8.47% on 20 items but 1.52% on 100, and FWA refunds a request whose fee drifted more
+than 10%, so on the 20-item board 3 requests on one quote already lose 17.55% to refunds and normal play refunds about
+30%, against under 0.4% on the 100-item board (`sim/results/sustainability.md` sections 2 and 4). The bigger board
+also depletes more slowly, keeps intermediate wins steady and needs fewer replacement windows per ETH; it costs 12 ETH
+more inventory capital. The PR #9 board (80/15/5 at 0.01/0.05/0.1) was dropped: its headline is 0.1 ETH and its mint
+fees take 7% of turnover. Pack rows are now rejected by `BoardPolicy` (the game never minted them).
+
+**D36. Admission control at the pool.** FwaGame opens and closes FWA's own purchase switch from `sync`, so the rules bind
+direct FWA purchases, not only the site: closed below 80% board fill, above `maxOutstanding` (20) unsettled requests,
+when FWA's edge exceeds `maxEdgeBps` (500, the launch edge) or its inventory cooldown exceeds `maxCooldown` (5 min), or
+when paused. FWA itself caps a transaction at 5 requests and, at the pinned block, a pool at 10 outstanding VRF requests.
+`setBool` does not bump FWA's inventory version, so toggling costs players nothing. `openGame` requires the 48-hour
+market lead, a full board and the reserve in cash. Granularity: a request is admitted or not by FWA's switch at its
+transaction; the game cannot refuse one request inside a batch, so the limits are set below the point where a batch
+could hurt.
+
+**D37. Promotions are budgeted.** A promotion is one prize paid in full from a pre-funded budget (its maximum obligation),
+listed once below cost and never repriced, ending at a win or its end block, with its proceeds, cost and turnover
+accounted apart from the ordinary game. GRAIL per-pull decay and the GRAIL reserve fed by revenue are gone.
+
+**D38. Conversion and router semantics.** `convert` is not payable and spends exactly the burned backing; the bonus pool
+running dry never stops it. The hook's `sender` is the caller of `PoolManager.swap`, which for any public router is the
+router itself, shared by all its users; exempting one would open the gate to everyone. So the exempt set (EngineBuyer,
+ProtocolLiquidity) is fixed at wiring and `setExempt` was removed; EngineBuyer serves only registered callers.
+
+**D39. Buyback: burn-only, bounded, manipulation-checked.** One purchase per call of at most `sliceWei` (a maximum: a
+smaller balance is spent whole), at most once per hour, capped at 3% impact, and refused when the price has moved more
+than 2% against the buyer since the block opened. The hook records that opening price at the first swap of each block,
+which costs one storage write per block. This defeats a same-block sandwich; a manipulation held across a block boundary
+is not prevented, only bounded by the slice and the impact cap. The keeper's `minOut` can only tighten these limits.
+
+**D40. Supply split 80 / 19 / 1 for a fresh deployment.** 800M ENGINE to the protocol position, 190M genesis, 10M bonus.
+No deployment exists, so nothing is redistributed. Compared with 70/29/1, 50/49/1 and the PR #9 split (10/10/1 with a 79%
+reserve) in `sim/results/sustainability.md` section 7: it removes the reserve dependence and keeps farm supply at 24%
+of the pool's token depth; the cost is a low launch valuation (about 6.25 ETH FDV at LAUNCH_ETH 5), so genesis rewards
+are worth about 1.2 ETH at the launch price. The owner may prefer a larger genesis share; the farm takes the budget as
+a constructor argument, so only `DeploySystem` constants change.
+
+**D41. Reserve target 12 ETH; opening capital about 28 ETH.** Sized from 200 seeded 90-day runs at 5 ETH a day with no
+trading fees: at 3 ETH 97% of runs saw cash fall below the replacements owed at some point (rows waiting for profit), at
+8 ETH 6.5%, at 12 ETH none. The reserve is capital, so a larger one barely changes what is distributed; it only locks
+more opening capital. A shortfall is not insolvency (every listed prize is owned, every accepted request settles).
+
+**D42. Removed:** `sim/engine_genesis.py` and its results (they modelled the Treasury, recurring player buybacks and the
+old farm); `test/unit/Treasury.t.sol` (its KeeperFund cases moved to `test/unit/KeeperFund.t.sol`).
+
+**D43. FwaGame size.** The follow-up's accounting and admission brought FwaGame to about 23.5 KB on the legacy pipeline,
+about 1.1 KB under the limit, after making ten bound constants internal and dropping `nav()` (Lens computes it). GRAIL
+repricing and the relist queue were removed. Further growth needs another module split.
+

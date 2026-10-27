@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {BoardPolicy, PricingPolicy, GrailPolicy} from "../../src/policy/GamePolicies.sol";
+import {BoardPolicy, PricingPolicy} from "../../src/policy/GamePolicies.sol";
 import {SwapPolicy} from "../../src/policy/SwapPolicy.sol";
 import {PrizeVault} from "../../src/game/PrizeVault.sol";
 import {EngineToken} from "../../src/token/EngineToken.sol";
@@ -37,6 +37,8 @@ contract GameStub {
 
     function receiveFunding() external payable {}
 
+    function fundPromotion() external payable {}
+
     function retire() external {
         retireCalled = true;
     }
@@ -60,44 +62,34 @@ contract ModulesTest is Test {
         b[1] = 0.05 ether;
         vm.expectRevert(Governed.OutOfBounds.selector);
         new BoardPolicy(tl, k, b, 21);
-        k[1] = 2;
-        vm.expectRevert(Governed.OutOfBounds.selector);
-        new BoardPolicy(tl, k, b, 20);
         k[1] = 1;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        new BoardPolicy(tl, k, b, 20); // Shapes only: no Pack rows
+        k[1] = 0;
         BoardPolicy p = new BoardPolicy(tl, k, b, 10);
         assertEq(p.rowCount(), 2);
         (uint8 kind, uint96 backing) = p.rowAt(1);
-        assertEq(kind, 1);
+        assertEq(kind, 0);
         assertEq(backing, 0.05 ether);
         vm.expectRevert(Governed.NotGovernance.selector);
         p.setBoard(k, b, 10);
     }
 
     function test_pricingBounds() public {
-        PricingPolicy p = new PricingPolicy(tl, 300, 200);
-        assertEq(p.listPrice(0, 0.01 ether, 0.011 ether), 0.01133 ether);
+        PricingPolicy p = new PricingPolicy(tl, 500, 200, 300);
+        assertEq(p.listPrice(0, 0.01 ether, 0.011 ether), 0.01155 ether);
+        assertEq(p.opsBps(), 300);
         vm.startPrank(tl);
         vm.expectRevert(Governed.OutOfBounds.selector);
-        p.set(501, 200);
+        p.set(501, 200, 300);
         vm.expectRevert(Governed.OutOfBounds.selector);
-        p.set(300, 501);
-        p.set(500, 500);
+        p.set(300, 501, 300);
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        p.set(300, 200, 301); // the operating allocation never exceeds the markup
+        p.set(500, 500, 500);
         vm.stopPrank();
         vm.expectRevert(Governed.NotGovernance.selector);
-        p.set(0, 0);
-    }
-
-    function test_grailPolicyDecay() public {
-        uint256[] memory ladder = new uint256[](3);
-        (ladder[0], ladder[1], ladder[2]) = (0.5 ether, 1 ether, 5 ether);
-        GrailPolicy g = new GrailPolicy(tl, ladder, 9_500, 8_000, 100, 100);
-        assertEq(g.grailBacking(0), 0.5 ether);
-        assertEq(g.grailBacking(7), 5 ether, "last rung repeats");
-        assertEq(g.grailPrice(1 ether, 0), 0.95 ether);
-        assertEq(g.grailPrice(1 ether, 250), 0.93 ether);
-        assertEq(g.grailPrice(1 ether, 100_000), 0.8 ether, "floor");
-        vm.expectRevert(Governed.NotGovernance.selector);
-        g.set(ladder, 1, 1, 1, 1);
+        p.set(0, 0, 0);
     }
 
     function test_swapPolicyGateExemptSnipe() public {
@@ -139,12 +131,24 @@ contract ModulesTest is Test {
 
     function test_vaultFundRetireRepay() public {
         address lp = makeAddr("lp");
-        PrizeVault v = new PrizeVault(tl, lp, 30 days);
+        address pm = makeAddr("poolManager");
+        PrizeVault v = new PrizeVault(tl, lp, pm, 30 days);
         GameStub g = new GameStub(v);
         v.wire(address(g));
-        vm.deal(address(v), 5 ether);
+        // sources are counted apart: trading fees from the PoolManager, anything else as contributions
+        vm.deal(pm, 4 ether);
+        vm.prank(pm);
+        (bool ok,) = address(v).call{value: 4 ether}("");
+        assertTrue(ok);
+        vm.deal(address(this), 1 ether);
+        (ok,) = address(v).call{value: 1 ether}("");
+        assertTrue(ok);
+        assertEq(v.tradingFees(), 4 ether);
+        assertEq(v.contributions(), 1 ether);
         v.fund();
         assertEq(address(g).balance, 5 ether);
+        vm.expectRevert(Governed.NotGovernance.selector);
+        v.fundPromotion(0);
         vm.expectRevert(PrizeVault.NothingToSend.selector);
         v.fund();
         vm.expectRevert(PrizeVault.NotGame.selector);
@@ -170,8 +174,8 @@ contract ModulesTest is Test {
         EngineRenderer r = new EngineRenderer();
         address[] memory to = new address[](2);
         uint256[] memory amt = new uint256[](2);
-        (to[0], amt[0]) = (address(this), 100_000_000 ether);
-        (to[1], amt[1]) = (address(0xFA), 900_000_000 ether);
+        (to[0], amt[0]) = (address(this), 800_000_000 ether);
+        (to[1], amt[1]) = (address(0xFA), 200_000_000 ether);
         EngineToken t = new EngineToken(tl, to, amt, address(r));
         assertEq(t.totalSupply(), 1_000_000_000 ether);
         assertEq(t.name(), "ENGINE");

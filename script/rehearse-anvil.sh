@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local launch rehearsal on an anvil fork of mainnet (no keys: the deploy wallet and governance are
 # impersonated). Starts anvil at FORK_BLOCK, runs script/deploy.sh anvil, then the launch sequence through
-# the real timelock: fund the vault, fill the board, open the market, advance 48 h, open the game.
+# the real timelock: open the market, fund the vault, fill the board, advance 48 h, open the game.
 # Time travel happens only on this local fork.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -29,14 +29,15 @@ tl() { # target value calldata salt: schedule and execute through the timelock (
   cast send "$T" "schedule(address,uint256,bytes,bytes32,bytes32,uint256)" "$1" "$2" "$3" "$Z" "$salt" 0 --from "$GOVERNANCE" --unlocked --rpc-url "$R" >/dev/null
   cast send "$T" "execute(address,uint256,bytes,bytes32,bytes32)" "$1" "$2" "$3" "$Z" "$salt" --value "$2" --from "$GOVERNANCE" --unlocked --rpc-url "$R" >/dev/null
 }
-OPENING="${OPENING_CAPITAL_WEI:-3000000000000000000}"
-LAUNCH="${LAUNCH_ETH_WEI:-10000000000000000000}"
+OPENING="${OPENING_CAPITAL_WEI:-28000000000000000000}"
+LAUNCH="$LAUNCH_ETH_WEI"
+cast rpc anvil_setBalance "$GOVERNANCE" 0x3635C9ADC5DEA00000 --rpc-url "$R" >/dev/null
+tl "$L" "$LAUNCH" "$(cast calldata 'launch()')" 1
+echo "market: launched=$(cast call "$L" 'launched()(bool)' --rpc-url "$R")"
 cast send "$V" --value "$OPENING" --from "$GOVERNANCE" --unlocked --rpc-url "$R" >/dev/null
 cast send "$V" "fund()" --from "$GOVERNANCE" --unlocked --rpc-url "$R" >/dev/null
 for _ in 1 2 3 4 5 6; do cast send "$G" "sync(uint256)" 50 --from "$GOVERNANCE" --unlocked --gas-limit 15000000 --rpc-url "$R" >/dev/null 2>&1 || true; done
-echo "board: $(cast call "$G" 'liveCount()(uint256)' --rpc-url "$R") listings"
-tl "$L" "$LAUNCH" "$(cast calldata 'launch()')" 1
-echo "market: launched=$(cast call "$L" 'launched()(bool)' --rpc-url "$R")"
+echo "board: $(cast call "$G" 'liveCount()(uint256)' --rpc-url "$R") listings, cash $(cast call "$G" 'cash()(uint256)' --rpc-url "$R")"
 cast rpc evm_increaseTime 172800 --rpc-url "$R" >/dev/null; cast rpc anvil_mine 1 --rpc-url "$R" >/dev/null
 tl "$G" 0 "$(cast calldata 'openGame()')" 2
 echo "game: openBlock=$(cast call "$F" 'openBlock()(uint256)' --rpc-url "$R") purchases=$(cast call "$P" 'localPurchasesEnabled()(bool)' --rpc-url "$R")"

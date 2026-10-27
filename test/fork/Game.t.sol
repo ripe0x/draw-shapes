@@ -25,15 +25,14 @@ contract GameForkTest is ForkBase {
 
     function setUp() public {
         deployLaunch();
-        fundAndFill(3 ether);
-        openMarket(10 ether);
+        fundAndFill(OPENING_CAPITAL);
+        openMarket(LAUNCH_ETH);
         openGame();
         vm.warp(block.timestamp + 1);
     }
 
-    /// @dev Moves past the maintenance interval so the next sync may change inventory.
     function _window() internal {
-        vm.warp(block.timestamp + sys.game.maintenanceInterval());
+        window();
     }
 
     // ------------------------------------------------------------------ pool and listing
@@ -58,12 +57,16 @@ contract GameForkTest is ForkBase {
         (,,,,, uint256 price,,) = pool.listings(id);
         (, uint80 backing, uint80 cost,, uint16 markup,) = sys.game.items(id);
         assertEq(cost, backing + 0.001 ether);
-        assertEq(price, uint256(cost) * 10_300 / 10_000);
-        assertEq(markup, 300);
-        // inventory: 80 × 0.01 + 15 × 0.05 + 5 × 0.1
-        assertEq(sys.game.inventoryBacking(), 2.05 ether);
-        assertEq(sys.game.mintFeesPaid(), 0.1 ether);
-        assertEq(sys.game.lent(), 3 ether);
+        assertEq(price, uint256(cost) * 10_500 / 10_000);
+        assertEq(markup, 500);
+        // inventory: 30 × 0.01 + 45 × 0.05 + 25 × 0.5, carried at cost with 100 mint fees
+        assertEq(sys.game.inventoryBacking(), 15.05 ether);
+        assertEq(sys.game.inventoryCost(), 15.15 ether);
+        assertEq(sys.game.capitalIn(), OPENING_CAPITAL);
+        assertEq(sys.game.profit(), 0, "the initial fill is capital, not an expense");
+        // the reference quote: (backing + mint fee) × 1.05 listing prices, FWA edge 5%
+        (uint256 fee,,) = pool.quoteAcquisitionPrice(1);
+        assertApproxEqRel(fee, 0.03012685 ether, 1e12);
     }
 
     function test_listingRespectsInventoryCooldown() public {
@@ -93,21 +96,18 @@ contract GameForkTest is ForkBase {
 
     struct Lines {
         uint256 proceeds;
-        uint256 markup;
-        uint256 margin;
-        uint256 expected;
+        uint256 ops;
     }
 
-    /// @dev The split of a capture whose escrowed payment is `paid`, per docs/IMPLEMENTOR_DECISIONS.md D7.
+    /// @dev Proceeds and operating allocation of a capture whose escrowed payment is `paid`
+    ///      (docs/IMPLEMENTOR_DECISIONS.md D31).
     function _lines(uint256 paid, uint256 markupBps) internal view returns (Lines memory l) {
         uint256 base = paid * 10_000 / (10_000 + factory.edgeBps());
         l.proceeds = paid - (paid - base) / 2;
-        l.markup = base * markupBps / (10_000 + markupBps);
-        l.margin = l.proceeds - base;
-        l.expected = base - l.markup;
+        l.ops = base * 10_000 / (10_000 + markupBps) * 300 / 10_000;
     }
 
-    function test_pullFulfilledBookedAndSplitToTheWei() public {
+    function test_pullFulfilledBookedToTheWei() public {
         uint256 id = pull(alice);
         vm.roll(block.number + 3);
         deliverWord(id, wordFor(id, 0.01 ether));
@@ -116,35 +116,37 @@ contract GameForkTest is ForkBase {
         (uint48 tokenId,, uint80 cost,, uint16 markupBps,) = sys.game.items(listingId);
         assertEq(shapes.ownerOf(tokenId), alice);
         Lines memory l = _lines(paid, markupBps);
-        // FWA's owner split, from its internal request-time base price, is within 1 wei of the formula; the lines
-        // below are exact to the wei against the formula.
+        // FWA's owner split, from its request-time base price, is within 1 wei of the formula (never below it)
         assertApproxEqAbs(pool.ownerProceeds(), l.proceeds, 1, "FWA owner split");
-        assertEq(l.markup + l.margin + l.expected, l.proceeds);
+        assertGe(pool.ownerProceeds(), l.proceeds);
 
-        uint256 treasuryBefore = address(sys.treasury).balance;
         uint256 keeperBefore = address(sys.keeperFund).balance;
         vm.txGasPrice(0);
         vm.prank(keeper, keeper);
         sys.game.sync(10);
         assertEq(sys.game.pullsBooked(), 1);
-        assertEq(sys.game.markupRouted(), l.markup, "markup line");
-        assertEq(sys.game.marginRouted(), l.margin, "margin line");
-        assertEq(address(sys.treasury).balance - treasuryBefore, l.margin, "treasury got the margin");
-        assertEq(address(sys.keeperFund).balance + keeper.balance - keeperBefore, l.markup, "keeper fund got the markup");
-        assertEq(sys.game.bookedGain(), l.expected > cost ? l.expected - cost : 0, "gain");
-        assertEq(sys.game.bookedLoss(), l.expected > cost ? 0 : cost - l.expected, "loss");
+        assertEq(sys.game.turnover(), paid);
+        assertEq(sys.game.revenue(), l.proceeds, "revenue: owner proceeds");
+        assertEq(sys.game.prizeExpense(), cost, "expense: the prize's carried cost, once");
+        assertEq(sys.game.opsAccrued(), l.ops, "ops: 3% of the expected replacement cost");
+        assertEq(sys.game.opsPaid(), l.ops, "paid to KeeperFund");
+        assertEq(address(sys.keeperFund).balance + keeper.balance - keeperBefore, l.ops);
+        int256 p = int256(l.proceeds) - int256(uint256(cost)) - int256(l.ops);
+        assertEq(sys.game.profit(), p);
+        assertGt(p, 0, "a cheap win is a profit");
+        assertEq(sys.game.distributed(), uint256(p), "the whole realised profit is distributable");
+        assertEq(sys.buyback.profitReceived(), uint256(p));
+        assertEq(address(sys.buyback).balance, uint256(p));
         uint256 epoch = (requestBlock - sys.farm.openBlock()) / 7_200;
-        assertEq(sys.game.epochUnits(epoch), 1);
-        assertEq(sys.game.userUnits(epoch, alice), 1);
+        assertEq(sys.game.epochWeight(epoch), paid, "weight: ticket ETH");
+        assertEq(sys.game.userWeight(epoch, alice), paid);
         (bool convertible,,) = sys.converter.convertible(listingId);
         assertTrue(convertible);
-        // the replacement waits for the maintenance window, then lists for the same row
-        assertEq(sys.game.liveCount(), 99);
-        assertEq(sys.game.replacementsOwed(), cost);
-        _window();
-        sys.game.sync(10);
+        // the maintenance window was open (no inventory change since the fill): the replacement listed at once
         assertEq(sys.game.liveCount(), 100);
         assertEq(sys.game.replacementsOwed(), 0);
+        assertEq(sys.game.prizeExpense(), cost, "the replacement purchase is not a second expense");
+        assertEq(sys.game.inventoryCost(), 15.15 ether);
     }
 
     function test_walkExpiredAndTimedOut() public {
@@ -160,10 +162,11 @@ contract GameForkTest is ForkBase {
         assertEq(uint8(statusOf(b)), uint8(IFWAPool.AcquisitionStatus.Expired));
         assertEq(sys.game.seenSeq(), 3);
         assertEq(sys.game.pullsBooked(), 0);
-        (uint256 accepted, uint256 resolved, uint256 units) = sys.game.epochTotals(0);
+        (uint256 accepted, uint256 resolved, uint256 weight) = sys.game.epochTotals(0);
         assertEq(accepted, 2);
         assertEq(resolved, 2);
-        assertEq(units, 0);
+        assertEq(weight, 0, "refunded draws carry no weight");
+        assertEq(sys.game.revenue(), 0);
         assertEq(pool.acquisitionRefundCredit(alice), pool.acquisitionRefundCredit(bob));
     }
 
@@ -179,7 +182,7 @@ contract GameForkTest is ForkBase {
     }
 
     function test_walkRefundedOnSlippage() public {
-        // `a` captures a 0.1 prize, which lowers the fee; `b` allowed no negative slippage and is refunded.
+        // `a` captures a 0.5 prize, which lowers the fee; `b` allowed no negative slippage and is refunded.
         uint256 a = pull(alice);
         (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice(1);
         uint256 version = pool.inventoryVersion();
@@ -187,7 +190,7 @@ contract GameForkTest is ForkBase {
         vm.prank(bob);
         uint256 b = pool.acquire{value: total}(bob, fee, 0, 0, version, block.timestamp + 1 hours);
         vm.roll(block.number + 3);
-        uint256 w = wordFor(a, 0.1 ether);
+        uint256 w = wordFor(a, 0.5 ether);
         deliverWord(a, w);
         deliverWord(b, 1);
         pool.processAcquisitions(10);
@@ -195,7 +198,8 @@ contract GameForkTest is ForkBase {
         sys.game.sync(10);
         assertEq(sys.game.seenSeq(), 3);
         assertEq(sys.game.pullsBooked(), 1);
-        assertGt(sys.game.bookedLoss(), 0, "a 0.1 capture is a booked loss");
+        assertLt(sys.game.profit(), 0, "a 0.5 capture is a loss, carried");
+        assertEq(sys.game.distributed(), 0);
     }
 
     function _failDelivery(address who) internal returns (uint256 requestId, uint256 listingId) {
@@ -211,37 +215,54 @@ contract GameForkTest is ForkBase {
         (,,, listingId,) = pool.acquisitions(requestId);
     }
 
-    function test_deliveryRefundedIsRecoveredAndRelisted() public {
+    function test_deliveryRefundedIsRecoveredAndBurned() public {
         (uint256 a, uint256 listingId) = _failDelivery(alice);
-        // a pending delivery does not stall the walk: it is seen (accepted) and stays open
+        // a pending delivery does not stall the walk: it is seen (accepted), stays open, and its row is vacated
         sys.game.sync(10);
         assertEq(sys.game.seenSeq(), 2);
         assertEq(sys.game.openCount(), 1);
+        (, uint80 backing, uint80 cost,,,) = sys.game.items(listingId);
+        (,,,,, bool live) = sys.game.items(listingId);
+        assertFalse(live, "FWA took it out of the draw; so does the game");
+        assertEq(sys.game.liveCount(), 100, "and its row is replaced while the delivery is pending");
         uint256 b = pullAndSettle(bob, 99);
         sys.game.sync(10);
         assertEq(sys.game.seenSeq(), 3, "later pulls keep being booked");
         assertEq(uint8(statusOf(b)), uint8(IFWAPool.AcquisitionStatus.Fulfilled));
+        _window();
+        sys.game.sync(10);
+        assertEq(sys.game.liveCount(), 100);
         // after the delivery window the purchaser takes the refund
         vm.warp(block.timestamp + 7 days);
         vm.prank(alice);
         pool.refundFailedDelivery(listingId);
         assertEq(uint8(statusOf(a)), uint8(IFWAPool.AcquisitionStatus.DeliveryRefunded));
-        (uint48 tokenId, uint80 backing,,,,) = sys.game.items(listingId);
+        (uint48 tokenId,,,,,) = sys.game.items(listingId);
+        uint256 expenseBefore = sys.game.prizeExpense();
+        uint256 cashBefore = sys.game.cash();
         sys.game.sync(10);
         assertEq(sys.game.openCount(), 0);
-        assertEq(sys.game.relistCount(), 0, "relisted in the same maintenance window");
-        assertEq(shapes.ownerOf(tokenId), address(pool));
-        assertEq(backing, 0.01 ether);
-        (uint256 accepted, uint256 resolved, uint256 units) = sys.game.epochTotals(0);
+        vm.expectRevert();
+        shapes.ownerOf(tokenId); // recovered and burned
+        assertEq(sys.game.prizeExpense() - expenseBefore, cost - backing, "only the mint fee is written off");
+        assertGe(sys.game.cash(), cashBefore + backing - sys.game.opsOwed());
+        assertEq(sys.game.liveCount(), 100, "no extra listing: the row was already replaced");
+        (uint256 accepted, uint256 resolved, uint256 weight) = sys.game.epochTotals(0);
         assertEq(accepted, 2);
         assertEq(resolved, 2);
-        assertEq(units, 1, "no unit for the refunded pull");
+        (,, uint256 paidB,,) = pool.acquisitions(b);
+        assertEq(weight, paidB, "no weight for the refunded pull");
     }
 
-    function test_neverClaimedDeliveryResolvesAfterGrace() public {
-        (uint256 a,) = _failDelivery(alice);
+    function test_neverRefundedDeliveryDoesNotStopTheGame() public {
+        (uint256 a, uint256 listingId) = _failDelivery(alice);
         (, uint256 requestBlock,,,) = pool.acquisitions(a);
         sys.game.sync(10);
+        (,, uint80 cost,,,) = sys.game.items(listingId);
+        // the row is replaced; the stuck prize stays carried at cost until FWA settles it
+        assertEq(sys.game.liveCount(), 100);
+        assertEq(sys.game.replacementsOwed(), 0);
+        assertEq(sys.game.inventoryCost(), 15.15 ether + cost, "the quarantined prize is still an asset");
         // the epoch ends; the stuck request keeps it open until the grace period passes
         vm.roll(sys.farm.openBlock() + 7_200);
         pullAndSettle(bob, 5); // epoch 1 keeps progressing
@@ -250,12 +271,13 @@ contract GameForkTest is ForkBase {
         vm.roll(requestBlock + sys.game.DELIVERY_GRACE_BLOCKS() + 1);
         sys.game.sync(10);
         assertTrue(sys.game.isEpochFinal(0), "final after the grace period");
-        (uint256 accepted, uint256 resolved, uint256 units) = sys.game.epochTotals(0);
+        (uint256 accepted, uint256 resolved, uint256 weight) = sys.game.epochTotals(0);
         assertEq(accepted, 1);
         assertEq(resolved, 1);
-        assertEq(units, 0, "resolved without a unit");
+        assertEq(weight, 0, "resolved without weight");
         assertEq(sys.game.openCount(), 1, "economics still open until FWA settles it");
         assertTrue(sys.farm.isFinal(0));
+        assertTrue(pool.localPurchasesEnabled(), "purchases stay open");
     }
 
     function test_acceptedComesFromFwaIssuance() public {
@@ -279,38 +301,28 @@ contract GameForkTest is ForkBase {
         assertTrue(sys.game.isEpochFinal(0));
     }
 
-    function test_capitalProtectedBeforeDistribution() public {
-        // a reserve just under cash: an expensive early win must be paid before anything leaves
-        vm.prank(address(sys.timelock));
-        sys.game.setCapital(0.84 ether, 30 minutes);
-        uint256 a = pull(alice);
-        vm.roll(block.number + 3);
-        deliverWord(a, wordFor(a, 0.1 ether));
-        sys.game.sync(10);
-        assertEq(sys.game.markupRouted() + sys.game.marginRouted(), 0, "nothing distributed below the reserve");
-        assertGt(sys.game.pendingMarkup(), 0);
-        assertLt(sys.game.cash(), sys.game.replacementsOwed() + sys.game.reserveTarget());
-        // the replacement is paid from cash and the reserve
-        _window();
-        sys.game.sync(10);
-        assertEq(sys.game.liveCount(), 100);
-        assertEq(sys.game.markupRouted() + sys.game.marginRouted(), 0);
-        // gains refill the reserve; once above it, the waiting lines go out
-        vm.prank(address(sys.timelock));
-        sys.game.setCapital(0.2 ether, 30 minutes);
-        pullAndSettle(bob, 3);
-        sys.game.sync(10);
-        assertGt(sys.game.markupRouted(), 0, "distributed once the reserve is covered");
-        assertGe(sys.game.cash(), sys.game.replacementsOwed() + sys.game.reserveTarget());
+    function _capital(uint256 reserve) internal view returns (FwaGame.Capital memory c) {
+        c = cfg.capital;
+        c.reserveTarget = reserve;
     }
 
     function test_reserveTargetBounds() public {
         vm.startPrank(address(sys.timelock));
         vm.expectRevert(Governed.OutOfBounds.selector);
-        sys.game.setCapital(0.19 ether, 30 minutes); // below twice the 0.1 prize
+        sys.game.setCapital(_capital(0.99 ether)); // below twice the 0.5 prize
+        FwaGame.Capital memory c = _capital(1 ether);
+        c.maintenanceInterval = 1 days + 1;
         vm.expectRevert(Governed.OutOfBounds.selector);
-        sys.game.setCapital(1 ether, 1 days + 1);
-        sys.game.setCapital(0.2 ether, 0);
+        sys.game.setCapital(c);
+        c = _capital(1 ether);
+        c.minLiveBps = 4_999;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        sys.game.setCapital(c);
+        c = _capital(1 ether);
+        c.maxEdgeBps = 1_001;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        sys.game.setCapital(c);
+        sys.game.setCapital(_capital(1 ether));
         vm.stopPrank();
     }
 
@@ -342,6 +354,9 @@ contract GameForkTest is ForkBase {
         assertEq(sys.engine.balanceOf(alice), out + bonus);
         assertEq(sys.farm.bonusPool(), bonusBefore - bonus);
         assertTrue(sys.converter.converted(listingId));
+        assertEq(sys.converter.conversions(), 1);
+        assertEq(sys.converter.totalEthIn(), 0.01 ether, "the redeemed backing, no more");
+        assertEq(sys.converter.totalEngineOut(), out);
         vm.prank(alice);
         vm.expectRevert(Converter.NotConvertible.selector);
         sys.converter.convert(listingId, 1, false);
@@ -384,107 +399,11 @@ contract GameForkTest is ForkBase {
         assertEq(bonus, 0);
     }
 
-    function test_packRowsAreNotMinted() public {
-        // this game lists Shapes only (docs/IMPLEMENTOR_DECISIONS.md D3): a Pack row is skipped, not minted
-        uint8[] memory kinds = new uint8[](100);
-        uint96[] memory backings = new uint96[](100);
-        for (uint256 i; i < 100; ++i) {
-            backings[i] = cfg.boardBackings[i];
-        }
-        kinds[0] = 1;
-        backings[0] = 0.03 ether;
-        vm.prank(address(sys.timelock));
-        sys.board.setBoard(kinds, backings, 20);
-        uint256 row0;
-        for (uint256 i; i < sys.game.liveCount(); ++i) {
-            (,,, uint16 row,,) = sys.game.items(sys.game.liveAt(i));
-            if (row == 0) row0 = sys.game.liveAt(i);
-        }
-        uint256 a = pull(alice);
-        vm.roll(block.number + 3);
-        deliverWord(a, _wordForListing(row0));
-        _window();
-        sys.game.sync(10);
-        assertEq(sys.game.liveCount(), 99, "row 0 stays empty");
-        assertEq(sys.game.liveRows() & 1, 0);
-    }
-
-    function _wordForListing(uint256 listingId) internal view returns (uint256 prefix) {
-        for (uint256 slot = 1; slot < 1000; ++slot) {
-            uint256 id = pool.slotToListing(slot);
-            if (id == 0) continue;
-            (,,,, uint256 weight,,, IFWAPool.ListingStatus st) = pool.listings(id);
-            if (st != IFWAPool.ListingStatus.Active) continue;
-            if (id == listingId) return prefix;
-            prefix += weight;
-        }
-        revert("listing not active");
-    }
-
     function _slotOfBonusPool() internal returns (uint256 slot) {
         for (slot = 0; slot < 30; ++slot) {
             if (uint256(vm.load(address(sys.farm), bytes32(slot))) == sys.farm.bonusPool()) return slot;
         }
         revert("slot");
-    }
-
-    function test_grailMintListRepriceCapture() public {
-        // fund the GRAIL reserve as the GrailFund sink would
-        vm.deal(address(this), 1 ether);
-        sys.game.fundGrail{value: 0.6 ether}(); // the owner seeding the first GRAIL directly
-        uint256 a = pull(alice);
-        vm.roll(block.number + 3);
-        deliverWord(a, wordFor(a, 0.01 ether));
-        _window();
-        sys.game.sync(10);
-        uint256 g = sys.game.grailListing();
-        assertGt(g, 0, "GRAIL listed");
-        (,,,,, uint256 price,,) = pool.listings(g);
-        assertEq(price, 0.5 ether * 9_500 / 10_000, "lists at 95% of backing");
-        assertEq(sys.game.grailReserve(), 0.6 ether - 0.501 ether);
-
-        // 100 booked pulls later the policy lowers it by 1%
-        for (uint256 i; i < 100; ++i) {
-            uint256 r = pull(alice);
-            vm.roll(block.number + 3);
-            deliverWord(r, uint256(keccak256(abi.encode(i))));
-            pool.processAcquisitions(5);
-            if (sys.game.grailListing() != g) break;
-            if (i % 10 == 9) syncAll();
-        }
-        _window();
-        syncAll();
-        if (sys.game.grailListing() == g) {
-            (,,,,, price,,) = pool.listings(g);
-            assertEq(price, 0.5 ether * 9_400 / 10_000, "decayed one step");
-        }
-        // capture the GRAIL
-        uint256 c = pull(bob);
-        vm.roll(block.number + 3);
-        deliverWord(c, wordFor(c, 0.5 ether));
-        sys.game.sync(10);
-        assertEq(sys.game.grailListing(), 0);
-        assertEq(sys.game.grailStep(), 1);
-        assertEq(sys.game.grailCapturedBacking(), 0.5 ether);
-    }
-
-    function test_grailPriceNeverBelowHardFloor() public {
-        vm.prank(address(sys.timelock));
-        sys.grail.set(new uint256[](1), 10_000, 0, 10_000, 1); // policy asks for price 0
-        uint256[] memory ladder = new uint256[](1);
-        ladder[0] = 0.5 ether;
-        vm.prank(address(sys.timelock));
-        sys.grail.set(ladder, 1_000, 1_000, 0, 1); // 10% of backing, below the 50% hard floor
-        vm.deal(address(this), 1 ether);
-        sys.game.fundGrail{value: 0.6 ether}();
-        uint256 a = pull(alice);
-        vm.roll(block.number + 3);
-        deliverWord(a, 3);
-        _window();
-        sys.game.sync(10);
-        (,,,, uint256 weight, uint256 price,,) = pool.listings(sys.game.grailListing());
-        assertGe(price, 0.25 ether, "hard floor 50%");
-        assertLe(weight * 10_000 / pool.totalWeight(), 1_000, "probability <= 10%");
     }
 
     // ------------------------------------------------------------------ bounds and access
@@ -501,7 +420,7 @@ contract GameForkTest is ForkBase {
         sys.game.sync(10);
         uint256 id = sys.game.liveAt(sys.game.liveCount() - 1);
         (,,,,, uint256 price,,) = pool.listings(id);
-        assertEq(price, 0.011 ether * 10_500 / 10_000);
+        assertEq(price, 0.011 ether * 10_500 / 10_000, "a 20% markup request lists at the 5% cap");
     }
 
     function test_settersAreTimelockOnly() public {
@@ -510,11 +429,19 @@ contract GameForkTest is ForkBase {
         vm.expectRevert(Governed.NotGovernance.selector);
         sys.game.openGame();
         vm.expectRevert(Governed.NotGovernance.selector);
-        sys.game.setAcquisitionsEnabled(false);
+        sys.game.setPaused(true);
+        vm.expectRevert(Governed.NotGovernance.selector);
+        sys.game.setCapital(cfg.capital);
+        vm.expectRevert(Governed.NotGovernance.selector);
+        sys.game.startPromotion(0.5 ether, 9_000, block.number + 100);
+        vm.expectRevert(Governed.NotGovernance.selector);
+        sys.game.releasePromotion(0);
         vm.expectRevert(FwaGame.NotVault.selector);
         sys.game.retire();
         vm.expectRevert(FwaGame.NotVault.selector);
         sys.game.receiveFunding{value: 0}();
+        vm.expectRevert(FwaGame.NotKeeperFund.selector);
+        sys.game.returnOps{value: 0}();
     }
 
     // ------------------------------------------------------------------ retirement
@@ -529,7 +456,8 @@ contract GameForkTest is ForkBase {
         }
         assertTrue(sys.game.retired(), "retired with a prize still in delivery quarantine");
         assertEq(sys.vault.activeGame(), address(0));
-        assertEq(sys.game.liveCount(), 1, "only the quarantined prize remains");
+        assertEq(sys.game.liveCount(), 0, "only the quarantined prize remains, off the board");
+        assertGt(sys.game.inventoryBacking(), 0);
         // a week later the purchaser takes the refund; the next step recovers the Shape, burns it and sweeps it
         vm.warp(block.timestamp + 7 days);
         vm.prank(alice);
@@ -573,8 +501,8 @@ contract GameForkTest is ForkBase {
         assertEq(sys.game.inventoryBacking(), 0);
         assertEq(address(sys.game).balance, 0);
         assertEq(sys.vault.activeGame(), address(0));
-        // everything but the revenue routed during the steps comes back
-        assertApproxEqAbs(address(sys.vault).balance - vaultBefore, expected, 0.02 ether);
+        // everything but the operating allocation and profit paid during the steps comes back
+        assertApproxEqAbs(address(sys.vault).balance - vaultBefore, expected, 0.05 ether);
         assertEq(pool.activeListingCount(), 0);
     }
 }
@@ -590,5 +518,9 @@ contract MarkupPolicy {
 
     function conversionBonusBps() external pure returns (uint256) {
         return 200;
+    }
+
+    function opsBps() external pure returns (uint256) {
+        return 300;
     }
 }

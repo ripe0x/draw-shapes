@@ -10,10 +10,10 @@ contract SmokeTest is ForkBase {
     }
 
     function test_smoke() public {
-        fundAndFill(3 ether);
+        fundAndFill(OPENING_CAPITAL);
         emit log_named_uint("live", sys.game.liveCount());
         emit log_named_uint("cash", sys.game.cash());
-        openMarket(10 ether);
+        openMarket(LAUNCH_ETH);
         openGame();
         address alice = makeAddr("alice");
         uint256 id = pullAndSettle(alice, 12345);
@@ -21,7 +21,8 @@ contract SmokeTest is ForkBase {
         vm.warp(block.timestamp + 1 hours);
         sys.game.sync(10);
         emit log_named_uint("pulls", sys.game.pullsBooked());
-        emit log_named_uint("treasury", address(sys.treasury).balance);
+        emit log_named_int("profit", sys.game.profit());
+        emit log_named_uint("buyback", address(sys.buyback).balance);
         emit log_named_uint("keeper", address(sys.keeperFund).balance);
     }
 }

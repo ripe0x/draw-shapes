@@ -14,13 +14,10 @@ contract CustodyInvariants is ForkBase {
 
     function setUp() public {
         deployLaunch();
-        fundAndFill(3 ether);
-        openMarket(10 ether);
-        vm.warp(block.timestamp + 2 hours);
+        fundAndFill(OPENING_CAPITAL);
+        openMarket(LAUNCH_ETH);
         openGame();
         handler = new Handler(sys, pool, SHAPES, POOL_MANAGER);
-        // give the treasury something to route from the start
-        vm.deal(address(sys.treasury), 1 ether);
         targetContract(address(handler));
         excludeSender(address(sys.timelock));
     }
@@ -30,72 +27,74 @@ contract CustodyInvariants is ForkBase {
         assertEq(handler.violations(), 0, handler.lastViolation());
     }
 
-    /// @notice I2 solvency: vault + game value covers what was lent less booked losses and mint fees.
-    function invariant_solvency() public view {
-        uint256 value = address(sys.vault).balance + address(sys.game).balance + sys.game.inventoryBacking();
-        uint256 lhs = value + sys.game.mintFeesPaid() + sys.game.bookedLoss() + sys.game.grailCapturedBacking()
-            + sys.game.pullsBooked(); // 1 wei of FWA rounding per pull
-        uint256 rhs = handler.vaultFunded() + handler.grailFunded();
-        assertGe(lhs, rhs, "solvency");
+    /// @notice I2 books: the game's cash plus inventory at cost equals the capital it received plus its realised
+    ///         results (to the wei FWA's split rounds in its favour); and the vault plus the game's capital account
+    ///         cover everything put into the vault.
+    function invariant_books() public view {
+        uint256 lhs = address(sys.game).balance + sys.game.inventoryCost();
+        uint256 rhs = sys.game.capitalIn() + sys.game.revenue() + sys.game.opsReturned() - sys.game.prizeExpense()
+            - sys.game.opsPaid() - sys.game.distributed();
+        assertGe(lhs, rhs, "books");
+        assertGe(address(sys.vault).balance + sys.game.capitalIn(), handler.vaultFunded(), "capital");
     }
 
-    /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; `units` never exceed the
-    ///         pulls FWA delivered, and the difference is at most the requests still open (FWA can deliver one
-    ///         between two syncs); resolved never exceeds accepted.
+    /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; weight never exceeds the
+    ///         ticket ETH of pulls FWA delivered, and the difference is at most the requests still open (FWA can
+    ///         deliver one between two syncs); resolved never exceeds accepted.
     function invariant_ledgerMatchesFwa() public view {
         uint256 open = sys.farm.openBlock();
         uint256[64] memory accepted;
         uint256[64] memory fulfilled;
+        uint256 maxPaid;
         uint256 n = sys.game.seenSeq();
         for (uint64 sq = 1; sq < n; ++sq) {
-            (, uint256 requestBlock,,, IFWAPool.AcquisitionStatus st) = pool.acquisitions(pool.requestIdAtSequence(sq));
+            (, uint256 requestBlock, uint256 paid,, IFWAPool.AcquisitionStatus st) =
+                pool.acquisitions(pool.requestIdAtSequence(sq));
             uint256 e = (requestBlock - open) / 7_200;
             if (e >= 64) continue;
             ++accepted[e];
-            if (st == IFWAPool.AcquisitionStatus.Fulfilled) ++fulfilled[e];
+            if (st == IFWAPool.AcquisitionStatus.Fulfilled) fulfilled[e] += paid;
+            if (paid > maxPaid) maxPaid = paid;
         }
         uint256 gap;
         for (uint256 e; e < 64; ++e) {
-            (uint256 acc, uint256 res, uint256 units) = sys.game.epochTotals(e);
+            (uint256 acc, uint256 res, uint256 weight) = sys.game.epochTotals(e);
             assertEq(acc, accepted[e], "accepted = FWA issued");
             assertLe(res, acc, "resolved <= accepted");
-            assertLe(units, fulfilled[e], "units <= delivered pulls");
-            gap += fulfilled[e] - units;
+            assertLe(weight, fulfilled[e], "weight <= delivered ticket ETH");
+            gap += fulfilled[e] - weight;
         }
-        assertLe(gap, sys.game.openCount(), "unbooked deliveries are open requests");
+        assertLe(gap, sys.game.openCount() * maxPaid, "unbooked deliveries are open requests");
     }
 
-    /// @notice I4 the farm never pays more than allocation + deposits, and its balance reconciles.
+    /// @notice I4 the farm never pays more than its allocations, and its balance reconciles.
     function invariant_farmBounded() public view {
-        assertLe(sys.farm.totalClaimed(), sys.farm.genesisBudget() + sys.farm.totalDeposited(), "claims");
+        assertLe(sys.farm.totalClaimed(), sys.farm.totalPots(), "claims within fixed pots");
+        assertLe(sys.farm.totalPots(), sys.farm.genesisBudget(), "pots within the budget");
         assertLe(sys.farm.totalBonusPaid(), 10_000_000 ether, "bonus");
         assertEq(
             sys.engine.balanceOf(address(sys.farm)),
-            900_000_000 ether + sys.farm.totalDeposited() - sys.farm.totalClaimed() - sys.farm.totalBonusPaid()
-                - sys.farm.totalBurned(),
+            200_000_000 ether - sys.farm.totalClaimed() - sys.farm.totalBonusPaid() - sys.farm.totalBurned(),
             "farm balance"
         );
+        assertGe(sys.engine.balanceOf(address(sys.farm)), sys.farm.reserved() + sys.farm.bonusPool(), "reserved held");
     }
 
-    /// @notice I5 the treasury table always sums to 10,000 and allocations are covered.
-    function invariant_treasuryTable() public view {
-        uint256 sum;
-        for (uint256 i; i < sys.treasury.sinkCount(); ++i) {
-            (, uint16 bps) = sys.treasury.sinkAt(i);
-            sum += bps;
-        }
-        assertEq(sum, 10_000);
-        assertGe(address(sys.treasury).balance, sys.treasury.allocatedTotal());
+    /// @notice I5 the buyback spends only profit, and keeper credits are covered.
+    function invariant_buybackSpendsProfitOnly() public view {
+        assertLe(sys.buyback.totalSpent(), sys.buyback.profitReceived(), "spent within profit received");
+        assertEq(sys.buyback.profitReceived(), sys.game.distributed(), "profit received = distributed");
         assertGe(address(sys.keeperFund).balance, sys.keeperFund.tipCreditTotal());
     }
 
-    /// @notice I6 sinks and modules hold nothing between calls.
-    function invariant_sinksHoldNothing() public view {
-        address[4] memory m = [address(sys.buyback), address(sys.grailFund), address(sys.buyer), address(sys.converter)];
-        for (uint256 i; i < 4; ++i) {
+    /// @notice I6 modules hold nothing between calls; the buyback holds no ENGINE (it burns all it buys).
+    function invariant_modulesHoldNothing() public view {
+        address[2] memory m = [address(sys.buyer), address(sys.converter)];
+        for (uint256 i; i < 2; ++i) {
             assertEq(m[i].balance, 0, "ETH");
             assertEq(sys.engine.balanceOf(m[i]), 0, "ENGINE");
         }
+        assertEq(sys.engine.balanceOf(address(sys.buyback)), 0, "buyback ENGINE");
     }
 
     /// @notice I7 every live listing's prize is in FWA escrow, or FWA has already allocated it to a purchaser
@@ -130,9 +129,7 @@ contract CustodyInvariants is ForkBase {
         handler.keeperSync(2, 20);
         handler.warp(2 days);
         handler.keeperSync(3, 20);
-        handler.distribute(0);
         handler.buyback(1);
-        handler.grailProcess(3);
         handler.convert(0);
         handler.convert(1);
         handler.withdrawRefund(1);
@@ -141,11 +138,11 @@ contract CustodyInvariants is ForkBase {
         handler.attack(1, 3);
         handler.donate(1, 0.1 ether);
         invariant_custody();
-        invariant_solvency();
+        invariant_books();
         invariant_ledgerMatchesFwa();
         invariant_farmBounded();
-        invariant_treasuryTable();
-        invariant_sinksHoldNothing();
+        invariant_buybackSpendsProfitOnly();
+        invariant_modulesHoldNothing();
         invariant_inventoryInEscrow();
     }
 }

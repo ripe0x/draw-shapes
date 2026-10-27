@@ -18,12 +18,10 @@ import {EngineRenderer} from "../src/token/EngineRenderer.sol";
 import {EngineHook} from "../src/token/EngineHook.sol";
 import {EngineBuyer} from "../src/token/EngineBuyer.sol";
 import {ProtocolLiquidity} from "../src/token/ProtocolLiquidity.sol";
-import {Treasury} from "../src/treasury/Treasury.sol";
 import {KeeperFund} from "../src/treasury/KeeperFund.sol";
-import {Buyback, GrailFund} from "../src/treasury/Sinks.sol";
+import {Buyback} from "../src/treasury/Buyback.sol";
 import {SwapPolicy} from "../src/policy/SwapPolicy.sol";
-import {EmissionSchedule} from "../src/policy/EmissionSchedule.sol";
-import {BoardPolicy, PricingPolicy, GrailPolicy} from "../src/policy/GamePolicies.sol";
+import {BoardPolicy, PricingPolicy} from "../src/policy/GamePolicies.sol";
 import {FwaFeeBuyer} from "../src/periphery/FwaFeeBuyer.sol";
 import {Lens} from "../src/Lens.sol";
 
@@ -33,10 +31,9 @@ abstract contract DeploySystem {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     uint256 internal constant SUPPLY = 1_000_000_000 ether;
-    uint256 internal constant LP_FLOAT = 100_000_000 ether; // 10%
-    uint256 internal constant GENESIS = 100_000_000 ether; // 10%
+    uint256 internal constant LP_FLOAT = 800_000_000 ether; // 80%
+    uint256 internal constant GENESIS = 190_000_000 ether; // 19%
     uint256 internal constant BONUS = 10_000_000 ether; // 1%
-    uint256 internal constant RESERVE = 790_000_000 ether; // 79%
 
     struct Config {
         address governance; // proposer and executor of the timelock
@@ -55,24 +52,20 @@ abstract contract DeploySystem {
         uint256 listBatch;
         uint256 markupBps;
         uint256 conversionBonusBps;
-        uint256[] grailLadder;
-        uint256 grailStartBps;
-        uint256 grailFloorBps;
-        uint256 grailDecayBps;
-        uint256 grailDecayPulls;
+        uint256 opsBps;
         uint256 hookFeeBps;
         uint256 snipeStartBps;
         uint256 snipeWindow;
         // game capital
-        uint256 reserveTarget;
-        uint256 maintenanceInterval;
-        // treasury
-        uint16 buybackBps;
-        uint16 grailBps;
-        uint256 burnShareBps;
+        FwaGame.Capital capital;
+        uint256 marketLead;
+        // genesis
+        uint256 rateCap; // ENGINE per 1 ETH of eligible ticket ETH in a steady epoch
+        // buyback
         uint256 sliceWei;
         uint256 minSpacing;
         uint256 maxImpactBps;
+        uint256 maxDeviationBps;
         KeeperFund.Params keeper;
         uint256 keeperSeed; // ETH the deploy wallet seeds KeeperFund with
         uint256 shutdownDelay;
@@ -81,9 +74,7 @@ abstract contract DeploySystem {
 
     struct System {
         TimelockController timelock;
-        Treasury treasury;
         KeeperFund keeperFund;
-        EmissionSchedule schedule;
         EngineRenderer renderer;
         GenesisFarm farm;
         ProtocolLiquidity liquidity;
@@ -93,12 +84,10 @@ abstract contract DeploySystem {
         EngineBuyer buyer;
         BoardPolicy board;
         PricingPolicy pricing;
-        GrailPolicy grail;
         PrizeVault vault;
         FwaGame game;
         Converter converter;
         Buyback buyback;
-        GrailFund grailFund;
         FwaFeeBuyer feeBuyer;
         Lens lens;
     }
@@ -116,33 +105,34 @@ abstract contract DeploySystem {
         s.timelock = new TimelockController(0, gov, gov, address(0));
         address tl = address(s.timelock);
 
-        s.treasury = new Treasury(tl);
-        s.keeperFund = new KeeperFund{value: c.keeperSeed}(tl, address(s.treasury), c.keeper);
-        s.schedule = new EmissionSchedule();
+        s.keeperFund = new KeeperFund{value: c.keeperSeed}(tl, c.keeper);
         s.renderer = new EngineRenderer();
 
         // The token mints to the farm and ProtocolLiquidity, which need its address: predict it.
         uint256 nonce = VM.getNonce(deployer);
         address predicted = VM.computeCreateAddress(deployer, nonce + 2);
-        s.farm = new GenesisFarm(tl, predicted, GENESIS, BONUS, RESERVE, address(s.schedule));
+        s.farm = new GenesisFarm(tl, predicted, GENESIS, BONUS, c.rateCap);
         s.liquidity = new ProtocolLiquidity(tl, IPoolManager(c.poolManager), predicted, c.lpMaxImpactBps);
         {
             address[] memory to = new address[](2);
             uint256[] memory amounts = new uint256[](2);
             (to[0], amounts[0]) = (address(s.liquidity), LP_FLOAT);
-            (to[1], amounts[1]) = (address(s.farm), GENESIS + BONUS + RESERVE);
+            (to[1], amounts[1]) = (address(s.farm), GENESIS + BONUS);
             s.engine = new EngineToken(tl, to, amounts, address(s.renderer));
         }
         _check(address(s.engine) == predicted, "engine address");
 
         s.swapPolicy = new SwapPolicy(tl, address(s.farm), c.hookFeeBps, c.snipeStartBps, c.snipeWindow);
+        // The vault receives the hook's trading fees, so it exists before the hook.
+        s.vault = new PrizeVault(tl, address(s.liquidity), c.poolManager, c.shutdownDelay);
         s.hook = _deployHook(c, s, tl);
         s.buyer = new EngineBuyer(tl, IPoolManager(c.poolManager), address(s.engine), address(s.hook));
 
         s.board = new BoardPolicy(tl, c.boardKinds, c.boardBackings, c.listBatch);
-        s.pricing = new PricingPolicy(tl, c.markupBps, c.conversionBonusBps);
-        s.grail = new GrailPolicy(tl, c.grailLadder, c.grailStartBps, c.grailFloorBps, c.grailDecayBps, c.grailDecayPulls);
-        s.vault = new PrizeVault(tl, address(s.liquidity), c.shutdownDelay);
+        s.pricing = new PricingPolicy(tl, c.markupBps, c.conversionBonusBps, c.opsBps);
+        s.buyback = new Buyback(
+            tl, address(s.keeperFund), address(s.engine), address(s.buyer), c.sliceWei, c.minSpacing, c.maxImpactBps, c.maxDeviationBps
+        );
         s.game = new FwaGame(
             FwaGame.Config({
                 governance: tl,
@@ -151,30 +141,16 @@ abstract contract DeploySystem {
                 expectedImplementation: c.fwaImplementation,
                 vault: address(s.vault),
                 farm: address(s.farm),
-                treasury: address(s.treasury),
+                buyback: address(s.buyback),
                 keeperFund: address(s.keeperFund),
                 board: address(s.board),
                 pricing: address(s.pricing),
-                grail: address(s.grail),
                 buyer: address(s.buyer),
-                reserveTarget: c.reserveTarget,
-                maintenanceInterval: c.maintenanceInterval
+                capital: c.capital,
+                marketLead: c.marketLead
             })
         );
         s.converter = new Converter(address(s.game), address(s.farm));
-        s.buyback = new Buyback(
-            tl,
-            address(s.treasury),
-            address(s.keeperFund),
-            address(s.engine),
-            address(s.buyer),
-            address(s.farm),
-            c.sliceWei,
-            c.minSpacing,
-            c.maxImpactBps,
-            c.burnShareBps
-        );
-        s.grailFund = new GrailFund(tl, address(s.treasury), address(s.keeperFund), address(s.game));
         s.feeBuyer = new FwaFeeBuyer(IPoolManager(c.poolManager), _fwaToken(c));
         s.lens = new Lens();
 
@@ -187,24 +163,15 @@ abstract contract DeploySystem {
         }
     }
 
-    function _wire(Config memory c, System memory s) internal {
+    function _wire(Config memory, System memory s) internal {
         {
-            address[] memory sinks = new address[](2);
-            uint16[] memory bps = new uint16[](2);
-            (sinks[0], bps[0]) = (address(s.buyback), c.buybackBps);
-            (sinks[1], bps[1]) = (address(s.grailFund), c.grailBps);
-            s.treasury.wire(address(s.keeperFund), sinks, bps);
-        }
-        {
-            address[] memory payers = new address[](5);
+            address[] memory payers = new address[](3);
             payers[0] = address(s.game);
-            payers[1] = address(s.treasury);
-            payers[2] = address(s.buyback);
-            payers[3] = address(s.grailFund);
-            payers[4] = address(s.farm);
-            s.keeperFund.wire(payers);
+            payers[1] = address(s.buyback);
+            payers[2] = address(s.farm);
+            s.keeperFund.wire(payers, address(s.game));
         }
-        s.farm.wire(address(s.game), address(s.buyback), address(s.converter), address(s.keeperFund));
+        s.farm.wire(address(s.game), address(s.converter), address(s.keeperFund));
         {
             address[] memory exempt = new address[](2);
             exempt[0] = address(s.buyer);
@@ -219,11 +186,12 @@ abstract contract DeploySystem {
             s.buyer.wire(callers);
         }
         s.vault.wire(address(s.game));
+        s.buyback.wire(address(s.game));
     }
 
     function _deployHook(Config memory c, System memory s, address tl) internal returns (EngineHook hook) {
         bytes memory args = abi.encode(
-            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.treasury), tl, address(s.swapPolicy)
+            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.vault), tl, address(s.swapPolicy)
         );
         bytes32 initHash = keccak256(abi.encodePacked(type(EngineHook).creationCode, args));
         uint160 flags = uint160(
@@ -238,7 +206,7 @@ abstract contract DeploySystem {
             if (uint160(predicted) & Hooks.ALL_HOOK_MASK == flags && predicted.code.length == 0) break;
         }
         hook = new EngineHook{salt: salt}(
-            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.treasury), tl, address(s.swapPolicy)
+            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.vault), tl, address(s.swapPolicy)
         );
         _check(address(hook) == predicted, "hook address");
     }
@@ -276,24 +244,26 @@ abstract contract DeploySystem {
         // supply and recipients
         _check(s.engine.totalSupply() == SUPPLY, "supply");
         _check(s.engine.balanceOf(address(s.liquidity)) == LP_FLOAT, "lp float");
-        _check(s.engine.balanceOf(address(s.farm)) == GENESIS + BONUS + RESERVE, "farm balance");
+        _check(s.engine.balanceOf(address(s.farm)) == GENESIS + BONUS, "farm balance");
         _check(s.engine.balanceOf(deployer) == 0, "deployer engine");
-        _check(s.farm.genesisBudget() == GENESIS && s.farm.bonusPool() == BONUS && s.farm.reserve() == RESERVE, "farm split");
+        _check(s.farm.genesisBudget() == GENESIS && s.farm.bonusPool() == BONUS, "farm split");
+        _check(s.farm.rateCap() == c.rateCap, "rate cap");
         // governance everywhere, nothing left to the deploy wallet
-        address[13] memory governed = [
-            address(s.treasury), address(s.keeperFund), address(s.farm), address(s.liquidity), address(s.engine),
-            address(s.swapPolicy), address(s.buyer), address(s.board), address(s.pricing), address(s.grail),
-            address(s.vault), address(s.game), address(s.buyback)
+        address[11] memory governed = [
+            address(s.keeperFund), address(s.farm), address(s.liquidity), address(s.engine), address(s.swapPolicy),
+            address(s.buyer), address(s.board), address(s.pricing), address(s.vault), address(s.game), address(s.buyback)
         ];
         for (uint256 i; i < governed.length; ++i) {
             _check(IGovernedView(governed[i]).governance() == tl, "governance");
             _check(IGovernedView(governed[i]).deployer() == address(0), "deployer power left");
         }
-        _check(s.grailFund.governance() == tl, "sink governance");
         _check(s.hook.governance() == tl, "hook governance");
-        // references
+        // funding routes: trading fees to the vault (capital), profit to the burn-only buyback, overflow to the game
         _check(s.hook.engine() == address(s.engine) && s.hook.launcher() == address(s.liquidity), "hook refs");
-        _check(s.hook.treasury() == address(s.treasury) && address(s.hook.policy()) == address(s.swapPolicy), "hook refs 2");
+        _check(s.hook.feeRecipient() == address(s.vault) && address(s.hook.policy()) == address(s.swapPolicy), "fee route");
+        _check(s.vault.poolManager() == c.poolManager, "vault fee intake");
+        _check(s.game.buyback() == address(s.buyback) && s.buyback.isSource(address(s.game)), "profit route");
+        _check(s.keeperFund.overflow() == address(s.game), "keeper overflow");
         _check(s.liquidity.hook() == address(s.hook) && s.liquidity.isAdder(address(s.vault)), "liquidity refs");
         _check(s.swapPolicy.hook() == address(s.hook), "policy hook");
         _check(s.swapPolicy.exempt(address(s.buyer)) && s.swapPolicy.exempt(address(s.liquidity)), "exempt");
@@ -303,32 +273,28 @@ abstract contract DeploySystem {
         _check(!s.buyer.isCaller(address(s.game)), "the game does not buy");
         _check(s.farm.isBonusPayer(address(s.converter)), "bonus payer");
         _check(address(s.converter.game()) == address(s.game), "converter game");
-        _check(s.farm.isLedger(address(s.game)) && s.farm.isDepositor(address(s.buyback)), "farm refs");
-        _check(s.game.reserveTarget() == c.reserveTarget && s.game.maintenanceInterval() == c.maintenanceInterval, "capital");
-        _check(s.buyback.burnShareBps() == c.burnShareBps, "burn share");
+        _check(s.farm.isLedger(address(s.game)), "farm ledger");
+        _check(s.game.reserveTarget() == c.capital.reserveTarget, "reserve");
+        _check(s.game.maintenanceInterval() == c.capital.maintenanceInterval, "maintenance");
+        _check(s.game.minLiveBps() == c.capital.minLiveBps && s.game.maxOutstanding() == c.capital.maxOutstanding, "admission");
+        _check(s.game.maxEdgeBps() == c.capital.maxEdgeBps && s.game.maxCooldown() == c.capital.maxCooldown, "fwa range");
+        _check(s.game.marketLead() == c.marketLead, "market lead");
+        _check(s.buyback.sliceWei() == c.sliceWei && s.buyback.maxImpactBps() == c.maxImpactBps, "buyback limits");
+        _check(s.buyback.maxDeviationBps() == c.maxDeviationBps, "buyback deviation");
         _check(address(s.keeperFund).balance >= c.keeperSeed, "keeper seed");
         _check(s.keeperFund.maintenanceFloor() == c.keeper.maintenanceFloor, "keeper floor");
         _check(address(s.farm.keeperFund()) == address(s.keeperFund), "farm keeper");
-        _check(s.farm.genesisEpochs() == 21 && s.farm.EPOCH_BLOCKS() == 7_200, "genesis");
+        _check(s.farm.GENESIS_EPOCHS() == 21 && s.farm.EPOCH_BLOCKS() == 7_200, "genesis");
         _check(s.vault.activeGame() == address(s.game), "vault game");
         _check(address(s.vault.liquidity()) == address(s.liquidity), "vault liquidity");
         _check(address(s.game.vault()) == address(s.vault) && address(s.game.farm()) == address(s.farm), "game refs");
-        _check(s.game.treasury() == address(s.treasury), "game treasury");
         _check(address(s.game.keeperFund()) == address(s.keeperFund), "game keeper");
         _check(address(s.game.buyer()) == address(s.buyer), "game buyer");
-        _check(s.pricing.markupBps() == c.markupBps, "markup");
-        _check(s.keeperFund.treasury() == address(s.treasury), "keeper treasury");
-        for (uint256 i; i < 5; ++i) {
-            address p = [address(s.game), address(s.treasury), address(s.buyback), address(s.grailFund), address(s.farm)][i];
+        _check(s.pricing.markupBps() == c.markupBps && s.pricing.opsBps() == c.opsBps, "pricing");
+        for (uint256 i; i < 3; ++i) {
+            address p = [address(s.game), address(s.buyback), address(s.farm)][i];
             _check(s.keeperFund.isPayer(p), "payer");
         }
-        // treasury table
-        _check(s.treasury.sinkCount() == 2, "sink count");
-        (address a0, uint16 b0) = s.treasury.sinkAt(0);
-        (address a1, uint16 b1) = s.treasury.sinkAt(1);
-        _check(a0 == address(s.buyback) && b0 == c.buybackBps, "sink 0");
-        _check(a1 == address(s.grailFund) && b1 == c.grailBps, "sink 1");
-        _check(uint256(b0) + b1 == 10_000, "table sum");
         // FWA pool
         if (c.createPool) {
             address pool = address(s.game.pool());

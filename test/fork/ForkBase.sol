@@ -23,6 +23,9 @@ interface IVrfRouted {
 ///         configuration. Addresses match `deployments/dependencies.json`, chain 1.
 abstract contract ForkBase is Test, LaunchConfig {
     uint256 internal constant FORK_BLOCK = 26_279_000;
+    uint256 internal constant LAUNCH_ETH = 5 ether;
+    /// @dev Opening capital in the tests: the 15.15 ETH board plus the 12 ETH reserve target, with room to spare.
+    uint256 internal constant OPENING_CAPITAL = 30 ether;
 
     address internal constant SHAPES = 0x6fE9193276bF7aBCbEE44AB7aFd717d637D6FAf0;
     address internal constant SHAPE_PACKS = 0xf21514B090Da7dF4390803497d6ae673801E5cA7;
@@ -49,7 +52,7 @@ abstract contract ForkBase is Test, LaunchConfig {
     ///      FWA fee purchase.
     function deployLaunch() internal {
         setUpFork();
-        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether);
+        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether, LAUNCH_ETH);
         cfg.create2Deployer = address(this);
         cfg.createPool = true;
         cfg.fwaFeeEth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
@@ -70,16 +73,44 @@ abstract contract ForkBase is Test, LaunchConfig {
         }
     }
 
-    /// @dev Opens the ENGINE market with `eth` against the 10% float.
+    /// @dev Opens the ENGINE market with `eth` against the 80% float.
     function openMarket(uint256 eth) internal {
         vm.deal(address(sys.timelock), eth);
         vm.prank(address(sys.timelock));
         sys.liquidity.launch{value: eth}();
     }
 
+    /// @dev Opens the game, first letting the 48-hour public market run if it has not yet.
     function openGame() internal {
+        uint256 ready = uint256(sys.hook.launchedAt()) + cfg.marketLead;
+        if (block.timestamp < ready) vm.warp(ready);
         vm.prank(address(sys.timelock));
         sys.game.openGame();
+    }
+
+    /// @dev Spends the open maintenance window with one settled pull and a sync, so the next replacement waits for a
+    ///      full maintenance interval.
+    function consumeWindow() internal {
+        pullAndSettle(makeAddr("windowPlayer"), 424242);
+        sys.game.sync(10);
+    }
+
+    /// @dev Lets the next sync change inventory (past the maintenance interval).
+    function window() internal {
+        vm.warp(block.timestamp + sys.game.maintenanceInterval());
+    }
+
+    /// @dev Pulls `n` times as `who`, each settled with a word chosen by `seed`, syncing as it goes.
+    function playMany(address who, uint256 n, uint256 seed) internal {
+        for (uint256 i; i < n; ++i) {
+            pullAndSettle(who, uint256(keccak256(abi.encode(seed, i))));
+            if (i % 10 == 9) {
+                window();
+                syncAll();
+            }
+        }
+        window();
+        syncAll();
     }
 
     // ------------------------------------------------------------------ pulls

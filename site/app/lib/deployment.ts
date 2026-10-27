@@ -7,10 +7,8 @@ export type Deployment = {
   blockNumber?: number;
   game: Address;
   farm: Address;
-  treasury: Address;
   keeperFund: Address;
   buyback: Address;
-  grailFund: Address;
   swapPolicy: Address;
   liquidity: Address;
   engine: Address;
@@ -28,10 +26,10 @@ export const deployment = record as unknown as Deployment;
 export const lensAddresses = {
   game: deployment.game,
   farm: deployment.farm,
-  treasury: deployment.treasury,
   keeperFund: deployment.keeperFund,
   buyback: deployment.buyback,
-  grailFund: deployment.grailFund,
   swapPolicy: deployment.swapPolicy,
   liquidity: deployment.liquidity,
+  vault: deployment.vault,
+  converter: deployment.converter,
 } as const;

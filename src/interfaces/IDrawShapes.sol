@@ -8,18 +8,23 @@ interface IPrizeVault {
     function repay(bool final_) external payable;
 }
 
-/// @notice What GenesisFarm reads from a game: units per epoch and the finality of an epoch.
+/// @notice What GenesisFarm reads from a game: eligible ticket ETH (wei) per epoch and the finality of an epoch.
 interface ILedger {
-    function epochUnits(uint256 epoch) external view returns (uint256);
-    function userUnits(uint256 epoch, address purchaser) external view returns (uint256);
+    function epochWeight(uint256 epoch) external view returns (uint256);
+    function userWeight(uint256 epoch, address purchaser) external view returns (uint256);
     function isEpochFinal(uint256 epoch) external view returns (bool);
 }
 
 interface IFwaGame is ILedger {
     function receiveFunding() external payable;
-    function fundGrail() external payable;
+    function fundPromotion() external payable;
+    function returnOps() external payable;
     function retire() external;
     function retired() external view returns (bool);
+}
+
+interface ILaunched {
+    function launchedAt() external view returns (uint64);
 }
 
 interface IGenesisFarm {
@@ -28,14 +33,8 @@ interface IGenesisFarm {
     function genesisEndBlock() external view returns (uint256);
     function currentEpoch() external view returns (uint256);
     function start() external;
-    function deposit(uint256 amount) external;
     function payBonus(address to, uint256 amount) external returns (uint256 paid);
     function bonusPool() external view returns (uint256);
-}
-
-interface ITreasury {
-    function owed(address sink) external view returns (uint256);
-    function draw(uint256 amount) external;
 }
 
 interface IKeeperFund {
@@ -46,6 +45,7 @@ interface IKeeperFund {
 }
 
 interface IEngineBuyer {
+    function hook() external view returns (address);
     function buy(uint256 minOut, address to, uint256 maxImpactBps)
         external
         payable
@@ -62,7 +62,7 @@ interface IBurnable {
 
 // ------------------------------------------------------------------ modules
 
-/// @notice Board composition. Row kinds: 0 = Shape, 1 = Pack. `backing` is in wei on the Shapes ladder.
+/// @notice Board composition. Row kind 0 = Shape (the only kind the game mints). `backing` is in wei on the Shapes ladder.
 interface IBoardPolicy {
     function rowCount() external view returns (uint256);
     function rowAt(uint256 index) external view returns (uint8 kind, uint96 backing);
@@ -73,17 +73,8 @@ interface IPricingPolicy {
     /// @return price Listing price for a prize whose cost (backing + mint fees) is `cost`.
     function listPrice(uint8 kind, uint256 backing, uint256 cost) external view returns (uint256 price);
     function conversionBonusBps() external view returns (uint256);
-}
-
-interface IGrailPolicy {
-    /// @return backing Shape backing of GRAIL number `step` (0-based), zero when no GRAIL is offered.
-    function grailBacking(uint256 step) external view returns (uint256 backing);
-    /// @return price Listing price of a GRAIL of `backing` after `pullsSinceListed` booked pulls.
-    function grailPrice(uint256 backing, uint256 pullsSinceListed) external view returns (uint256 price);
-}
-
-interface IEmissionSchedule {
-    function allocationOf(uint256 epoch, uint256 total) external view returns (uint256);
+    /// @return Operating allocation, in bps of a quote's expected replacement cost.
+    function opsBps() external view returns (uint256);
 }
 
 interface ISwapPolicy {

@@ -12,13 +12,13 @@ export function shouldAct({ ageSeconds, basefeeWei, backupAfterSeconds, basefeeG
   return ageSeconds > backupAfterSeconds || basefeeWei < basefeeGateWei;
 }
 
-/** The jobs with work available, in the order the keeper runs them. */
+/** The jobs with work available, in the order the keeper runs them. A buyback whose price check fails this block
+ *  (someone moved the price since the block opened) is left for a later block. */
 export function jobs(work) {
   const out = [];
-  if (work.syncable > 0n || work.unlistedRows > 0n) out.push({ name: "sync", age: work.syncAge });
-  if (work.unallocated > 0n) out.push({ name: "distribute", age: work.distributeAge });
-  if (work.buybackReady) out.push({ name: "buyback", age: null });
-  if (work.grailOwed > 0n) out.push({ name: "grail", age: null });
-  if (work.retireUnearnedReady) out.push({ name: "retireUnearned", age: null });
+  if (work.syncable > 0n || work.unlistedRows > 0n || work.admissionChange) out.push({ name: "sync", age: work.syncAge });
+  if (work.buybackReady && work.buybackPriceOk) out.push({ name: "buyback", age: null });
+  if (work.finalizable.length > 0) out.push({ name: "finalize", age: null, args: [work.finalizable] });
+  if (work.bonusRetireReady) out.push({ name: "retireBonus", age: null });
   return out;
 }

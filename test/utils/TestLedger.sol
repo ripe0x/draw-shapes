@@ -3,15 +3,16 @@ pragma solidity 0.8.28;
 
 import {GenesisFarm} from "../../src/token/GenesisFarm.sol";
 
-/// @notice A stand-in game for farm unit tests: units and finality are set directly. (Fork tests use FwaGame.)
+/// @notice A stand-in game for farm unit tests: weights (ticket ETH) and finality are set directly. (Fork tests use
+///         FwaGame.)
 contract TestLedger {
-    mapping(uint256 => uint256) public epochUnits;
-    mapping(uint256 => mapping(address => uint256)) public userUnits;
+    mapping(uint256 => uint256) public epochWeight;
+    mapping(uint256 => mapping(address => uint256)) public userWeight;
     mapping(uint256 => bool) public notFinal;
 
-    function add(uint256 epoch, address user, uint256 units) external {
-        epochUnits[epoch] += units;
-        userUnits[epoch][user] += units;
+    function add(uint256 epoch, address user, uint256 weight) external {
+        epochWeight[epoch] += weight;
+        userWeight[epoch][user] += weight;
     }
 
     function setNotFinal(uint256 epoch, bool v) external {

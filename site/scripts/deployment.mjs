@@ -7,8 +7,8 @@ const name = process.env.NEXT_PUBLIC_DEPLOYMENT || "1";
 const src = fileURLToPath(new URL(`../../deployments/${name}.json`, import.meta.url));
 const out = fileURLToPath(new URL("../app/lib/deployment.generated.json", import.meta.url));
 const zero = "0x0000000000000000000000000000000000000000";
-const keys = ["game", "farm", "treasury", "keeperFund", "buyback", "grailFund", "swapPolicy", "liquidity", "engine",
-  "lens", "converter", "fwaPool", "vault", "shapes", "timelock"];
+const keys = ["game", "farm", "keeperFund", "buyback", "swapPolicy", "liquidity", "engine", "lens", "converter",
+  "fwaPool", "vault", "shapes", "timelock"];
 let rec = { chainId: Number(name) || 1, deployed: false };
 if (existsSync(src)) {
   rec = { ...JSON.parse(readFileSync(src, "utf8")), deployed: true };

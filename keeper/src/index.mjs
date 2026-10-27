@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { createPublicClient, createWalletClient, http, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
-import { lensAbi, gameAbi, treasuryAbi, buybackAbi, grailFundAbi, farmAbi } from "./abi.mjs";
+import { lensAbi, gameAbi, buybackAbi, farmAbi } from "./abi.mjs";
 import { shouldAct, jobs } from "./policy.mjs";
 
 const env = (k, d) => process.env[k] ?? d;
@@ -34,27 +34,27 @@ const wallet = createWalletClient({ account, chain, transport: http(rpc) });
 const addrs = {
   game: dep.game,
   farm: dep.farm,
-  treasury: dep.treasury,
   keeperFund: dep.keeperFund,
   buyback: dep.buyback,
-  grailFund: dep.grailFund,
   swapPolicy: dep.swapPolicy,
   liquidity: dep.liquidity,
+  vault: dep.vault,
+  converter: dep.converter,
 };
 
+// The buyback's own limits (slice, impact, same-block price check) hold whatever minOut is passed, so the keeper
+// passes 0 and lets the contract protect itself.
 const calls = {
   sync: { address: dep.game, abi: gameAbi, functionName: "sync", args: [syncMax] },
-  distribute: { address: dep.treasury, abi: treasuryAbi, functionName: "distribute", args: [] },
   buyback: { address: dep.buyback, abi: buybackAbi, functionName: "process", args: [0n] },
-  grail: { address: dep.grailFund, abi: grailFundAbi, functionName: "process", args: [] },
-  retireUnearned: { address: dep.farm, abi: farmAbi, functionName: "retireUnearned", args: [] },
+  finalize: { address: dep.farm, abi: farmAbi, functionName: "finalize" },
+  retireBonus: { address: dep.farm, abi: farmAbi, functionName: "retireBonus", args: [] },
 };
 
 async function ageOf(job, now) {
   if (job.age !== null) return job.age;
   if (job.name === "buyback") return now - (await pub.readContract({ address: dep.buyback, abi: buybackAbi, functionName: "lastRunAt" }));
-  if (job.name === "grail") return now - (await pub.readContract({ address: dep.grailFund, abi: grailFundAbi, functionName: "lastRunAt" }));
-  return backupAfter + 1n; // retireUnearned: nobody else may have done it; act
+  return backupAfter + 1n; // finalize, retireBonus: nobody else may have done it; act
 }
 
 async function tick() {
@@ -68,7 +68,8 @@ async function tick() {
       continue;
     }
     try {
-      const { request } = await pub.simulateContract({ account, ...calls[job.name] });
+      const call = job.args ? { ...calls[job.name], args: job.args } : calls[job.name];
+      const { request } = await pub.simulateContract({ account, ...call });
       const hash = await wallet.writeContract(request);
       const receipt = await pub.waitForTransactionReceipt({ hash });
       console.log(`${job.name}: ${receipt.status} ${hash} gas ${receipt.gasUsed}`);

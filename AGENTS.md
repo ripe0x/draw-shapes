@@ -8,7 +8,7 @@
 - Operations: [DEPLOY](docs/DEPLOY.md) and [RUNBOOK](docs/RUNBOOK.md). Dependency assumptions: [docs/external](docs/external/)
   and the vendored verified FWA sources in `external/fwa-v2/mainnet/`.
 - Layout: `src/game` (PrizeVault, FwaGame, Converter), `src/token` (EngineToken, GenesisFarm, EngineHook,
-  ProtocolLiquidity, EngineBuyer, EngineRenderer), `src/treasury` (Treasury, KeeperFund, sinks), `src/policy`
+  ProtocolLiquidity, EngineBuyer, EngineRenderer), `src/treasury` (Buyback, KeeperFund), `src/policy`
   (modules), `src/Lens.sol`, `script/` (DeploySystem shared by the deploy script and the fork tests), `test/{unit,fork,
   invariant,scenario}`, `sim/`, `site/`, `keeper/`.
 

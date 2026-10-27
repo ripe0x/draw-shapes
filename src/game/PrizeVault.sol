@@ -6,20 +6,26 @@ import {Governed} from "../Governed.sol";
 import {IFwaGame, IProtocolLiquidity} from "../interfaces/IDrawShapes.sol";
 
 /// @title PrizeVault
-/// @notice Holds the game's ETH. It sends it only to the active game (`fund`, anyone) and, once no game is
-///         active and the last one has returned everything, to the ENGINE liquidity position (`shutdown`,
-///         anyone, after `shutdownDelay`). There is no withdraw.
+/// @notice Holds the game's capital: the opening capital, every ENGINE trading fee (the hook pays it here, through the
+///         PoolManager), contributions, and what a game returns. It sends ETH only to the active game, as capital
+///         (`fund`, anyone) or as a promotion budget (`fundPromotion`, timelock), and, once no game is active and the
+///         last one has returned everything, to the ENGINE liquidity position (`shutdown`, anyone, after
+///         `shutdownDelay`). There is no withdraw. Each source is counted separately; none of it is profit.
 contract PrizeVault is ReentrancyGuard, Governed {
     uint256 public constant MIN_SHUTDOWN_DELAY = 1 days;
     uint256 public constant MAX_SHUTDOWN_DELAY = 365 days;
 
     IProtocolLiquidity public immutable liquidity;
+    address public immutable poolManager;
     address public activeGame;
     bool public retiring;
     uint256 public returnedAt;
     uint256 public shutdownDelay;
     uint256 public totalFunded;
     uint256 public totalRepaid;
+    uint256 public tradingFees;
+    uint256 public contributions;
+    uint256 public promotionsFunded;
 
     event GameActivated(address indexed game);
     event Funded(address indexed game, uint256 amount);
@@ -27,6 +33,7 @@ contract PrizeVault is ReentrancyGuard, Governed {
     event Repaid(address indexed game, uint256 amount, bool final_);
     event Shutdown(uint256 amount);
     event ShutdownDelaySet(uint256 delay);
+    event PromotionFunded(address indexed game, uint256 amount);
 
     error GameActive();
     error NoActiveGame();
@@ -34,13 +41,20 @@ contract PrizeVault is ReentrancyGuard, Governed {
     error NotReady();
     error NothingToSend();
 
-    constructor(address governance_, address liquidity_, uint256 shutdownDelay_) Governed(governance_, true) {
-        if (liquidity_ == address(0)) revert ZeroAddress();
+    constructor(address governance_, address liquidity_, address poolManager_, uint256 shutdownDelay_)
+        Governed(governance_, true)
+    {
+        if (liquidity_ == address(0) || poolManager_ == address(0)) revert ZeroAddress();
         liquidity = IProtocolLiquidity(liquidity_);
+        poolManager = poolManager_;
         _setShutdownDelay(shutdownDelay_);
     }
 
-    receive() external payable {}
+    /// @dev Trading fees arrive from the PoolManager in the middle of every swap; kept cheap.
+    receive() external payable {
+        if (msg.sender == poolManager) tradingFees += msg.value;
+        else contributions += msg.value;
+    }
 
     /// @notice One-shot wiring by the deployer: the first game.
     function wire(address game) external onlyWiring {
@@ -70,6 +84,15 @@ contract PrizeVault is ReentrancyGuard, Governed {
         totalFunded += amount;
         IFwaGame(game).receiveFunding{value: amount}();
         emit Funded(game, amount);
+    }
+
+    /// @notice Sends `amount` to the active game's promotion budget. Promotions are funded explicitly, never from profit.
+    function fundPromotion(uint256 amount) external onlyGovernance nonReentrant {
+        address game = activeGame;
+        if (game == address(0) || retiring) revert NoActiveGame();
+        promotionsFunded += amount;
+        IFwaGame(game).fundPromotion{value: amount}();
+        emit PromotionFunded(game, amount);
     }
 
     /// @notice Starts retiring the active game; its retire path returns everything here.

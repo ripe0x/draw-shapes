@@ -9,11 +9,15 @@ interface ILaunched {
 }
 
 /// @title SwapPolicy
-/// @notice Launch policy of the ENGINE hook. Fee `feeBps` on every swap; exempt senders (FwaGame's buyer path,
-///         the buyback buyer, ProtocolLiquidity) pay nothing and pass the gate. From game open to genesis end
-///         a buy from anyone else is refused (the gate reads the farm's clock). For `snipeWindow` seconds
+/// @notice Launch policy of the ENGINE hook. Fee `feeBps` on every swap; exempt senders (EngineBuyer, which serves
+///         the Converter and the Buyback, and ProtocolLiquidity) pay nothing and pass the gate. From game open to
+///         genesis end a buy from anyone else is refused (the gate reads the farm's clock). For `snipeWindow` seconds
 ///         after the pool opens, buys pay an extra fee that decays linearly from `snipeStartBps` to zero.
-/// @dev A module: views only. The hook enforces its own caps and never lets a policy block a sell.
+/// @dev A module: views only. The hook enforces its own caps and never lets a policy block a sell. The hook sees as
+///      `sender` whoever called `PoolManager.swap`: for a public router (the Universal Router, any aggregator) that
+///      is the router, shared by everyone. Exempting one would open the gate to all its users, so the exempt set is
+///      fixed at wiring (EngineBuyer, which serves only registered callers, and ProtocolLiquidity) and has no setter;
+///      a different set needs a new policy (`EngineHook.setPolicy`, timelock).
 contract SwapPolicy is ISwapPolicy, Governed {
     uint256 public constant MAX_FEE_BPS = 500;
     uint256 public constant MAX_SNIPE_BPS = 9_000;
@@ -78,10 +82,6 @@ contract SwapPolicy is ISwapPolicy, Governed {
 
     function setSnipe(uint256 startBps, uint256 window) external onlyGovernance {
         _setSnipe(startBps, window);
-    }
-
-    function setExempt(address account, bool isExempt) external onlyGovernance {
-        _setExempt(account, isExempt);
     }
 
     function _setFee(uint256 feeBps_) internal {

@@ -504,3 +504,21 @@ interface IPurchaseOperator {
 - The Sepolia factory (`0xdF0b…4358`) is an older stack: `createPool(bytes32,uint256,address)` reverts there; its
   creation fee is 0 and `maxPoolsPerWallet` is unlimited.
 - `0xf215…` on mainnet is "Shape Packs" with `MIN_PACK_VALUE` 0.03 ETH (3 units), not the two-unit Draw Packs variant.
+
+## 18. Found during the sustainability follow-up (2026-10-27, same fork block)
+
+- **Ordered settlement against the live pool.** A request escrows the fee quoted at its transaction; at its ordered turn
+  FWA re-prices against the live pool (after earlier sequences and the request's reserved staged batch) and refunds the
+  request if the live fee is more than `selectionSlippageBps` (10%) above the escrow, or more than the purchaser's
+  `maxNegativeSlippageBps` below it. Removing cheap listings raises the fee, so earlier wins can refund later requests
+  accepted on the same quote (measured in `test/fork/Accounting.t.sol`).
+- **Owner split base.** `requestBasePrice = min(weightedBackingTotal / totalWeight, fee)` at the request; the owner gets
+  `paid − (paid − base)/2` at delivery. Since `acquisitionFee()` rounds `EV × (1 + edge)` down, `paid / (1 + edge)` is never
+  above the base FWA used.
+- **`setBool(ACQUISITIONS_ENABLED)` does not bump `inventoryVersion`** or start the cooldown; the owner can toggle
+  purchases without invalidating anyone's quote. It reverts only after `retirePool`.
+- **Outstanding VRF requests are capped**: `maxOutstandingRequestsPerPool` 10 and `maxOutstandingRequestsGlobal` 100 on
+  the factory (prepared plus coordinator-outstanding); `setVrfRequestLimits` changes them.
+- **Factory bounds**: `MAX_EDGE_BPS` 1,000; `MAX_INVENTORY_CHANGE_COOLDOWN` 7 days.
+- **A failed delivery can stay pending forever**: only the purchaser may call `refundFailedDelivery` after the 7-day
+  window, and `retryNFTDelivery` works only inside it. The prize is out of the draw meanwhile.

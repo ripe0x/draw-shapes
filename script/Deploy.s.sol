@@ -18,7 +18,7 @@ interface IFactoryPreflight {
 /// @notice Deploys Draw Shapes + ENGINE. Run through `script/deploy.sh <env>`, which sources the values-only
 ///         `script/env/<env>.env`. Preflight refuses on any dependency mismatch; postflight reads back supply,
 ///         recipients, ownership (everything governed by the timelock, nothing left to the deploy wallet), the
-///         FWA pool owner, the treasury table, the hook configuration and the gate end. Forge simulates the
+///         FWA pool owner, the funding routes, the hook configuration and the gate end. Forge simulates the
 ///         whole script before broadcasting anything, so a failed check stops the run before the first
 ///         transaction is sent.
 contract Deploy is Script, LaunchConfig {
@@ -35,7 +35,8 @@ contract Deploy is Script, LaunchConfig {
             vm.envAddress("FWA_FACTORY"),
             vm.envAddress("FWA_IMPLEMENTATION"),
             vm.envAddress("POOL_MANAGER"),
-            IShapes(vm.envAddress("SHAPES")).unit()
+            IShapes(vm.envAddress("SHAPES")).unit(),
+            vm.envUint("LAUNCH_ETH_WEI")
         );
         c.create2Deployer = CREATE2_DEPLOYER;
         c.keeperSeed = vm.envOr("KEEPER_SEED", uint256(0));
@@ -79,9 +80,7 @@ contract Deploy is Script, LaunchConfig {
         k.serialize("gitCommit", vm.envOr("GIT_COMMIT", string("unknown")));
         k.serialize("governance", c.governance);
         k.serialize("timelock", address(s.timelock));
-        k.serialize("treasury", address(s.treasury));
         k.serialize("keeperFund", address(s.keeperFund));
-        k.serialize("emissionSchedule", address(s.schedule));
         k.serialize("renderer", address(s.renderer));
         k.serialize("farm", address(s.farm));
         k.serialize("liquidity", address(s.liquidity));
@@ -91,13 +90,11 @@ contract Deploy is Script, LaunchConfig {
         k.serialize("buyer", address(s.buyer));
         k.serialize("boardPolicy", address(s.board));
         k.serialize("pricingPolicy", address(s.pricing));
-        k.serialize("grailPolicy", address(s.grail));
         k.serialize("vault", address(s.vault));
         k.serialize("game", address(s.game));
         k.serialize("converter", address(s.converter));
         k.serialize("fwaPool", address(s.game.pool()));
         k.serialize("buyback", address(s.buyback));
-        k.serialize("grailFund", address(s.grailFund));
         k.serialize("feeBuyer", address(s.feeBuyer));
         k.serialize("shapes", c.shapes);
         k.serialize("shapePacks", c.packs);

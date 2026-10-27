@@ -5,123 +5,86 @@ import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {FixedPointMathLib as FPM} from "solady/utils/FixedPointMathLib.sol";
 import {Governed} from "../Governed.sol";
-import {ILedger, IEmissionSchedule, IKeeperFund, IBurnable} from "../interfaces/IDrawShapes.sol";
+import {ILedger, IKeeperFund, IBurnable} from "../interfaces/IDrawShapes.sol";
 
 /// @title GenesisFarm
-/// @notice Holds the farm's ENGINE: the genesis allocation, the prize-conversion bonus pool and the seasons
-///         reserve. Pays each epoch's pot to that epoch's delivered pulls, pro rata by units (one per pull),
-///         once the epoch is final. Owns the epoch clock: epochs of `EPOCH_BLOCKS` blocks from `openBlock`.
-/// @dev Pot of epoch `e` = genesis allocation (`e < genesisEpochs`, from the immutable EmissionSchedule) +
-///      season allocation + buyback deposits + amounts rolled in from empty epochs. The pot is snapshotted at
-///      the epoch's first claim. Units come from up to `MAX_LEDGERS` registered games, summed; an epoch is
-///      final when its last block has passed and every ledger reports it final. Claims never expire.
-///      ENGINE leaves only by claims, conversion bonuses (to a ledger's caller), and burns.
+/// @notice Holds the genesis allocation and the prize-conversion bonus pool. Over 21 epochs of `EPOCH_BLOCKS` blocks
+///         from `openBlock` it pays each epoch's pot to that epoch's delivered pulls, pro rata by eligible ticket
+///         ETH, once the epoch is final. Owns the epoch clock; genesis ends at `openBlock + 21 × EPOCH_BLOCKS`, a
+///         fixed block nobody can move.
+/// @dev Schedule (frozen in code): epoch weight `w(e)` is 8 for the 14 steady epochs, then 7, 6, ..., 1 (87.5% down to
+///      12.5%); the weights sum to 140. Epoch `e` has an allocation cap `genesisBudget × w(e) / 140` (F / 17.5 in a
+///      steady epoch) and a rate cap `rateCap × w(e) / 8` ENGINE per ETH of eligible ticket ETH. Its pot is
+///      `min(allocation cap, eligible ticket ETH × rate cap)`, so a small purchase earns at most its rate and never a
+///      whole pot. Weight is FWA fee paid on delivered pulls (refunded, expired and undelivered draws count nothing;
+///      neither do VRF fees, gas, conversions or transfers), summed over up to `MAX_LEDGERS` games. An epoch is final
+///      when its last block has passed and every ledger reports it final; `finalize` then fixes its pot and burns the
+///      rest of its cap, which no one can earn any more. Claims never expire. ENGINE leaves only by claims, conversion
+///      bonuses (to the registered Converter's caller), and burns of what is conclusively unearned.
 contract GenesisFarm is ReentrancyGuard, Governed {
     uint256 public constant EPOCH_BLOCKS = 7_200;
-    uint256 public constant MAX_GENESIS_EPOCHS = 21;
-    uint256 public constant MIN_GENESIS_EPOCHS = 7;
-    uint256 public constant NOTICE_EPOCHS = 2;
+    uint256 public constant GENESIS_EPOCHS = 21;
+    uint256 public constant STEADY_EPOCHS = 14;
+    uint256 public constant STEADY_WEIGHT = 8;
+    uint256 public constant TOTAL_WEIGHT = 140;
     uint256 public constant MAX_LEDGERS = 4;
-    uint256 public constant MAX_SEASONS = 8;
-    uint256 public constant MAX_SEASON_EPOCHS = 365;
-    /// @notice A season starts at least this many epochs (50,400 blocks, about 7 days) after it is scheduled.
-    uint256 public constant SEASON_NOTICE_EPOCHS = 7;
 
     address public immutable engine;
     uint256 public immutable genesisBudget;
+    /// @notice Steady-epoch rate cap: ENGINE (wei) per 1 ETH of eligible ticket ETH.
+    uint256 public immutable rateCap;
 
-    IEmissionSchedule public immutable schedule;
     IKeeperFund public keeperFund;
-    uint256 public genesisEpochs = MAX_GENESIS_EPOCHS;
     uint256 public openBlock;
     uint256 public bonusPool;
-    uint256 public reserve;
 
     address[] internal _ledgers;
     mapping(address => bool) public isLedger;
-    mapping(address => bool) public isDepositor;
     mapping(address => bool) public isBonusPayer;
 
-    struct Season {
-        uint64 startEpoch;
-        uint64 epochs;
-        uint128 perEpoch;
-    }
-
-    Season[] internal _seasons;
-
-    mapping(uint256 epoch => uint256) public deposits;
-    mapping(uint256 epoch => uint256) public rolledIn;
-    mapping(uint256 epoch => bool) public rolledOut;
-    mapping(uint256 epoch => uint256) internal _potSnapshot; // pot + 1 once snapshotted
+    mapping(uint256 epoch => uint256) internal _potSnapshot; // pot + 1 once finalized
     mapping(uint256 epoch => mapping(address => bool)) public claimed;
 
-    /// @notice Genesis allocation committed so far: snapshotted pots' genesis parts plus genesis burns.
-    uint256 public genesisCommitted;
+    uint256 public totalPots; // pots fixed by finalization
     uint256 public totalClaimed;
-    uint256 public totalDeposited;
     uint256 public totalBonusPaid;
     uint256 public totalBurned;
-    bool public unearnedRetired;
+    bool public bonusRetired;
 
     event Started(uint256 openBlock);
+    event Finalized(uint256 indexed epoch, uint256 pot, uint256 burned);
     event Claimed(address indexed purchaser, uint256 indexed epoch, uint256 amount);
-    event Deposited(address indexed depositor, uint256 indexed epoch, uint256 amount);
-    event RolledOver(uint256 indexed fromEpoch, uint256 indexed toEpoch, uint256 amount);
     event BonusPaid(address indexed to, uint256 amount);
-    event Shortened(uint256 genesisEpochs, uint256 burned);
-    event SeasonScheduled(uint256 startEpoch, uint256 epochs, uint256 perEpoch);
-    event ReserveBurned(uint256 amount);
-    event UnearnedRetired(uint256 amount, uint256 emptyEpochs, uint256 bonusBurned);
+    event BonusRetired(uint256 burned);
     event LedgerAdded(address ledger);
-    event DepositorSet(address indexed depositor, bool allowed);
     event BonusPayerSet(address indexed payer, bool allowed);
     event KeeperFundSet(address keeperFund);
 
     error NotLedger();
-    error NotDepositor();
     error NotBonusPayer();
     error AlreadyStarted();
-    error NotStarted();
     error NotFinal(uint256 epoch);
     error AlreadyClaimed(uint256 epoch);
-    error NoUnits(uint256 epoch);
     error NothingToClaim();
-    error CannotRollover(uint256 epoch);
     error GenesisNotOver();
-    error AlreadyRetired();
-    error InvalidShorten();
-    error InvalidSeason();
-    error ExceedsReserve();
+    error NoWork();
     error Underfunded();
 
-    constructor(
-        address governance_,
-        address engine_,
-        uint256 genesisBudget_,
-        uint256 bonusPool_,
-        uint256 reserve_,
-        address schedule_
-    ) Governed(governance_, true) {
-        if (engine_ == address(0) || schedule_ == address(0)) revert ZeroAddress();
+    constructor(address governance_, address engine_, uint256 genesisBudget_, uint256 bonusPool_, uint256 rateCap_)
+        Governed(governance_, true)
+    {
+        if (engine_ == address(0)) revert ZeroAddress();
         engine = engine_;
         genesisBudget = genesisBudget_;
         bonusPool = bonusPool_;
-        reserve = reserve_;
-        schedule = IEmissionSchedule(schedule_);
+        rateCap = rateCap_;
     }
 
-    /// @notice The most a season may release per epoch: the genesis average.
-    function maxSeasonPerEpoch() public view returns (uint256) {
-        return genesisBudget / MAX_GENESIS_EPOCHS;
-    }
-
-    /// @notice One-shot wiring by the deployer: the first game, the buyback depositor, the converter, the keeper
-    ///         fund. Requires the farm to hold its three allocations.
-    function wire(address ledger, address depositor, address converter, address keeperFund_) external onlyWiring {
-        if (SafeTransferLib.balanceOf(engine, address(this)) < genesisBudget + bonusPool + reserve) revert Underfunded();
+    /// @notice One-shot wiring by the deployer: the first game, the converter, the keeper fund. Requires the farm to
+    ///         hold its two allocations.
+    function wire(address ledger, address converter, address keeperFund_) external onlyWiring {
+        if (SafeTransferLib.balanceOf(engine, address(this)) < genesisBudget + bonusPool) revert Underfunded();
         _addLedger(ledger);
-        _setDepositor(depositor, true);
         _setBonusPayer(converter, true);
         _setKeeperFund(keeperFund_);
     }
@@ -141,37 +104,52 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         return openBlock == 0 ? 0 : (block.number - openBlock) / EPOCH_BLOCKS;
     }
 
-    /// @notice First block after genesis (max uint before the clock starts).
+    /// @notice First block after genesis (max uint before the clock starts). Public buys reopen here.
     function genesisEndBlock() public view returns (uint256) {
-        return openBlock == 0 ? type(uint256).max : openBlock + genesisEpochs * EPOCH_BLOCKS;
+        return openBlock == 0 ? type(uint256).max : openBlock + GENESIS_EPOCHS * EPOCH_BLOCKS;
     }
 
     function ledgers() external view returns (address[] memory) {
         return _ledgers;
     }
 
-    function seasonCount() external view returns (uint256) {
-        return _seasons.length;
+    // ------------------------------------------------------------------ schedule
+
+    /// @notice Weight of `epoch` in the schedule, in eighths of a steady epoch (zero after genesis).
+    function stepWeight(uint256 epoch) public pure returns (uint256) {
+        if (epoch < STEADY_EPOCHS) return STEADY_WEIGHT;
+        if (epoch < GENESIS_EPOCHS) return GENESIS_EPOCHS - epoch;
+        return 0;
     }
 
-    function seasonAt(uint256 i) external view returns (uint256 startEpoch, uint256 epochs, uint256 perEpoch) {
-        Season memory s = _seasons[i];
-        return (s.startEpoch, s.epochs, s.perEpoch);
+    /// @notice Most ENGINE `epoch` can pay. The last epoch takes the rounding so the caps sum to the budget.
+    function allocationCap(uint256 epoch) public view returns (uint256 cap) {
+        if (epoch >= GENESIS_EPOCHS) return 0;
+        if (epoch < GENESIS_EPOCHS - 1) return genesisBudget * stepWeight(epoch) / TOTAL_WEIGHT;
+        cap = genesisBudget;
+        for (uint256 e; e < GENESIS_EPOCHS - 1; ++e) {
+            cap -= genesisBudget * stepWeight(e) / TOTAL_WEIGHT;
+        }
+    }
+
+    /// @notice ENGINE (wei) per 1 ETH of eligible ticket ETH in `epoch`.
+    function rateCapOf(uint256 epoch) public view returns (uint256) {
+        return rateCap * stepWeight(epoch) / STEADY_WEIGHT;
     }
 
     // ------------------------------------------------------------------ ledger reads
 
-    function epochUnits(uint256 epoch) public view returns (uint256 units) {
+    function epochWeight(uint256 epoch) public view returns (uint256 w) {
         uint256 n = _ledgers.length;
         for (uint256 i; i < n; ++i) {
-            units += ILedger(_ledgers[i]).epochUnits(epoch);
+            w += ILedger(_ledgers[i]).epochWeight(epoch);
         }
     }
 
-    function userUnits(uint256 epoch, address purchaser) public view returns (uint256 units) {
+    function userWeight(uint256 epoch, address purchaser) public view returns (uint256 w) {
         uint256 n = _ledgers.length;
         for (uint256 i; i < n; ++i) {
-            units += ILedger(_ledgers[i]).userUnits(epoch, purchaser);
+            w += ILedger(_ledgers[i]).userWeight(epoch, purchaser);
         }
     }
 
@@ -185,42 +163,26 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         return true;
     }
 
+    function isFinalized(uint256 epoch) public view returns (bool) {
+        return _potSnapshot[epoch] != 0;
+    }
+
     // ------------------------------------------------------------------ pots
 
-    /// @notice Genesis allocation of `epoch` (zero once the epoch is past genesis).
-    function genesisAllocationOf(uint256 epoch) public view returns (uint256) {
-        if (epoch >= genesisEpochs) return 0;
-        return schedule.allocationOf(epoch, genesisBudget);
-    }
-
-    function seasonAllocationOf(uint256 epoch) public view returns (uint256 amount) {
-        uint256 n = _seasons.length;
-        for (uint256 i; i < n; ++i) {
-            Season memory s = _seasons[i];
-            if (epoch >= s.startEpoch && epoch < uint256(s.startEpoch) + s.epochs) amount += s.perEpoch;
-        }
-    }
-
-    /// @notice Pot of `epoch`: the snapshot if taken, else what it would be now.
+    /// @notice Pot of `epoch`: fixed once finalized, else what it would be on the ledgers as they stand.
     function potOf(uint256 epoch) public view returns (uint256) {
         uint256 snap = _potSnapshot[epoch];
         if (snap != 0) return snap - 1;
-        if (rolledOut[epoch]) return 0;
-        return _genesisPart(epoch) + seasonAllocationOf(epoch) + deposits[epoch] + rolledIn[epoch];
+        uint256 cap = allocationCap(epoch);
+        uint256 byRate = FPM.fullMulDiv(epochWeight(epoch), rateCapOf(epoch), 1 ether);
+        return byRate < cap ? byRate : cap;
     }
 
-    /// @dev Genesis allocation of `epoch`, limited by what is left of the genesis budget.
-    function _genesisPart(uint256 epoch) internal view returns (uint256 g) {
-        g = genesisAllocationOf(epoch);
-        uint256 headroom = genesisBudget - genesisCommitted;
-        if (g > headroom) g = headroom;
-    }
-
-    /// @notice Reward of `purchaser` in `epoch` as the ledgers stand (final once `isFinal`).
+    /// @notice Reward of `purchaser` in `epoch` (final once the epoch is final).
     function rewardOf(uint256 epoch, address purchaser) public view returns (uint256) {
-        uint256 units = epochUnits(epoch);
-        if (units == 0) return 0;
-        return FPM.fullMulDiv(potOf(epoch), userUnits(epoch, purchaser), units);
+        uint256 w = epochWeight(epoch);
+        if (w == 0) return 0;
+        return FPM.fullMulDiv(potOf(epoch), userWeight(epoch, purchaser), w);
     }
 
     /// @notice Unclaimed rewards of `purchaser` across final epochs `[from, to)`.
@@ -230,19 +192,38 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         }
     }
 
-    // ------------------------------------------------------------------ claims
+    /// @notice Allocation still reserved for genesis epochs: unfinalized caps plus unclaimed finalized pots.
+    function reserved() public view returns (uint256 r) {
+        r = totalPots - totalClaimed;
+        for (uint256 e; e < GENESIS_EPOCHS; ++e) {
+            if (_potSnapshot[e] == 0) r += allocationCap(e);
+        }
+    }
 
-    /// @notice Claims the caller's rewards for `epochs`, each final and unclaimed.
+    // ------------------------------------------------------------------ finalization and claims
+
+    /// @notice Fixes the pot of each final epoch in `epochs` and burns the rest of its cap. Anyone may call; tipped per
+    ///         epoch finalized. Epochs already finalized are skipped; a non-final epoch reverts.
+    function finalize(uint256[] calldata epochs) external nonReentrant returns (uint256 done) {
+        uint256 gasStart = gasleft();
+        for (uint256 i; i < epochs.length; ++i) {
+            if (_potSnapshot[epochs[i]] != 0) continue;
+            _finalize(epochs[i]);
+            ++done;
+        }
+        if (done == 0) revert NoWork();
+        if (address(keeperFund) != address(0)) keeperFund.tip(msg.sender, gasStart - gasleft(), 0, done, false);
+    }
+
+    /// @notice Claims the caller's rewards for `epochs`, each final and unclaimed (finalizing it if needed).
     function claim(uint256[] calldata epochs) external nonReentrant returns (uint256 total) {
         for (uint256 i; i < epochs.length; ++i) {
             uint256 e = epochs[i];
-            if (!isFinal(e)) revert NotFinal(e);
             if (claimed[e][msg.sender]) revert AlreadyClaimed(e);
-            uint256 units = epochUnits(e);
-            if (units == 0) revert NoUnits(e);
+            uint256 pot = _potSnapshot[e] != 0 ? _potSnapshot[e] - 1 : _finalize(e);
             claimed[e][msg.sender] = true;
-            uint256 pot = _snapshot(e);
-            uint256 amount = FPM.fullMulDiv(pot, userUnits(e, msg.sender), units);
+            uint256 w = epochWeight(e);
+            uint256 amount = w == 0 ? 0 : FPM.fullMulDiv(pot, userWeight(e, msg.sender), w);
             total += amount;
             emit Claimed(msg.sender, e, amount);
         }
@@ -251,42 +232,20 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         SafeTransferLib.safeTransfer(engine, msg.sender, total);
     }
 
-    function _snapshot(uint256 e) internal returns (uint256 pot) {
-        uint256 snap = _potSnapshot[e];
-        if (snap != 0) return snap - 1;
-        uint256 g = _genesisPart(e);
-        genesisCommitted += g;
-        pot = g + seasonAllocationOf(e) + deposits[e] + rolledIn[e];
+    function _finalize(uint256 e) internal returns (uint256 pot) {
+        if (!isFinal(e)) revert NotFinal(e);
+        pot = potOf(e);
         _potSnapshot[e] = pot + 1;
+        totalPots += pot;
+        uint256 burned = allocationCap(e) - pot;
+        _burn(burned);
+        emit Finalized(e, pot, burned);
     }
 
-    /// @notice Moves the non-genesis part of a final epoch with no units (deposits, season allocation,
-    ///         amounts rolled into it) to the current epoch. Anyone may call it.
-    function rollover(uint256 epoch) external nonReentrant returns (uint256 amount) {
-        uint256 cur = currentEpoch();
-        if (epoch >= cur || !isFinal(epoch) || epochUnits(epoch) != 0 || rolledOut[epoch]) {
-            revert CannotRollover(epoch);
-        }
-        rolledOut[epoch] = true;
-        amount = seasonAllocationOf(epoch) + deposits[epoch] + rolledIn[epoch];
-        rolledIn[cur] += amount;
-        emit RolledOver(epoch, cur, amount);
-    }
+    // ------------------------------------------------------------------ bonus
 
-    // ------------------------------------------------------------------ inflows and bonus
-
-    /// @notice A registered depositor (the BuybackReward sink) adds ENGINE to the current epoch's pot.
-    function deposit(uint256 amount) external nonReentrant {
-        if (!isDepositor[msg.sender]) revert NotDepositor();
-        SafeTransferLib.safeTransferFrom(engine, msg.sender, address(this), amount);
-        uint256 e = currentEpoch();
-        deposits[e] += amount;
-        totalDeposited += amount;
-        emit Deposited(msg.sender, e, amount);
-    }
-
-    /// @notice Pays a prize-conversion bonus from the bonus pool. The registered Converter only. Pays what the
-    ///         pool holds, up to `amount`; nothing once the unused pool has been burned.
+    /// @notice Pays a prize-conversion bonus from the bonus pool. The registered Converter only. Pays what the pool
+    ///         holds, up to `amount`; nothing once the pool is spent or retired.
     function payBonus(address to, uint256 amount) external nonReentrant returns (uint256 paid) {
         if (!isBonusPayer[msg.sender]) revert NotBonusPayer();
         paid = amount < bonusPool ? amount : bonusPool;
@@ -297,40 +256,16 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         emit BonusPaid(to, paid);
     }
 
-    // ------------------------------------------------------------------ genesis end
-
-    /// @notice Burns the genesis allocation of every genesis epoch with no units and the unused bonus pool,
-    ///         once genesis has ended and every genesis epoch is final. Anyone may call; tipped.
-    function retireUnearned() external nonReentrant returns (uint256 amount) {
-        uint256 gasStart = gasleft();
-        if (unearnedRetired) revert AlreadyRetired();
+    /// @notice Burns what is left of the bonus pool once genesis has ended. Conversion continues without a bonus.
+    ///         Anyone may call.
+    function retireBonus() external nonReentrant returns (uint256 amount) {
         if (openBlock == 0 || block.number < genesisEndBlock()) revert GenesisNotOver();
-        uint256 n = genesisEpochs;
-        uint256 empty;
-        for (uint256 e; e < n; ++e) {
-            if (!isFinal(e)) revert GenesisNotOver();
-            if (epochUnits(e) == 0 && _potSnapshot[e] == 0) {
-                uint256 g = _genesisPart(e);
-                genesisCommitted += g;
-                amount += g;
-                ++empty;
-            }
-        }
-        unearnedRetired = true;
-        uint256 bonus = bonusPool;
+        if (bonusRetired) revert NoWork();
+        bonusRetired = true;
+        amount = bonusPool;
         bonusPool = 0;
-        _burn(amount + bonus);
-        emit UnearnedRetired(amount, empty, bonus);
-        if (address(keeperFund) != address(0)) {
-            keeperFund.tip(msg.sender, gasStart - gasleft(), block.timestamp - _genesisEndTime(), n, false);
-        }
-    }
-
-    /// @dev Approximate time genesis ended, for the keeper bounty (12 s blocks).
-    function _genesisEndTime() internal view returns (uint256) {
-        uint256 blocksAgo = block.number - genesisEndBlock();
-        uint256 secs = blocksAgo * 12;
-        return secs > block.timestamp ? 0 : block.timestamp - secs;
+        _burn(amount);
+        emit BonusRetired(amount);
     }
 
     function _burn(uint256 amount) internal {
@@ -341,61 +276,9 @@ contract GenesisFarm is ReentrancyGuard, Governed {
 
     // ------------------------------------------------------------------ governance
 
-    /// @notice Shortens genesis to `newEpochs` (one way, at least `MIN_GENESIS_EPOCHS`, with at least
-    ///         `NOTICE_EPOCHS` full epochs after the current one). Cut epochs' allocations are burned.
-    function shorten(uint256 newEpochs) external onlyGovernance {
-        uint256 old = genesisEpochs;
-        if (newEpochs >= old || newEpochs < MIN_GENESIS_EPOCHS) revert InvalidShorten();
-        if (openBlock != 0 && newEpochs < currentEpoch() + 1 + NOTICE_EPOCHS) revert InvalidShorten();
-        uint256 cut;
-        for (uint256 e = newEpochs; e < old; ++e) {
-            uint256 g = _genesisPart(e);
-            genesisCommitted += g;
-            cut += g;
-        }
-        genesisEpochs = newEpochs;
-        _burn(cut);
-        emit Shortened(newEpochs, cut);
-    }
-
-    /// @notice Schedules a farming season from the reserve: `amount` spread over `epochs` epochs from
-    ///         `startEpoch`. Limits: after genesis; at least `SEASON_NOTICE_EPOCHS` epochs out; at most the genesis
-    ///         average per epoch; no overlap with another season. Rounding stays in the reserve.
-    function scheduleSeason(uint256 startEpoch, uint256 epochs, uint256 amount) external onlyGovernance {
-        uint256 cur = openBlock == 0 ? 0 : currentEpoch();
-        if (
-            epochs == 0 || epochs > MAX_SEASON_EPOCHS || startEpoch < genesisEpochs
-                || startEpoch < cur + SEASON_NOTICE_EPOCHS || _seasons.length >= MAX_SEASONS
-                || startEpoch > type(uint32).max
-        ) revert InvalidSeason();
-        if (amount > reserve) revert ExceedsReserve();
-        uint256 perEpoch = amount / epochs;
-        if (perEpoch == 0 || perEpoch > maxSeasonPerEpoch()) revert InvalidSeason();
-        for (uint256 i; i < _seasons.length; ++i) {
-            Season memory o = _seasons[i];
-            if (startEpoch < uint256(o.startEpoch) + o.epochs && uint256(o.startEpoch) < startEpoch + epochs) {
-                revert InvalidSeason();
-            }
-        }
-        reserve -= perEpoch * epochs;
-        _seasons.push(Season(uint64(startEpoch), uint64(epochs), uint128(perEpoch)));
-        emit SeasonScheduled(startEpoch, epochs, perEpoch);
-    }
-
-    /// @notice Burns `amount` of the seasons reserve. The reserve has no other outflow.
-    function burnReserve(uint256 amount) external onlyGovernance {
-        if (amount > reserve) revert ExceedsReserve();
-        reserve -= amount;
-        _burn(amount);
-        emit ReserveBurned(amount);
-    }
-
+    /// @notice Registers another game's ledger (a replacement game after a retirement).
     function addLedger(address ledger) external onlyGovernance {
         _addLedger(ledger);
-    }
-
-    function setDepositor(address depositor, bool allowed) external onlyGovernance {
-        _setDepositor(depositor, allowed);
     }
 
     function setBonusPayer(address payer, bool allowed) external onlyGovernance {
@@ -412,12 +295,6 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         isLedger[ledger] = true;
         _ledgers.push(ledger);
         emit LedgerAdded(ledger);
-    }
-
-    function _setDepositor(address depositor, bool allowed) internal {
-        if (depositor == address(0)) revert ZeroAddress();
-        isDepositor[depositor] = allowed;
-        emit DepositorSet(depositor, allowed);
     }
 
     function _setBonusPayer(address payer, bool allowed) internal {

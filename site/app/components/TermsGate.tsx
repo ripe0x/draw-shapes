@@ -25,7 +25,7 @@ export function TermsGate() {
           <li>Each Shape holds ETH that its contract pays out when you burn it. Ethereum transactions are final.</li>
           <li>ENGINE is a token with no claim on the game's ETH. Its price can fall to zero.</li>
           <li>The game's contracts have no withdraw function, but governance (a timelock with no delay at launch) can
-            move the game's ETH between the registered game, treasury sinks and the ENGINE liquidity. No independent
+            move the game's ETH between the registered game, the profit buyback and the ENGINE liquidity. No independent
             audit has been done.</li>
           <li>You must be 18 or older, and it is up to you to make sure playing is legal where you are.</li>
         </ul>

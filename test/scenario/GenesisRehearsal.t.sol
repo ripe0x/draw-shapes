@@ -6,12 +6,13 @@ import {Swapper} from "../utils/Swapper.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFWAPool} from "../../src/interfaces/IFWA.sol";
 import {FwaGame} from "../../src/game/FwaGame.sol";
+import {Lens} from "../../src/Lens.sol";
 
 /// @notice The full genesis rehearsal on the pinned mainnet fork with block and time manipulation (local only):
-///         deploy, 48 h pre-market, game open with the gate on, 21 epochs of pulls with late deliveries and a
-///         timeout, daily sync, distribute and buybacks, claims as epochs become final, genesis end (gate off,
-///         retireUnearned), post-genesis epochs paid from deposits only, a second game after retiring the first,
-///         and shutdown into the liquidity position. A second run shortens genesis once.
+///         deploy, 48 h public market, game open with the gate on, 21 epochs of pulls with late deliveries and a
+///         timeout, daily sync, profit-funded buybacks, finalization and claims as epochs become final, genesis end
+///         (buys reopen by themselves, the bonus retires), post-genesis play with no rewards and no trading fees,
+///         a second game after retiring the first, and shutdown into the liquidity position.
 contract GenesisRehearsal is ForkBase {
     uint256 constant DAY_BLOCKS = 7_200;
     uint256 constant PULLS_PER_DAY = 6;
@@ -86,10 +87,24 @@ contract GenesisRehearsal is ForkBase {
     function _keeperJobs() internal {
         vm.startPrank(keeper);
         try sys.game.sync(100) {} catch {}
-        try sys.treasury.distribute() {} catch {}
         try sys.buyback.process(0) {} catch {}
-        try sys.grailFund.process() {} catch {}
+        WorkLike memory w = _work();
+        if (w.finalizable.length != 0) sys.farm.finalize(w.finalizable);
         vm.stopPrank();
+    }
+
+    struct WorkLike {
+        uint256[] finalizable;
+    }
+
+    function _work() internal view returns (WorkLike memory w) {
+        w.finalizable = sys.lens.work(_addresses()).finalizable;
+    }
+
+    function _addresses() internal view returns (Lens.Addresses memory a) {
+        a = Lens.Addresses(
+            sys.game, sys.farm, sys.keeperFund, sys.buyback, sys.swapPolicy, sys.liquidity, sys.vault, sys.converter
+        );
     }
 
     function _claimAll() internal {
@@ -103,8 +118,8 @@ contract GenesisRehearsal is ForkBase {
     }
 
     function _preMarket() internal {
-        fundAndFill(3 ether);
-        openMarket(10 ether);
+        fundAndFill(OPENING_CAPITAL);
+        openMarket(LAUNCH_ETH);
         swapper = new Swapper(IPoolManager(POOL_MANAGER), sys.liquidity.poolKey());
         // 48 h of pre-market trading: buys and sells, anti-snipe decays in the first hour
         for (uint256 h; h < 48; h += 4) {
@@ -117,7 +132,7 @@ contract GenesisRehearsal is ForkBase {
             swapper.sell(got / 3, false);
             vm.stopPrank();
         }
-        assertGt(address(sys.treasury).balance, 0, "pre-market fees");
+        assertGt(sys.vault.tradingFees(), 0, "public-market fees reach the vault");
     }
 
     function test_fullGenesis() public {
@@ -137,43 +152,44 @@ contract GenesisRehearsal is ForkBase {
         _keeperJobs();
         _claimAll();
 
-        // genesis end: the gate lifts, unearned genesis and the unused bonus are burned
+        // genesis end: the gate lifts by itself; the unused bonus retires
         assertGe(block.number, sys.farm.genesisEndBlock());
         assertFalse(sys.swapPolicy.gated());
         vm.prank(trader);
         swapper.buy{value: 0.1 ether}(0.1 ether, false);
         uint256 bonusLeft = sys.farm.bonusPool();
         uint256 supply = sys.engine.totalSupply();
-        vm.prank(keeper);
-        uint256 burned = sys.farm.retireUnearned();
-        assertEq(burned, 0, "every genesis epoch had pulls");
+        sys.farm.retireBonus();
         assertEq(sys.engine.totalSupply(), supply - bonusLeft);
 
-        // every pull of every genesis epoch is booked; units = delivered pulls
-        uint256 units;
+        // every pull of every genesis epoch is booked; weight = delivered ticket ETH
+        uint256 weight;
         for (uint256 e; e < 21; ++e) {
             assertTrue(sys.farm.isFinal(e), "final");
-            units += sys.game.epochUnits(e);
+            assertTrue(sys.farm.isFinalized(e), "finalized");
+            weight += sys.game.epochWeight(e);
         }
-        assertEq(units, sys.game.pullsBooked());
-        assertEq(units, 21 * PULLS_PER_DAY - timeouts, "one timeout, every other pull delivered");
-        // genesis paid out (up to rounding) to players
-        assertApproxEqAbs(claimedTotal, 100_000_000 ether + sys.farm.totalDeposited(), 1e9, "genesis + deposits claimed");
+        assertEq(weight, sys.game.turnover());
+        assertEq(sys.game.pullsBooked(), 21 * PULLS_PER_DAY - timeouts, "one timeout, every other pull delivered");
+        // at ~0.18 ETH a day the rate cap binds: players get their rate, the rest of each cap is burned
+        assertApproxEqAbs(claimedTotal, sys.farm.totalPots(), 1e6, "every pot claimed");
+        assertEq(sys.farm.totalPots() + sys.farm.totalBurned() - bonusLeft, 190_000_000 ether, "pots + burns = budget");
+        assertEq(sys.farm.reserved(), sys.farm.totalPots() - sys.farm.totalClaimed());
 
-        // post-genesis epochs: pots come from buyback deposits only
-        uint256 e0 = sys.farm.currentEpoch();
-        _playDay(false);
-        vm.warp(block.timestamp + 1 hours);
-        vm.deal(address(sys.treasury), address(sys.treasury).balance + 0.5 ether);
+        // after genesis: no rewards, no trading fees; the game keeps settling and replenishing
+        uint256 fees = sys.vault.tradingFees();
+        uint256 pulls = sys.game.pullsBooked();
+        for (uint256 d; d < 3; ++d) {
+            _playDay(false);
+            _advanceToNextEpoch();
+        }
+        vm.warp(block.timestamp + sys.game.maintenanceInterval());
         _keeperJobs();
-        uint256 dep = sys.farm.deposits(e0);
-        assertGt(dep, 0, "buyback reward deposited");
-        _advanceToNextEpoch();
-        _keeperJobs();
-        assertEq(sys.farm.potOf(e0), dep, "post-genesis pot is deposits only");
-        uint256 before = claimedTotal;
-        _claimAll();
-        assertApproxEqAbs(claimedTotal - before, dep, 1e6, "deposits paid to the epoch's players");
+        assertEq(sys.vault.tradingFees(), fees);
+        assertGt(sys.game.pullsBooked(), pulls);
+        assertEq(sys.farm.rewardOf(sys.farm.currentEpoch() - 1, players[0]), 0, "no post-genesis rewards");
+        assertEq(sys.game.liveCount(), 100, "prizes replenished");
+        assertGe(sys.game.cash(), sys.game.replacementsOwed());
 
         // a second game after retiring the first
         _retireGame();
@@ -182,6 +198,7 @@ contract GenesisRehearsal is ForkBase {
         for (uint256 i; i < 10 && g2.liveCount() < 100; ++i) {
             g2.sync(50);
         }
+        assertEq(g2.liveCount(), 100, "the returned capital refills the second game");
         vm.prank(address(sys.timelock));
         g2.openGame();
         assertEq(sys.farm.openBlock() != 0, true, "clock not restarted");
@@ -192,7 +209,8 @@ contract GenesisRehearsal is ForkBase {
         deliverWord(r, 4242);
         pool.processAcquisitions(10);
         g2.sync(10);
-        assertEq(sys.farm.epochUnits(e2), sys.game.epochUnits(e2) + 1, "units summed across ledgers");
+        (,, uint256 paid,,) = pool.acquisitions(r);
+        assertEq(sys.farm.epochWeight(e2), sys.game.epochWeight(e2) + paid, "weights summed across ledgers");
 
         // shutdown into the liquidity position
         vm.prank(address(sys.timelock));
@@ -206,40 +224,6 @@ contract GenesisRehearsal is ForkBase {
         sys.vault.shutdown(0);
         assertGt(sys.liquidity.totalLiquidity(), liq);
         assertEq(address(sys.vault).balance, 0);
-    }
-
-    function test_shortenOnce() public {
-        _preMarket();
-        openGame();
-        for (uint256 d; d < 5; ++d) {
-            _playDay(false);
-            _advanceToNextEpoch();
-        }
-        // at epoch 5, the earliest allowed end is epoch 8 (current + 1 + 2 notice)
-        vm.prank(address(sys.timelock));
-        vm.expectRevert();
-        sys.farm.shorten(7);
-        vm.prank(address(sys.timelock));
-        sys.farm.shorten(8);
-        assertEq(sys.farm.genesisEndBlock(), sys.farm.openBlock() + 8 * DAY_BLOCKS);
-        for (uint256 d = 5; d < 8; ++d) {
-            assertTrue(sys.swapPolicy.gated());
-            _playDay(false);
-            _advanceToNextEpoch();
-        }
-        _keeperJobs();
-        assertFalse(sys.swapPolicy.gated(), "gate lifts at the shortened end");
-        vm.prank(keeper);
-        sys.farm.retireUnearned();
-        _claimAll();
-        uint256 earned;
-        uint256 deposited;
-        for (uint256 e; e < 8; ++e) {
-            earned += sys.schedule.allocationOf(e, 100_000_000 ether);
-            deposited += sys.farm.deposits(e);
-        }
-        assertApproxEqAbs(claimedTotal, earned + deposited, 1e9, "only the first 8 epochs paid");
-        assertEq(sys.farm.totalBurned(), 100_000_000 ether - earned + 10_000_000 ether - sys.farm.totalBonusPaid());
     }
 
     function _advanceToNextEpoch() internal {
@@ -267,14 +251,13 @@ contract GenesisRehearsal is ForkBase {
                 expectedImplementation: FWA_IMPL,
                 vault: address(sys.vault),
                 farm: address(sys.farm),
-                treasury: address(sys.treasury),
+                buyback: address(sys.buyback),
                 keeperFund: address(sys.keeperFund),
                 board: address(sys.board),
                 pricing: address(sys.pricing),
-                grail: address(sys.grail),
                 buyer: address(sys.buyer),
-                reserveTarget: cfg.reserveTarget,
-                maintenanceInterval: cfg.maintenanceInterval
+                capital: cfg.capital,
+                marketLead: cfg.marketLead
             })
         );
         uint256 eth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
@@ -284,7 +267,8 @@ contract GenesisRehearsal is ForkBase {
         vm.startPrank(address(sys.timelock));
         sys.farm.addLedger(address(g2));
         sys.keeperFund.setPayer(address(g2), true);
-        sys.grailFund.setGame(address(g2));
+        sys.keeperFund.setOverflow(address(g2));
+        sys.buyback.setSource(address(g2), true);
         sys.vault.setActiveGame(address(g2));
         vm.stopPrank();
         sys.vault.fund();

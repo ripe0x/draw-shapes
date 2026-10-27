@@ -36,7 +36,6 @@ contract Handler is Test {
 
     uint256 public violations;
     string public lastViolation;
-    uint256 public grailFunded;
     uint256 public vaultFunded;
     mapping(bytes32 => uint256) public calls;
 
@@ -51,7 +50,7 @@ contract Handler is Test {
             actors[i] = makeAddr(string.concat("actor", vm.toString(i)));
             vm.deal(actors[i], 50 ether);
         }
-        vaultFunded = s_.game.lent();
+        vaultFunded = s_.game.capitalIn();
     }
 
     // ------------------------------------------------------------------ bookkeeping
@@ -61,7 +60,6 @@ contract Handler is Test {
         uint256[4] engine;
         uint256 vault;
         uint256 game;
-        uint256 treasury;
         uint256 keeper;
         uint256 liquidity;
         uint256 tipsPaid;
@@ -74,7 +72,6 @@ contract Handler is Test {
         }
         x.vault = address(s.vault).balance;
         x.game = address(s.game).balance + s.game.inventoryBacking();
-        x.treasury = address(s.treasury).balance;
         x.keeper = address(s.keeperFund).balance;
         x.liquidity = address(s.liquidity).balance;
         x.tipsPaid = s.keeperFund.totalTipsPaid();
@@ -101,7 +98,6 @@ contract Handler is Test {
         Snap memory a = _snap();
         if (a.vault < b.vault) _flag("vault ETH fell");
         if (a.game < b.game) _flag("game value fell");
-        if (a.treasury < b.treasury) _flag("treasury ETH fell");
         if (a.liquidity < b.liquidity) _flag("liquidity ETH fell");
     }
 
@@ -158,16 +154,18 @@ contract Handler is Test {
     function keeperSync(uint256 seed, uint256 maxCount) external {
         (uint256 i, address a) = _actor(seed);
         Snap memory b = _snap();
-        uint256 routed = s.game.markupRouted() + s.game.marginRouted();
+        uint256 distributed = s.game.distributed();
         vm.prank(a);
         try s.game.sync(bound(maxCount, 1, 50)) {
             ++calls["sync"];
         } catch {}
         Snap memory x = _snap();
         _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
-        // capital rule: revenue leaves only while cash covers the replacements owed and the reserve
-        if (s.game.markupRouted() + s.game.marginRouted() > routed) {
-            if (s.game.cash() < s.game.replacementsOwed() + s.game.reserveTarget()) _flag("revenue left below the reserve");
+        // profit rule: a distribution needs realised profit and leaves protected cash intact
+        if (s.game.distributed() > distributed) {
+            if (s.game.cash() < s.game.protectedCash()) _flag("profit left below protected cash");
+            int256 p = s.game.profit();
+            if (p < 0 || s.game.distributed() > uint256(p)) _flag("distributed more than realised profit");
         }
     }
 
@@ -252,39 +250,16 @@ contract Handler is Test {
 
     // ------------------------------------------------------------------ keeper jobs
 
-    function distribute(uint256 seed) external {
-        (uint256 i, address a) = _actor(seed);
-        Snap memory b = _snap();
-        vm.prank(a);
-        try s.treasury.distribute() {
-            ++calls["distribute"];
-        } catch {}
-        Snap memory x = _snap();
-        _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
-    }
-
     function buyback(uint256 seed) external {
         (uint256 i, address a) = _actor(seed);
         Snap memory b = _snap();
-                vm.prank(a);
+        vm.prank(a);
         try s.buyback.process(0) {
             ++calls["buyback"];
         } catch {}
         Snap memory x = _snap();
         _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
         if (x.vault < b.vault || x.game < b.game) _flag("buyback moved game ETH");
-    }
-
-    function grailProcess(uint256 seed) external {
-        (uint256 i, address a) = _actor(seed);
-        Snap memory b = _snap();
-        vm.prank(a);
-        try s.grailFund.process() returns (uint256 amount) {
-            grailFunded += amount;
-            ++calls["grail"];
-        } catch {}
-        Snap memory x = _snap();
-        _checkActors(b, i, x.tipsPaid - b.tipsPaid, 0);
     }
 
     function fundVault(uint256 amount) external {
@@ -345,7 +320,7 @@ contract Handler is Test {
     function donate(uint256 which, uint256 amount) external {
         amount = bound(amount, 0, 0.5 ether);
         address[5] memory t =
-            [address(s.vault), address(s.game), address(s.treasury), address(s.keeperFund), address(s.liquidity)];
+            [address(s.vault), address(s.game), address(s.buyback), address(s.keeperFund), address(s.liquidity)];
         address target = t[which % 5];
         vm.deal(address(this), amount);
         (bool ok,) = target.call{value: amount}("");
@@ -359,22 +334,23 @@ contract Handler is Test {
         (, address a) = _actor(seed);
         bytes memory data;
         address target;
-        fn = fn % 16;
+        fn = fn % 17;
         if (fn == 0) (target, data) = (address(s.vault), abi.encodeCall(s.vault.setActiveGame, (a)));
         else if (fn == 1) (target, data) = (address(s.vault), abi.encodeCall(s.vault.retireGame, ()));
         else if (fn == 2) (target, data) = (address(s.vault), abi.encodeCall(s.vault.repay, (true)));
         else if (fn == 3) (target, data) = (address(s.game), abi.encodeCall(s.game.retire, ()));
         else if (fn == 4) (target, data) = (address(s.game), abi.encodeCall(s.game.setModule, ("buyer", address(this))));
-        else if (fn == 5) (target, data) = (address(s.treasury), abi.encodeCall(s.treasury.draw, (1)));
+        else if (fn == 5) (target, data) = (address(s.buyback), abi.encodeCall(s.buyback.setSource, (a, true)));
         else if (fn == 6) (target, data) = (address(s.keeperFund), abi.encodeCall(s.keeperFund.tip, (a, 1e6, 1e6, 20, true)));
         else if (fn == 7) (target, data) = (address(s.farm), abi.encodeCall(s.farm.payBonus, (a, 1)));
-        else if (fn == 8) (target, data) = (address(s.farm), abi.encodeCall(s.farm.burnReserve, (1)));
+        else if (fn == 8) (target, data) = (address(s.farm), abi.encodeCall(s.farm.addLedger, (a)));
         else if (fn == 9) (target, data) = (address(s.buyer), abi.encodeCall(s.buyer.buy, (0, a, 100)));
         else if (fn == 10) (target, data) = (address(s.liquidity), abi.encodeCall(s.liquidity.addLiquidity, (0)));
         else if (fn == 11) (target, data) = (address(s.engine), abi.encodeCall(s.engine.setRenderer, (a)));
         else if (fn == 12) (target, data) = (address(s.hook), abi.encodeCall(s.hook.setPolicy, (a)));
-        else if (fn == 13) (target, data) = (address(s.farm), abi.encodeCall(s.farm.shorten, (7)));
+        else if (fn == 13) (target, data) = (address(s.game), abi.encodeCall(s.game.startPromotion, (0.01 ether, 5_000, block.number + 10)));
         else if (fn == 14) (target, data) = (address(s.game), abi.encodeCall(s.game.receiveFunding, ()));
+        else if (fn == 15) (target, data) = (address(s.game), abi.encodeCall(s.game.returnOps, ()));
         else (target, data) = (address(s.farm), abi.encodeCall(s.farm.start, ()));
         Snap memory b = _snap();
         vm.prank(a);

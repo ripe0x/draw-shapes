@@ -5,6 +5,8 @@ import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -13,8 +15,9 @@ import {ISwapPolicy} from "../interfaces/IDrawShapes.sol";
 
 /// @title EngineHook
 /// @notice Uniswap v4 hook of the ETH/ENGINE pool. On every swap it asks the `SwapPolicy` module whether the
-///         swap is allowed and what fee to charge, and takes that fee from the ETH side straight to the
-///         Treasury. It holds nothing.
+///         swap is allowed and what fee to charge, and takes that fee from the ETH side straight to the fee
+///         recipient (the PrizeVault: trading fees are game capital). It records the pool price at the first swap of
+///         each block (`blockOpenPrice`), the reference the buyback's manipulation check reads. It holds nothing.
 /// @dev Rigid on purpose (the trust surface): the fee caps, sells always allowed, exact-output sells rejected,
 ///      fee placement, and the one-time initialisation by ProtocolLiquidity. Fee placement, all in ETH
 ///      (currency0):
@@ -26,6 +29,8 @@ import {ISwapPolicy} from "../interfaces/IDrawShapes.sol";
 ///      anti-snipe fee may reach `MAX_LAUNCH_FEE_BPS`. A policy can block buys; it can never block a sell:
 ///      a disallowed or reverting policy answer on a sell proceeds with the capped fee, or no fee.
 contract EngineHook is BaseHook {
+    using StateLibrary for IPoolManager;
+
     uint256 internal constant BPS = 10_000;
     uint256 public constant MAX_FEE_BPS = 500;
     uint256 public constant MAX_LAUNCH_FEE_BPS = 9_500;
@@ -34,11 +39,14 @@ contract EngineHook is BaseHook {
 
     address public immutable engine;
     address public immutable launcher;
-    address public immutable treasury;
+    address public immutable feeRecipient;
     address public immutable governance;
 
     ISwapPolicy public policy;
     uint64 public launchedAt;
+    PoolId public poolId;
+    uint160 internal _openPrice; // price before the first swap of block `_openBlock`
+    uint64 internal _openBlock;
 
     event PolicySet(address policy);
     event FeeTaken(address indexed sender, bool buy, uint256 fee);
@@ -55,17 +63,17 @@ contract EngineHook is BaseHook {
         IPoolManager manager,
         address engine_,
         address launcher_,
-        address treasury_,
+        address feeRecipient_,
         address governance_,
         address policy_
     ) BaseHook(manager) {
         if (
-            engine_ == address(0) || launcher_ == address(0) || treasury_ == address(0) || governance_ == address(0)
+            engine_ == address(0) || launcher_ == address(0) || feeRecipient_ == address(0) || governance_ == address(0)
                 || policy_ == address(0)
         ) revert ZeroAddress();
         engine = engine_;
         launcher = launcher_;
-        treasury = treasury_;
+        feeRecipient = feeRecipient_;
         governance = governance_;
         policy = ISwapPolicy(policy_);
     }
@@ -101,6 +109,12 @@ contract EngineHook is BaseHook {
         return launchedAt != 0 && block.timestamp < uint256(launchedAt) + LAUNCH_WINDOW ? MAX_LAUNCH_FEE_BPS : MAX_FEE_BPS;
     }
 
+    /// @notice The pool price before the first swap of this block, and the price now (`sqrtPriceX96`, ENGINE per ETH).
+    function blockOpenPrice() external view returns (uint160 open, uint160 current) {
+        (current,,,) = poolManager.getSlot0(poolId);
+        open = _openBlock == block.number ? _openPrice : current;
+    }
+
     function _beforeInitialize(address sender, PoolKey calldata key, uint160) internal override returns (bytes4) {
         if (sender != launcher) revert NotLauncher();
         if (launchedAt != 0) revert AlreadyInitialized();
@@ -109,6 +123,7 @@ contract EngineHook is BaseHook {
                 || key.tickSpacing != TICK_SPACING
         ) revert WrongPool();
         launchedAt = uint64(block.timestamp);
+        poolId = key.toId();
         return BaseHook.beforeInitialize.selector;
     }
 
@@ -132,6 +147,10 @@ contract EngineHook is BaseHook {
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        if (_openBlock != block.number) {
+            (_openPrice,,,) = poolManager.getSlot0(poolId);
+            _openBlock = uint64(block.number);
+        }
         bool exactIn = params.amountSpecified < 0;
         if (!params.zeroForOne && !exactIn) revert ExactOutputSellUnsupported();
         uint256 feeBps = _fee(sender, params.zeroForOne);
@@ -144,7 +163,7 @@ contract EngineHook is BaseHook {
         // Buy with exact ETH input: the fee is part of the input; the rest is swapped.
         uint256 fee = uint256(-params.amountSpecified) * feeBps / BPS;
         if (fee != 0) {
-            poolManager.take(Currency.wrap(address(0)), treasury, fee);
+            poolManager.take(Currency.wrap(address(0)), feeRecipient, fee);
             emit FeeTaken(sender, true, fee);
         }
         return (BaseHook.beforeSwap.selector, toBeforeSwapDelta(int128(int256(fee)), 0), 0);
@@ -170,7 +189,7 @@ contract EngineHook is BaseHook {
             fee = uint256(int256(delta.amount0())) * feeBps / BPS;
         }
         if (fee != 0) {
-            poolManager.take(Currency.wrap(address(0)), treasury, fee);
+            poolManager.take(Currency.wrap(address(0)), feeRecipient, fee);
             emit FeeTaken(sender, params.zeroForOne, fee);
         }
         return (BaseHook.afterSwap.selector, int128(int256(fee)));

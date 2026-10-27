@@ -17,9 +17,8 @@ contract GasReceipts is ForkBase {
 
     function setUp() public {
         deployLaunch();
-        fundAndFill(3 ether);
-        openMarket(10 ether);
-        vm.warp(block.timestamp + 2 hours);
+        fundAndFill(OPENING_CAPITAL);
+        openMarket(LAUNCH_ETH);
         openGame();
     }
 
@@ -72,21 +71,15 @@ contract GasReceipts is ForkBase {
         sys.game.sync(50);
         _record("sync_20", g - gasleft() + 21_000);
 
-        // sync that books a pull whose replacement cannot be afforded (book only)
-        // treasury and buybacks
-        vm.deal(address(sys.treasury), address(sys.treasury).balance + 1 ether);
-        g = gasleft();
-        vm.prank(keeper);
-        sys.treasury.distribute();
-        _record("distribute", g - gasleft() + 21_000);
+        // a profit-funded buyback slice (bought and burned)
+        vm.deal(address(sys.game), address(sys.game).balance + 1 ether);
+        vm.prank(address(sys.game));
+        (bool sent,) = address(sys.buyback).call{value: 1 ether}("");
+        require(sent);
         g = gasleft();
         vm.prank(keeper);
         sys.buyback.process(0);
         _record("process_buyback", g - gasleft() + 21_000);
-        g = gasleft();
-        vm.prank(keeper);
-        sys.grailFund.process();
-        _record("process_grail", g - gasleft() + 21_000);
 
         // convert a delivered Shape
         uint256 lid;
@@ -110,6 +103,10 @@ contract GasReceipts is ForkBase {
         vm.prank(keeper);
         try sys.game.sync(50) {} catch {}
         uint256[] memory es = new uint256[](1);
+        g = gasleft();
+        vm.prank(keeper);
+        sys.farm.finalize(es);
+        _record("finalize_1_epoch", g - gasleft() + 21_000);
         g = gasleft();
         vm.prank(alice);
         sys.farm.claim(es);

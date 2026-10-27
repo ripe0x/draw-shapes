@@ -11,8 +11,8 @@ routine, so what is tested is what is broadcast. Nobody but the owner broadcasts
 | FWA pool creation fee | 50,000 FWA, bought with ETH on FWA's v4 pool (~ETH at spot + `FWA_FEE_MARGIN_BPS`, launch 5 %) | deploy wallet | during deploy (`FwaFeeBuyer`) |
 | Deploy gas | ~34M gas (measured on the anvil fork) | deploy wallet | during deploy |
 | `KEEPER_SEED` | 0.5 ETH recommended (docs/ECONOMICS.md section 4) | deploy wallet | during deploy (KeeperFund constructor) |
-| Opening capital | 3.0 ETH recommended: board 2.15 ETH incl. mint fees + reserve 0.75 + 0.1 | anyone, sent to PrizeVault | launch step 1 |
-| `LAUNCH_ETH` | 5 ETH recommended (docs/ECONOMICS.md section 6) | governance, through the timelock | launch step 2 |
+| `LAUNCH_ETH` | 5 ETH recommended (docs/ECONOMICS.md section 7); also fixes the genesis rate cap at deploy, so set `LAUNCH_ETH_WEI` to the amount governance will launch with | governance, through the timelock | launch step 1 |
+| Opening capital | about 28 ETH recommended: board 15.15 ETH at cost + reserve target 12 ETH + about 1 ETH working cash (docs/ECONOMICS.md section 5) | anyone, sent to PrizeVault | launch step 3 |
 
 The deploy wallet keeps nothing: postflight checks it holds no role and no ENGINE and that every `deployer()` is 0.
 
@@ -20,8 +20,8 @@ The deploy wallet keeps nothing: postflight checks it holds no role and no ENGIN
 
 `CHAIN_ID`, `RPC_URL_DEFAULT`, `LADDER`, `FOUNDRY_PROFILE` (Sepolia), `VERIFY`, `REQUIRE_MAIN_BRANCH`, `WALLET_MODE`,
 `KEYSTORE_ACCOUNT`, `DEPLOYER`, `GOVERNANCE`, `SHAPES`, `SHAPE_PACKS`, `FWA_FACTORY`, `FWA_IMPLEMENTATION`,
-`FWA_VRF_SERVICE`, `POOL_MANAGER`, `FWA_FEE_MARGIN_BPS`, `CREATE_FWA_POOL`, `KEEPER_SEED`, `LAUNCH_ETH`,
-`OPENING_CAPITAL_ETH`. Secrets come from the shell only: the keystore password (`KEYSTORE_PASSWORD_FILE`) and
+`FWA_VRF_SERVICE`, `POOL_MANAGER`, `FWA_FEE_MARGIN_BPS`, `CREATE_FWA_POOL`, `KEEPER_SEED`, `LAUNCH_ETH_WEI`
+(required: it fixes the farm's rate cap), `OPENING_CAPITAL_ETH`. Secrets come from the shell only: the keystore password (`KEYSTORE_PASSWORD_FILE`) and
 `ETHERSCAN_API_KEY`. `GOVERNANCE` must differ from `DEPLOYER`. Economic launch values are not in env files; they are
 fixed in `script/LaunchConfig.sol` so every environment deploys the same game (Sepolia scales backings by the
 Shapes `unit()`).
@@ -36,27 +36,30 @@ is under 24,576 bytes.
 ## Deploy order (DeploySystem._deploySystem)
 
 1. TimelockController(minDelay 0, proposer = executor = `GOVERNANCE`, no admin).
-2. Treasury, KeeperFund (seeded with `KEEPER_SEED`), EmissionSchedule, EngineRenderer.
-3. GenesisFarm and ProtocolLiquidity with the predicted EngineToken address; then EngineToken minting 100M to
-   ProtocolLiquidity and 900M to the farm (address checked against the prediction).
-4. SwapPolicy; EngineHook at a CREATE2-mined address carrying exactly its permission bits; EngineBuyer.
-5. BoardPolicy, PricingPolicy, GrailPolicy; PrizeVault; FwaGame; Converter; Buyback; GrailFund; FwaFeeBuyer; Lens.
-6. Wiring, each `wire` once by the deployer: Treasury (keeper fund, table Buyback 9,000 / GRAIL 1,000); KeeperFund
-   payers (FwaGame, Treasury, Buyback, GrailFund, farm); farm (FwaGame ledger, Buyback depositor, Converter bonus payer,
-   keeper fund); SwapPolicy (hook, exempt EngineBuyer and ProtocolLiquidity); ProtocolLiquidity (hook, vault adder);
-   EngineBuyer callers (Converter, Buyback); vault (first game).
+2. KeeperFund (seeded with `KEEPER_SEED`), EngineRenderer.
+3. GenesisFarm (190M genesis, 10M bonus, rate cap from `LAUNCH_ETH_WEI`) and ProtocolLiquidity with the predicted
+   EngineToken address; then EngineToken minting 800M to ProtocolLiquidity and 200M to the farm (address checked
+   against the prediction).
+4. SwapPolicy; PrizeVault (it receives the hook's fees, so it exists before the hook); EngineHook at a CREATE2-mined
+   address carrying exactly its permission bits, fee recipient = PrizeVault; EngineBuyer.
+5. BoardPolicy, PricingPolicy (markup 500, ops 300, bonus 200); Buyback; FwaGame; Converter; FwaFeeBuyer; Lens.
+6. Wiring, each `wire` once by the deployer: KeeperFund payers (FwaGame, Buyback, farm) and overflow (FwaGame); farm
+   (FwaGame ledger, Converter bonus payer, keeper fund); SwapPolicy (hook, exempt EngineBuyer and ProtocolLiquidity,
+   fixed); ProtocolLiquidity (hook, vault adder); EngineBuyer callers (Converter, Buyback); vault (first game); Buyback
+   (FwaGame as its profit source).
 7. FWA pool: `FwaFeeBuyer.buyTo(game, fee)` buys FWA straight into FwaGame; `FwaGame.createPool(salt)`.
 
 ## Postflight (DeploySystem.postflight, inside the simulation)
 
-Reads back and refuses on any mismatch: timelock delay 0, roles (governance proposer/executor; deployer none);
-supply 1B, 100M at ProtocolLiquidity, 900M at the farm, none at the deployer; farm split 100M / 10M / 790M; every
-holder and module governed by the timelock with `deployer() == 0`; hook references (engine, launcher, treasury,
-policy); ProtocolLiquidity hook and vault adder; swap policy hook, exempt set, fee 300, anti-snipe 5,000 / 60 min;
-EngineBuyer callers (Converter, Buyback; not FwaGame); farm ledger, depositor, bonus payer, keeper fund, 21 epochs of
-7,200 blocks; vault active game and liquidity; FwaGame references, reserve target, maintenance interval; burn share;
-keeper seed and floor; KeeperFund payers; treasury table (two sinks, 9,000 + 1,000 = 10,000); FWA pool exists, its
-owner is FwaGame, `purchaseOperator` is zero; gate end equals genesis end (max before the game opens).
+Reads back and refuses on any mismatch: timelock delay 0, roles (governance proposer/executor; deployer none); supply
+1B, 800M at ProtocolLiquidity, 200M at the farm, none at the deployer; farm budget 190M / bonus 10M and the rate cap;
+every holder and module governed by the timelock with `deployer() == 0`; funding routes (hook fee recipient = vault, the
+vault's PoolManager, FwaGame's buyback and the buyback's profit source, KeeperFund overflow = FwaGame); hook references;
+ProtocolLiquidity hook and vault adder; swap policy hook, exempt set, fee 300, anti-snipe 5,000 / 60 min; EngineBuyer
+callers (Converter, Buyback; not FwaGame); farm ledger, bonus payer, keeper fund, 21 epochs of 7,200 blocks; vault
+active game and liquidity; FwaGame references, capital and admission settings, market lead; pricing; buyback limits;
+keeper seed, floor and payers; FWA pool exists, its owner is FwaGame, `purchaseOperator` is zero; gate end equals
+genesis end (max before the game opens).
 
 Forge simulates the whole script before broadcasting, so a failed check stops the run before the first transaction.
 After a broadcast, `deploy.sh` reads the supply, governance and FWA pool owner back from the chain and writes
@@ -65,8 +68,9 @@ After a broadcast, `deploy.sh` reads the supply, governance and FWA pool owner b
 ## Dry runs done in this build
 
 - Anvil fork of mainnet at block 26,279,000: full broadcast with an impersonated deploy wallet (no key), then the
-  launch sequence through the real timelock (`script/rehearse-anvil.sh`): fund the vault, fill the 100-row board,
-  open the market, advance 48 h, open the game. All steps passed.
+  launch sequence through the real timelock (`script/rehearse-anvil.sh`): open the market, fund the vault, fill the
+  100-row board, advance 48 h, open the game. Rerun for the sustainability follow-up; results in
+  `docs/FINAL_REPORT.md`.
 - Sepolia: `DRY_RUN=1 GOVERNANCE=<any> script/deploy.sh sepolia` simulates every contract, the wiring and the
   postflight against Sepolia Shapes and the Sepolia v4 PoolManager. The Sepolia FWA factory is an older stack whose
   `createPool(bytes32,uint256,address)` reverts, so `CREATE_FWA_POOL=false` there: the Sepolia rehearsal covers

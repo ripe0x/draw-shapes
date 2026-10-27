@@ -14,33 +14,42 @@ import {
     IEngineBuyer,
     IBoardPolicy,
     IPricingPolicy,
-    IGrailPolicy,
-    IBurnable
+    IBurnable,
+    ILaunched
 } from "../interfaces/IDrawShapes.sol";
 
 /// @title FwaGame
-/// @notice Creates and permanently owns the Draw Shapes FWA V2 pool. It mints prizes (Shapes) with vault ETH and
-///         lists them; walks FWA's request sequence (`sync`) to count every pull in the farm's ledger and
-///         book its economics; protects its working capital before routing revenue; replaces won prizes at
-///         maintenance windows; lists GRAILs from the GRAIL reserve; and on retirement returns everything to the
-///         vault. Prize conversion lives in the Converter module, which reads delivery from FWA's own records.
-/// @dev Every policy question goes to a module (BoardPolicy, PricingPolicy, GrailPolicy, EngineBuyer); every
-///      bound is enforced here. ETH leaves only to the vault, the Shapes contract (mint cost), the Treasury
-///      (margin line) and KeeperFund (markup line). Revenue: docs/IMPLEMENTOR_DECISIONS.md D7 and D23; the walk: D6 and D24.
+/// @notice Creates and permanently owns the Draw Shapes FWA V2 pool. It mints prizes (Shapes) with capital from
+///         the vault and lists them; walks FWA's request sequence (`sync`) to record every pull's ticket ETH in the
+///         farm's ledger and book its economics; replaces won prizes at maintenance windows; opens and closes
+///         FWA purchases by its admission rules; runs pre-funded promotions; pays the operating allocation to
+///         KeeperFund; and sends only realised, distributable profit to the buyback. On retirement it returns
+///         everything to the vault. Prize conversion lives in the Converter module.
+/// @dev Accounting (docs/IMPLEMENTOR_DECISIONS.md D31-D34). Inventory is capital carried at cost (backing plus
+///      mint fee). A capture books the owner proceeds as revenue and the prize's carried cost as its one expense;
+///      the replacement purchase is a capital movement, not a second expense. The operating allocation is
+///      `opsBps` of the quote's expected replacement cost. Profit is cumulative and signed, so losses carry
+///      forward; capital in (vault funding, trading fees) never touches it. A distribution needs both
+///      undistributed profit and cash above every protected amount. ETH leaves only to the vault, the Shapes
+///      contract (mint cost), KeeperFund (operating allocation) and the buyback (profit).
 contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant WEIGHT_NUMERATOR = 1e36; // FWA's inverse-weight numerator
     uint8 internal constant KIND_SHAPE = 0;
-    uint16 internal constant GRAIL_ROW = type(uint16).max;
+    uint16 internal constant PROMO_ROW = type(uint16).max;
 
-    uint256 public constant MAX_BOARD = 200;
-    uint256 public constant MAX_LIST_BATCH = 20;
-    uint256 public constant MAX_MARKUP_BPS = 500;
-    uint256 public constant MIN_GRAIL_PRICE_BPS = 5_000;
-    uint256 public constant MAX_GRAIL_PROB_BPS = 1_000;
-    uint256 public constant MAX_MAINTENANCE_INTERVAL = 1 days;
-    uint256 public constant MAX_RESERVE_TARGET = 1_000 ether;
-    /// @notice Blocks after a request before a delivery still pending counts as resolved without a unit: FWA's
+    uint256 internal constant MAX_BOARD = 200;
+    uint256 internal constant MAX_LIST_BATCH = 20;
+    uint256 internal constant MAX_MARKUP_BPS = 500;
+    uint256 internal constant MAX_OPS_BPS = 500;
+    uint256 internal constant MIN_PROMO_PRICE_BPS = 5_000;
+    uint256 internal constant MAX_PROMO_PROB_BPS = 1_000;
+    uint256 internal constant MAX_PROMO_BLOCKS = 30 * 7_200;
+    uint256 internal constant MAX_COOLDOWN = 1 days;
+    uint256 internal constant MAX_MAINTENANCE_INTERVAL = 1 days;
+    uint256 internal constant MAX_RESERVE_TARGET = 1_000 ether;
+    uint256 internal constant MAX_MARKET_LEAD = 7 days;
+    /// @notice Blocks after a request before a delivery still pending counts as resolved without weight: FWA's
     ///         7-day refund window plus one epoch.
     uint256 public constant DELIVERY_GRACE_BLOCKS = 50_400 + 7_200;
 
@@ -49,24 +58,39 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     address public immutable expectedImplementation;
     IPrizeVault public immutable vault;
     IGenesisFarm public immutable farm;
-    address public immutable treasury;
+    address public immutable buyback;
     IKeeperFund public immutable keeperFund;
     uint256 public immutable EPOCH_BLOCKS;
+    /// @notice Minimum time between the ENGINE market opening and `openGame`.
+    uint256 public immutable marketLead;
 
     IFWAPool public pool;
     IBoardPolicy public board;
     IPricingPolicy public pricing;
-    IGrailPolicy public grail;
     IEngineBuyer public buyer; // read by the Converter
+    /// @notice Capital and admission settings (`setCapital`).
+    struct Capital {
+        uint256 reserveTarget; // cash kept before any distribution, beyond replacements and exposure
+        uint256 maintenanceInterval; // longest wait before replacements list
+        uint256 minLiveBps; // board fill below which new purchases close
+        uint256 maxOutstanding; // unsettled requests above which new purchases close
+        uint256 maxEdgeBps; // FWA edge above which new purchases close
+        uint256 maxCooldown; // FWA inventory cooldown above which new purchases close
+    }
+
     uint256 public reserveTarget;
     uint256 public maintenanceInterval;
+    uint256 public minLiveBps;
+    uint256 public maxOutstanding;
+    uint256 public maxEdgeBps;
+    uint256 public maxCooldown;
 
     /// @notice One record per listing this game made.
     struct Item {
         uint48 tokenId;
         uint80 backing;
-        uint80 cost; // backing + mint fees paid
-        uint16 row; // board row, or GRAIL_ROW
+        uint80 cost; // backing + mint fee paid
+        uint16 row; // board row, or PROMO_ROW
         uint16 markupBps;
         bool live;
     }
@@ -74,7 +98,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     mapping(uint256 listingId => Item) public items;
     uint256[] internal _live;
     mapping(uint256 listingId => uint256) internal _liveIndex; // index + 1
-    uint256[] internal _relist; // recovered listings waiting to be listed again
     /// @notice Board rows with a live listing, one bit per row.
     uint256 public liveRows;
 
@@ -82,36 +105,47 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     struct Open {
         uint64 seq;
         uint32 epoch;
-        bool rewardResolved; // counted resolved (without a unit) after the delivery grace period
+        bool rewardResolved; // counted resolved (without weight) after the delivery grace period
+        bool promo; // seen while a promotion was live
     }
 
     uint64 public seenSeq = 1;
     Open[] internal _open;
     mapping(uint256 epoch => uint256) public epochAccepted;
     mapping(uint256 epoch => uint256) public epochResolved;
-    mapping(uint256 epoch => uint256) public epochUnits;
-    mapping(uint256 epoch => mapping(address => uint256)) public userUnits;
+    /// @notice Ticket ETH (FWA fee paid, excluding the VRF fee) of delivered pulls, by request epoch.
+    mapping(uint256 epoch => uint256) public epochWeight;
+    mapping(uint256 epoch => mapping(address => uint256)) public userWeight;
     uint256 public pullsBooked;
 
-    // capital and revenue
-    uint256 public lent;
-    uint256 public inventoryBacking;
-    uint256 public replacementsOwed;
-    uint256 public mintFeesPaid;
-    uint256 public markupRouted;
-    uint256 public marginRouted;
-    uint256 public bookedGain;
-    uint256 public bookedLoss;
-    uint256 public grailReserve;
-    uint256 public grailCapturedBacking;
-    uint256 public pendingMarkup;
-    uint256 public pendingMargin;
+    // capital
+    uint256 public capitalIn; // vault funding: opening capital, trading fees, contributions
+    uint256 public inventoryBacking; // backing of every prize held or listed
+    uint256 public inventoryCost; // carried cost of board prizes held or listed
+    uint256 public replacementsOwed; // cost of vacated board rows not yet replaced
+    uint256 public maxItemCost; // largest prize cost minted, for settlement exposure
 
-    // GRAIL
-    uint256 public grailListing;
-    uint256 public grailStep;
-    uint256 public grailListedAtPull;
+    // profit and loss of the ordinary game
+    uint256 public turnover; // ticket ETH of delivered pulls
+    uint256 public promoTurnover; // the part of `turnover` seen while a promotion was live
+    uint256 public revenue; // owner proceeds of captured board prizes
+    uint256 public prizeExpense; // carried cost of captured board prizes, plus mint fees written off on burns
+    uint256 public opsAccrued; // operating allocation
+    uint256 public opsPaid;
+    uint256 public opsReturned; // KeeperFund overflow
+    uint256 public distributed; // profit sent to the buyback
 
+    // promotions: a separate budget, never profit
+    uint256 public promoBudget;
+    uint256 public promoFunded;
+    uint256 public promoProceeds;
+    uint256 public promoSpent; // cost of promotion prizes won, plus mint fees written off
+    uint256 public promoReleased;
+    uint256 public promoListing;
+    uint256 public promoEndBlock;
+
+    bool public opened;
+    bool public paused;
     bool public retiring;
     bool public retired;
     uint256 public lastSyncAt;
@@ -119,23 +153,27 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
 
     event PoolCreated(address pool, uint256 creationFee);
     event Funded(uint256 amount);
-    event GrailFunded(address indexed from, uint256 amount);
+    event PromotionFunded(address indexed from, uint256 amount);
     event GameOpened(uint256 openBlock);
+    event Admission(bool open);
     event Listed(uint256 indexed listingId, uint256 indexed row, uint256 price);
-    event Resolved(uint256 indexed sequence, uint256 indexed epoch, uint8 status, bool unit);
-    event Captured(uint256 indexed listingId, uint256 markup, uint256 margin, uint256 expectedCost);
-    event RevenueRouted(uint256 markup, uint256 margin);
-    event GrailRepriced(uint256 indexed listingId, uint256 price);
+    event Resolved(uint256 indexed sequence, uint256 indexed epoch, uint8 status, uint256 weight);
+    event Captured(uint256 indexed listingId, uint256 proceeds, uint256 cost, uint256 ops);
+    event Distributed(uint256 amount);
+    event OpsPaid(uint256 amount);
+    event PromotionStarted(uint256 indexed listingId, uint256 cost, uint256 price, uint256 endBlock);
     event RetireStarted();
     event Retired(uint256 returned);
     event ModuleSet(bytes32 indexed kind, address module);
-    event CapitalSet(uint256 reserveTarget, uint256 maintenanceInterval);
+    event CapitalSet(Capital c);
 
     error PoolExists();
     error NoPool();
     error NotVault();
+    error NotKeeperFund();
     error Retiring();
     error NotRetiring();
+    error NotReady();
     error NoWork();
 
     /// @notice Constructor arguments.
@@ -146,34 +184,34 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         address expectedImplementation;
         address vault;
         address farm;
-        address treasury;
+        address buyback;
         address keeperFund;
         address board;
         address pricing;
-        address grail;
         address buyer;
-        uint256 reserveTarget;
-        uint256 maintenanceInterval;
+        Capital capital;
+        uint256 marketLead;
     }
 
     constructor(Config memory c) Governed(c.governance, false) {
         if (
             c.shapes == address(0) || c.factory == address(0) || c.vault == address(0) || c.farm == address(0)
-                || c.treasury == address(0) || c.keeperFund == address(0)
+                || c.buyback == address(0) || c.keeperFund == address(0)
         ) revert ZeroAddress();
+        if (c.marketLead > MAX_MARKET_LEAD) revert OutOfBounds();
         shapes = IShapes(c.shapes);
         factory = IFWAFactory(c.factory);
         expectedImplementation = c.expectedImplementation;
         vault = IPrizeVault(c.vault);
         farm = IGenesisFarm(c.farm);
-        treasury = c.treasury;
+        buyback = c.buyback;
         keeperFund = IKeeperFund(c.keeperFund);
+        marketLead = c.marketLead;
         EPOCH_BLOCKS = IGenesisFarm(c.farm).EPOCH_BLOCKS();
         _setModule("board", c.board);
         _setModule("pricing", c.pricing);
-        _setModule("grail", c.grail);
         _setModule("buyer", c.buyer);
-        _setCapital(c.reserveTarget, c.maintenanceInterval);
+        _setCapital(c.capital);
         lastSyncAt = block.timestamp;
     }
 
@@ -183,7 +221,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         return this.onERC721Received.selector;
     }
 
-    // ------------------------------------------------------------------ setup
+    // ------------------------------------------------------------------ setup and inflows
 
     /// @notice Creates the FWA pool, paying the factory's FWA creation fee from FWA this contract holds
     ///         (docs/IMPLEMENTOR_DECISIONS.md D4). Once. Leftover FWA is burned.
@@ -200,51 +238,65 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         emit PoolCreated(created, fee);
     }
 
-    /// @notice ETH from the vault.
+    /// @notice Capital from the vault. Capital is never profit.
     function receiveFunding() external payable {
         if (msg.sender != address(vault)) revert NotVault();
-        lent += msg.value;
+        capitalIn += msg.value;
         emit Funded(msg.value);
     }
 
-    /// @notice Adds to the GRAIL reserve: the GrailFund sink, or the owner seeding the first GRAIL. Not while
-    ///         retiring.
-    function fundGrail() external payable {
+    /// @notice Adds to the promotion budget. Not while retiring.
+    function fundPromotion() external payable {
         if (retiring) revert Retiring();
-        grailReserve += msg.value;
-        emit GrailFunded(msg.sender, msg.value);
+        promoBudget += msg.value;
+        promoFunded += msg.value;
+        emit PromotionFunded(msg.sender, msg.value);
     }
 
-    /// @notice Opens purchases on the FWA pool and starts the farm clock if it has not started.
+    /// @notice KeeperFund returns operating allocation above its target; it reduces the net operating expense.
+    function returnOps() external payable {
+        if (msg.sender != address(keeperFund)) revert NotKeeperFund();
+        opsReturned += msg.value;
+    }
+
+    /// @notice Opens the game: at least `marketLead` after the ENGINE market opened, with every board row listed
+    ///         and the reserve target in cash. Starts the farm clock and admits purchases.
     function openGame() external onlyGovernance {
         if (address(pool) == address(0)) revert NoPool();
         if (retiring) revert Retiring();
-        pool.setBool(FWA_ACQUISITIONS_ENABLED, true);
+        uint256 t0 = ILaunched(buyer.hook()).launchedAt();
+        if (t0 == 0 || block.timestamp < t0 + marketLead || _popcount(liveRows) < _rows() || cash() < reserveTarget) {
+            revert NotReady();
+        }
+        opened = true;
         if (farm.openBlock() == 0) farm.start();
+        _admit();
         emit GameOpened(farm.openBlock());
     }
 
-    /// @notice Pauses or resumes purchases on the FWA pool.
-    function setAcquisitionsEnabled(bool enabled) external onlyGovernance {
+    /// @notice Pauses or resumes new purchases. Settlement, delivery and refunds continue either way.
+    function setPaused(bool paused_) external onlyGovernance {
         if (retiring) revert Retiring();
-        pool.setBool(FWA_ACQUISITIONS_ENABLED, enabled);
+        paused = paused_;
+        _admit();
     }
 
     // ------------------------------------------------------------------ keeper work
 
-    /// @notice Sees and resolves up to `maxCount` requests, routes distributable revenue and, at a maintenance
-    ///         window, lists replacements and steps the GRAIL. Anyone may call; tipped per item of progress.
-    ///         Reverts `NoWork` when there is nothing to do.
+    /// @notice Sees and resolves up to `maxCount` requests, pays the operating allocation and distributable profit,
+    ///         at a maintenance window lists replacements and ends an expired promotion, and applies the admission
+    ///         rules. Anyone may call; tipped per item of progress. Reverts `NoWork` when there is nothing to do.
     function sync(uint256 maxCount) external nonReentrant returns (uint256 work) {
         uint256 gasStart = gasleft();
         if (address(pool) == address(0)) revert NoPool();
         if (retiring) revert Retiring();
         work = _advance(maxCount);
         if (!pool.retired() && !factory.globalWithdrawOnly() && _maintenanceDue()) {
-            uint256 changes = _restock() + _grailStep();
+            uint256 changes = _restock() + _promoStep();
             if (changes != 0) lastMaintenanceAt = block.timestamp;
             work += changes;
         }
+        if (_admit()) ++work;
         _tip(gasStart, work, false);
     }
 
@@ -262,17 +314,9 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
         uint256 left;
         if (caughtUp && !retired) (work, left) = (work + _withdrawSome(), _withdrawable());
-        while (_relist.length != 0) {
-            uint256 id = _relist[_relist.length - 1];
-            _relist.pop();
-            _burnItem(id);
-            ++work;
-        }
         uint256 amount = address(this).balance;
         if (caughtUp && left == 0 && (!retired || amount != 0)) {
-            grailReserve = 0;
-            pendingMarkup = 0;
-            pendingMargin = 0;
+            promoBudget = 0;
             replacementsOwed = 0;
             if (!retired) {
                 retired = true;
@@ -302,50 +346,89 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         keeperFund.tip(msg.sender, gasStart - gasleft(), age, work, retirement);
     }
 
-    /// @dev Cranks FWA settlement, sees new requests, resolves terminal ones, collects owner proceeds and routes
-    ///      what is distributable.
+    /// @dev Cranks FWA settlement, sees new requests, resolves terminal ones, collects owner proceeds, then pays
+    ///      the operating allocation and distributable profit.
     function _advance(uint256 maxCount) internal returns (uint256 work) {
         try pool.processAcquisitions(maxCount) {} catch {}
         uint256 edge = factory.edgeBps();
         work = _resolveOpen(maxCount, edge);
         work += _see(maxCount, edge);
         if (pool.ownerProceeds() != 0) pool.withdrawOwnerProceeds();
-        _route();
+        _pay();
     }
 
-    /// @notice Cash the game may spend on prizes: its balance less the GRAIL reserve.
+    // ------------------------------------------------------------------ accounting views
+
+    /// @notice Cash the game may spend on prizes: its balance less the promotion budget.
     function cash() public view returns (uint256) {
         uint256 bal = address(this).balance;
-        return bal > grailReserve ? bal - grailReserve : 0;
+        return bal > promoBudget ? bal - promoBudget : 0;
     }
 
-    /// @notice What may leave the game now: cash beyond the replacements owed and the reserve target.
+    /// @notice Operating allocation accrued and not yet paid to KeeperFund.
+    function opsOwed() public view returns (uint256) {
+        return opsAccrued - opsPaid;
+    }
+
+    /// @notice Realised profit of the ordinary game since launch, signed: revenue less prize expense and net
+    ///         operating allocation. Capital and promotions never enter it.
+    function profit() public view returns (int256) {
+        return int256(revenue + opsReturned) - int256(prizeExpense + opsAccrued);
+    }
+
+    /// @notice Worst-case replacement cost of requests FWA has issued and not settled.
+    function exposure() public view returns (uint256) {
+        return address(pool) == address(0) ? 0 : pool.unsettledAcquisitionCount() * maxItemCost;
+    }
+
+    /// @notice Cash the game protects before any distribution: replacements owed, operating allocation owed, the
+    ///         reserve target and the settlement exposure.
+    function protectedCash() public view returns (uint256) {
+        return replacementsOwed + opsOwed() + reserveTarget + exposure();
+    }
+
+    /// @notice What may go to the buyback now: the lesser of undistributed profit and cash above protection.
     function distributable() public view returns (uint256) {
+        int256 p = profit() - int256(distributed);
         uint256 c = cash();
-        uint256 keep = replacementsOwed + reserveTarget;
-        return c > keep ? c - keep : 0;
+        uint256 keep = protectedCash();
+        if (retiring || p <= 0 || c <= keep) return 0;
+        c -= keep;
+        return uint256(p) < c ? uint256(p) : c;
     }
 
-    /// @notice Cash plus the backing of every prize this game holds or has listed.
-    function nav() external view returns (uint256) {
-        return cash() + inventoryBacking;
+    /// @notice True when FWA's settings are in the supported range and the board and queue allow new purchases.
+    function admissible() public view returns (bool) {
+        return factory.edgeBps() <= maxEdgeBps && factory.inventoryChangeCooldown() <= maxCooldown
+            && _popcount(liveRows) * BPS >= minLiveBps * _rows() && pool.unsettledAcquisitionCount() <= maxOutstanding;
     }
 
-    /// @dev Routes the booked markup and margin lines, markup first, up to what is distributable. The rest waits.
-    function _route() internal {
-        uint256 room = distributable();
-        uint256 markup = pendingMarkup < room ? pendingMarkup : room;
-        room -= markup;
-        uint256 margin = pendingMargin < room ? pendingMargin : room;
-        if (markup + margin == 0) return;
-        pendingMarkup -= markup;
-        pendingMargin -= margin;
-        markupRouted += markup;
-        marginRouted += margin;
-        if (markup != 0) keeperFund.fundKeeper{value: markup}();
-        if (margin != 0) SafeTransferLib.forceSafeTransferETH(treasury, margin);
-        emit RevenueRouted(markup, margin);
+    /// @dev Pays the operating allocation once replacements are covered (during retirement, from any cash), then
+    ///      distributable profit.
+    function _pay() internal {
+        uint256 owe = opsOwed();
+        if (owe != 0 && cash() >= owe + (retiring ? 0 : replacementsOwed)) {
+            opsPaid += owe;
+            keeperFund.fundKeeper{value: owe}();
+            emit OpsPaid(owe);
+        }
+        uint256 d = distributable();
+        if (d == 0) return;
+        distributed += d;
+        SafeTransferLib.forceSafeTransferETH(buyback, d);
+        emit Distributed(d);
     }
+
+    /// @dev Opens or closes FWA purchases to match the rules. True when it changed.
+    function _admit() internal returns (bool) {
+        bool ok = opened && !paused && !retiring && admissible();
+        if (ok == pool.localPurchasesEnabled()) return false;
+        pool.setBool(FWA_ACQUISITIONS_ENABLED, ok);
+        emit Admission(ok);
+        return true;
+    }
+
+    // ------------------------------------------------------------------ the walk
 
     /// @dev First cursor: every issued request is seen once, counted accepted in its epoch, and resolved at once
     ///      if it is already terminal; otherwise it joins the open set.
@@ -358,7 +441,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             uint256 requestBlock = _request(requestId).requestBlock;
             uint256 epoch = open == 0 || requestBlock < open ? 0 : (requestBlock - open) / EPOCH_BLOCKS;
             ++epochAccepted[epoch];
-            Open memory o = Open(seq, uint32(epoch), false);
+            Open memory o = Open(seq, uint32(epoch), false, promoListing != 0);
             if (!_tryResolve(o, requestId, edge)) _open.push(o);
             ++seq;
             ++n;
@@ -386,8 +469,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
     }
 
-    /// @dev Resolves `o` if its request is terminal. A delivery still pending after the grace period is counted
-    ///      resolved without a unit and stays open until its economics settle.
     struct Req {
         address purchaser;
         uint256 requestBlock;
@@ -400,6 +481,9 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         (r.purchaser, r.requestBlock, r.paid, r.listingId, r.status) = pool.acquisitions(requestId);
     }
 
+    /// @dev Resolves `o` if its request is terminal. A pending delivery vacates the prize's row at once (FWA has
+    ///      taken it out of the draw) and, after the grace period, counts resolved without weight; it stays open
+    ///      until its economics settle. A delivered pull adds its ticket ETH to the purchaser's weight.
     function _tryResolve(Open memory o, uint256 requestId, uint256 edge) internal returns (bool done) {
         Req memory r = _request(requestId);
         IFWAPool.AcquisitionStatus st = r.status;
@@ -408,77 +492,112 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
                 || st == IFWAPool.AcquisitionStatus.None
         ) return false;
         if (st == IFWAPool.AcquisitionStatus.DeliveryPending) {
+            _vacate(r.listingId);
             if (!o.rewardResolved && block.number > r.requestBlock + DELIVERY_GRACE_BLOCKS) {
                 ++epochResolved[o.epoch];
                 o.rewardResolved = true;
-                emit Resolved(o.seq, o.epoch, uint8(st), false);
+                emit Resolved(o.seq, o.epoch, uint8(st), 0);
             }
             return false;
         }
-        bool unit = st == IFWAPool.AcquisitionStatus.Fulfilled && !o.rewardResolved;
+        uint256 weight;
         if (!o.rewardResolved) ++epochResolved[o.epoch];
         if (st == IFWAPool.AcquisitionStatus.Fulfilled) {
-            if (unit) {
-                ++epochUnits[o.epoch];
-                ++userUnits[o.epoch][r.purchaser];
+            if (!o.rewardResolved) {
+                weight = r.paid;
+                epochWeight[o.epoch] += weight;
+                userWeight[o.epoch][r.purchaser] += weight;
             }
             ++pullsBooked;
+            turnover += r.paid;
+            if (o.promo) promoTurnover += r.paid;
             _bookCapture(r.listingId, r.paid, edge);
         } else if (st == IFWAPool.AcquisitionStatus.DeliveryRefunded) {
-            _recover(r.listingId);
+            // The purchaser took the refund: recover the prize and burn it; its row is replaced as usual.
+            pool.recoverRefundedNFT(r.listingId);
+            _vacate(r.listingId);
+            _burnItem(r.listingId);
         }
-        emit Resolved(o.seq, o.epoch, uint8(st), unit);
+        emit Resolved(o.seq, o.epoch, uint8(st), weight);
         return true;
     }
 
-    function _recover(uint256 listingId) internal {
-        pool.recoverRefundedNFT(listingId);
-        _removeLive(listingId);
-        if (items[listingId].row == GRAIL_ROW) {
-            // A recovered GRAIL goes back to the reserve; the next window lists a fresh one.
-            grailReserve += items[listingId].backing;
-            _burnItem(listingId);
-        } else {
-            _relist.push(listingId);
-        }
-    }
-
+    /// @dev Books a delivered prize. Board prize: proceeds are revenue, its carried cost the expense, and the
+    ///      operating allocation `opsBps` of the quote's expected replacement cost (the base price net of the
+    ///      prize's markup). Promotion prize: proceeds and cost stay in the promotion budget.
     function _bookCapture(uint256 listingId, uint256 paid, uint256 edge) internal {
+        _vacate(listingId);
         Item memory it = items[listingId];
-        _removeLive(listingId);
         inventoryBacking -= it.backing;
         uint256 base = paid * BPS / (BPS + edge);
         uint256 proceeds = paid - (paid - base) / 2;
-        uint256 markup = base * it.markupBps / (BPS + it.markupBps);
-        uint256 margin = proceeds - base;
-        uint256 expected = base - markup;
-        pendingMarkup += markup;
-        pendingMargin += margin;
-        if (it.row == GRAIL_ROW) {
-            grailListing = 0;
-            ++grailStep;
-            grailCapturedBacking += it.backing;
+        uint256 ops;
+        if (it.row == PROMO_ROW) {
+            promoBudget += proceeds;
+            promoProceeds += proceeds;
+            promoSpent += it.cost;
+        } else {
+            inventoryCost -= it.cost;
+            revenue += proceeds;
+            prizeExpense += it.cost;
+            uint256 opsBps = pricing.opsBps();
+            ops = base * BPS / (BPS + it.markupBps) * (opsBps > MAX_OPS_BPS ? MAX_OPS_BPS : opsBps) / BPS;
+            opsAccrued += ops;
+        }
+        emit Captured(listingId, proceeds, it.cost, ops);
+    }
+
+    /// @dev Takes a listing off the board: its row needs a replacement (or the promotion ends). Once per listing.
+    function _vacate(uint256 listingId) internal {
+        uint256 idx = _liveIndex[listingId];
+        if (idx == 0) return;
+        uint256 lastId = _live[_live.length - 1];
+        _live[idx - 1] = lastId;
+        _liveIndex[lastId] = idx;
+        _live.pop();
+        delete _liveIndex[listingId];
+        Item storage it = items[listingId];
+        it.live = false;
+        if (it.row == PROMO_ROW) {
+            promoListing = 0;
         } else {
             liveRows &= ~(uint256(1) << it.row);
             replacementsOwed += it.cost;
-            if (expected >= it.cost) bookedGain += expected - it.cost;
-            else bookedLoss += it.cost - expected;
         }
-        emit Captured(listingId, markup, margin, expected);
+    }
+
+    /// @dev Burns a prize the game holds for its backing. The mint fee is written off (against the promotion
+    ///      budget for a promotion prize).
+    function _burnItem(uint256 listingId) internal {
+        Item memory it = items[listingId];
+        inventoryBacking -= it.backing;
+        if (it.row == PROMO_ROW) {
+            promoBudget += it.backing;
+            promoSpent += it.cost - it.backing;
+        } else {
+            inventoryCost -= it.cost;
+            prizeExpense += it.cost - it.backing;
+        }
+        shapes.burn(it.tokenId);
+        delete items[listingId];
     }
 
     // ------------------------------------------------------------------ inventory
 
-    /// @notice True when replacements may be listed now: a full batch is waiting, or `maintenanceInterval` has
-    ///         passed since the last inventory change. Every FWA inventory change restarts its purchase cooldown
-    ///         and invalidates in-flight purchases, so changes are batched (docs/IMPLEMENTOR_DECISIONS.md D25).
+    /// @notice True when replacements may be listed now: a full batch is waiting, the board is below the admission
+    ///         fill, or `maintenanceInterval` has passed since the last inventory change. Every FWA inventory
+    ///         change invalidates in-flight purchase quotes, so changes are batched (docs/IMPLEMENTOR_DECISIONS.md D25).
     function _maintenanceDue() internal view returns (bool) {
         if (block.timestamp >= lastMaintenanceAt + maintenanceInterval) return true;
-        uint256 rows = board.rowCount();
-        if (rows > MAX_BOARD) rows = MAX_BOARD;
-        uint256 waiting = _relist.length + rows - _popcount(liveRows & ((uint256(1) << rows) - 1));
+        uint256 rows = _rows();
+        uint256 live = _popcount(liveRows);
         uint256 batch = board.listBatch();
-        return waiting >= (batch > MAX_LIST_BATCH ? MAX_LIST_BATCH : batch);
+        return rows - live >= (batch > MAX_LIST_BATCH ? MAX_LIST_BATCH : batch) || live * BPS < minLiveBps * rows;
+    }
+
+    function _rows() internal view returns (uint256 rows) {
+        rows = board.rowCount();
+        if (rows > MAX_BOARD) rows = MAX_BOARD;
     }
 
     function _popcount(uint256 x) internal pure returns (uint256 c) {
@@ -488,29 +607,28 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
     }
 
-    /// @dev Lists recovered prizes, then mints and lists prizes for board rows without a live listing, while cash
-    ///      pays for them.
+    /// @dev Mints and lists prizes for board rows without a live listing, while cash covers them.
     function _restock() internal returns (uint256 count) {
         uint256 maxList = board.listBatch();
         if (maxList > MAX_LIST_BATCH) maxList = MAX_LIST_BATCH;
-        uint256 rows = board.rowCount();
-        if (rows > MAX_BOARD) rows = MAX_BOARD;
+        uint256 rows = _rows();
         IFWAPool.ListingInput[] memory inputs = new IFWAPool.ListingInput[](maxList);
         Item[] memory made = new Item[](maxList);
-        while (count < maxList && _relist.length != 0) {
-            uint256 id = _relist[_relist.length - 1];
-            _relist.pop();
-            Item memory it = items[id];
-            delete items[id];
-            (inputs[count], made[count]) = _input(it);
-            ++count;
-        }
         uint256 bits = liveRows;
+        uint256 fee = shapes.mintFee();
         for (uint256 r; r < rows && count < maxList; ++r) {
             if (bits & (uint256(1) << r) != 0) continue;
-            (Item memory it, bool stop) = _mintRow(r);
-            if (stop) break;
-            if (it.cost == 0) continue;
+            (, uint96 backing) = board.rowAt(r);
+            Item memory it;
+            it.cost = uint80(backing + fee);
+            if (cash() < it.cost) break;
+            it.tokenId = uint48(shapes.mintTo{value: it.cost}(backing, address(this)));
+            it.backing = uint80(backing);
+            it.row = uint16(r);
+            inventoryBacking += backing;
+            inventoryCost += it.cost;
+            replacementsOwed = replacementsOwed > it.cost ? replacementsOwed - it.cost : 0;
+            if (it.cost > maxItemCost) maxItemCost = it.cost;
             bits |= uint256(1) << r;
             (inputs[count], made[count]) = _input(it);
             ++count;
@@ -521,21 +639,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
             mstore(inputs, count)
         }
         _list(inputs, made);
-    }
-
-    /// @dev Mints the Shape of board row `r` if cash pays for it. `stop` when it does not; a zero-cost item for a row
-    ///      this game cannot mint (Pack rows: docs/IMPLEMENTOR_DECISIONS.md D3).
-    function _mintRow(uint256 r) internal returns (Item memory it, bool stop) {
-        (uint8 kind, uint96 backing) = board.rowAt(r);
-        if (kind != KIND_SHAPE) return (it, false);
-        it.cost = uint80(backing + shapes.mintFee());
-        if (cash() < it.cost) return (it, true);
-        it.tokenId = uint48(shapes.mintTo{value: it.cost}(backing, address(this)));
-        it.backing = uint80(backing);
-        it.row = uint16(r);
-        inventoryBacking += backing;
-        mintFeesPaid += it.cost - backing;
-        replacementsOwed = replacementsOwed > it.cost ? replacementsOwed - it.cost : 0;
     }
 
     /// @dev Prices an item within bounds: at least its cost, at most cost × (1 + MAX_MARKUP_BPS).
@@ -561,17 +664,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
     }
 
-    function _removeLive(uint256 listingId) internal {
-        uint256 idx = _liveIndex[listingId];
-        if (idx == 0) return;
-        uint256 lastId = _live[_live.length - 1];
-        _live[idx - 1] = lastId;
-        _liveIndex[lastId] = idx;
-        _live.pop();
-        delete _liveIndex[listingId];
-        items[listingId].live = false;
-    }
-
     /// @dev Withdraws up to MAX_LIST_BATCH listings FWA still holds as Active or Staged and burns them for backing.
     function _withdrawSome() internal returns (uint256 n) {
         uint256[] memory ids = new uint256[](MAX_LIST_BATCH);
@@ -584,12 +676,12 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
         pool.withdrawListingsTo(ids, address(this));
         for (uint256 i; i < n; ++i) {
-            _removeLive(ids[i]);
+            _vacate(ids[i]);
             _burnItem(ids[i]);
         }
     }
 
-    /// @dev Live listings FWA still holds as Active or Staged (others are in delivery quarantine).
+    /// @dev Live listings FWA still holds as Active or Staged.
     function _withdrawable() internal view returns (uint256 n) {
         for (uint256 i; i < _live.length; ++i) {
             if (_withdrawableListing(_live[i])) ++n;
@@ -597,80 +689,72 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     }
 
     function _withdrawableListing(uint256 id) internal view returns (bool) {
-        (,, IFWAPool.ListingStatus st) = _listing(id);
+        (,,,,,,, IFWAPool.ListingStatus st) = pool.listings(id);
         return st == IFWAPool.ListingStatus.Active || st == IFWAPool.ListingStatus.Staged;
     }
 
-    function _burnItem(uint256 listingId) internal {
-        Item memory it = items[listingId];
-        if (it.row != GRAIL_ROW) liveRows &= ~(uint256(1) << it.row);
-        else if (grailListing == listingId) grailListing = 0;
-        inventoryBacking -= it.backing;
-        shapes.burn(it.tokenId);
-        delete items[listingId];
+    // ------------------------------------------------------------------ promotions
+
+    /// @notice Starts a promotion: one Shape of `backing`, paid in full from the promotion budget (its cost is the
+    ///         promotion's maximum obligation), listed at `priceBps` of its cost and never repriced, until it is won
+    ///         or `endBlock`. Price bounds: at least MIN_PROMO_PRICE_BPS of backing, and a win probability of at most
+    ///         MAX_PROMO_PROB_BPS. One promotion at a time.
+    function startPromotion(uint256 backing, uint256 priceBps, uint256 endBlock) external onlyGovernance {
+        uint256 cost = backing + shapes.mintFee();
+        if (
+            retiring || promoListing != 0 || cost > promoBudget || endBlock <= block.number
+                || endBlock > block.number + MAX_PROMO_BLOCKS || address(pool) == address(0)
+        ) revert NotReady();
+        uint256 price = cost * priceBps / BPS;
+        uint256 floor = backing * MIN_PROMO_PRICE_BPS / BPS;
+        if (price < floor) price = floor;
+        // weight / (others + weight) <= MAX  <=>  weight <= MAX × others / (BPS − MAX)
+        uint256 maxWeight = MAX_PROMO_PROB_BPS * pool.totalWeight() / (BPS - MAX_PROMO_PROB_BPS);
+        uint256 probFloor = maxWeight == 0 ? type(uint128).max : WEIGHT_NUMERATOR / maxWeight + 1;
+        if (price < probFloor) price = probFloor;
+        promoBudget -= cost;
+        Item memory it;
+        it.cost = uint80(cost);
+        it.backing = uint80(backing);
+        it.row = PROMO_ROW;
+        it.tokenId = uint48(shapes.mintTo{value: cost}(backing, address(this)));
+        inventoryBacking += backing;
+        IFWAPool.ListingInput[] memory inputs = new IFWAPool.ListingInput[](1);
+        inputs[0] = IFWAPool.ListingInput(address(shapes), it.tokenId, price);
+        Item[] memory made = new Item[](1);
+        made[0] = it;
+        _list(inputs, made);
+        promoListing = _live[_live.length - 1];
+        promoEndBlock = endBlock;
+        emit PromotionStarted(promoListing, cost, price, endBlock);
     }
 
-    // ------------------------------------------------------------------ GRAIL
-
-    /// @dev Lists the next GRAIL when the reserve covers it, or reprices the live one per the policy.
-    function _grailStep() internal returns (uint256) {
-        uint256 id = grailListing;
-        if (id == 0) {
-            uint256 backing = grail.grailBacking(grailStep);
-            if (backing == 0) return 0;
-            uint256 cost = backing + shapes.mintFee();
-            if (grailReserve < cost) return 0;
-            grailReserve -= cost;
-            Item memory it;
-            it.cost = uint80(cost);
-            it.backing = uint80(backing);
-            it.row = GRAIL_ROW;
-            it.tokenId = uint48(shapes.mintTo{value: cost}(backing, address(this)));
-            inventoryBacking += backing;
-            mintFeesPaid += cost - backing;
-            IFWAPool.ListingInput[] memory inputs = new IFWAPool.ListingInput[](1);
-            inputs[0] = IFWAPool.ListingInput(address(shapes), it.tokenId, _grailPrice(backing, 0, 0));
-            Item[] memory made = new Item[](1);
-            made[0] = it;
-            _list(inputs, made);
-            grailListing = _live[_live.length - 1];
-            grailListedAtPull = pullsBooked;
-            return 1;
-        }
-        if (pool.unsettledAcquisitionCount() != 0) return 0;
-        (uint256 weight, uint256 current, IFWAPool.ListingStatus status) = _listing(id);
-        if (status != IFWAPool.ListingStatus.Active) return 0;
-        uint256 newPrice = _grailPrice(items[id].backing, pullsBooked - grailListedAtPull, weight);
-        if (newPrice == current) return 0;
-        pool.updatePrice(id, newPrice);
-        emit GrailRepriced(id, newPrice);
+    /// @dev After its end block, withdraws an unwon promotion prize and burns it; the backing returns to the budget.
+    function _promoStep() internal returns (uint256) {
+        uint256 id = promoListing;
+        if (id == 0 || block.number < promoEndBlock || pool.unsettledAcquisitionCount() != 0) return 0;
+        if (!_withdrawableListing(id)) return 0;
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        pool.withdrawListingsTo(ids, address(this));
+        _vacate(id);
+        _burnItem(id);
         return 1;
     }
 
-    function _listing(uint256 id) internal view returns (uint256 weight, uint256 price, IFWAPool.ListingStatus status) {
-        (,,,, weight, price,, status) = pool.listings(id);
-    }
-
-    /// @dev GRAIL price within the hard bounds: at least MIN_GRAIL_PRICE_BPS of backing, and high enough that its
-    ///      win probability is at most MAX_GRAIL_PROB_BPS. `ownWeight` is its current weight in the pool.
-    function _grailPrice(uint256 backing, uint256 pulls, uint256 ownWeight) internal view returns (uint256 price) {
-        price = grail.grailPrice(backing, pulls);
-        uint256 floor = backing * MIN_GRAIL_PRICE_BPS / BPS;
-        if (price < floor) price = floor;
-        uint256 others = pool.totalWeight() - ownWeight;
-        if (others != 0) {
-            // weight / (others + weight) <= MAX  <=>  weight <= MAX × others / (BPS − MAX)
-            uint256 maxWeight = MAX_GRAIL_PROB_BPS * others / (BPS - MAX_GRAIL_PROB_BPS);
-            uint256 probFloor = maxWeight == 0 ? type(uint128).max : WEIGHT_NUMERATOR / maxWeight + 1;
-            if (price < probFloor) price = probFloor;
-        }
+    /// @notice Returns unspent promotion budget to the vault, as capital. Not while a promotion is live.
+    function releasePromotion(uint256 amount) external onlyGovernance {
+        if (promoListing != 0 || amount > promoBudget) revert NotReady();
+        promoBudget -= amount;
+        promoReleased += amount;
+        vault.repay{value: amount}(false);
     }
 
     // ------------------------------------------------------------------ ledger
 
-    /// @notice `(accepted, resolved, units)` of `epoch`.
+    /// @notice `(accepted, resolved, weight)` of `epoch`.
     function epochTotals(uint256 epoch) external view returns (uint256, uint256, uint256) {
-        return (epochAccepted[epoch], epochResolved[epoch], epochUnits[epoch]);
+        return (epochAccepted[epoch], epochResolved[epoch], epochWeight[epoch]);
     }
 
     /// @notice True once `epoch` has ended, every request FWA issued in it has been seen (accepted), and every
@@ -694,10 +778,6 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         return _live[i];
     }
 
-    function relistCount() external view returns (uint256) {
-        return _relist.length;
-    }
-
     function openCount() external view returns (uint256) {
         return _open.length;
     }
@@ -708,31 +788,39 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         _setModule(kind, module);
     }
 
-    /// @notice Sets the reserve target (at least twice the cost of the board's most expensive prize) and the
-    ///         maintenance interval.
-    function setCapital(uint256 reserveTarget_, uint256 maintenanceInterval_) external onlyGovernance {
-        _setCapital(reserveTarget_, maintenanceInterval_);
+    /// @notice Sets the capital and admission settings. The reserve target is at least twice the cost of the board's
+    ///         most expensive prize.
+    function setCapital(Capital calldata c) external onlyGovernance {
+        _setCapital(c);
+        if (opened && !retiring) _admit();
     }
 
-    function _setCapital(uint256 reserveTarget_, uint256 maintenanceInterval_) internal {
-        if (reserveTarget_ > MAX_RESERVE_TARGET || maintenanceInterval_ > MAX_MAINTENANCE_INTERVAL) revert OutOfBounds();
-        uint256 rows = board.rowCount();
+    function _setCapital(Capital memory c) internal {
+        if (
+            c.reserveTarget > MAX_RESERVE_TARGET || c.maintenanceInterval > MAX_MAINTENANCE_INTERVAL || c.minLiveBps < 5_000
+                || c.minLiveBps > BPS || c.maxOutstanding < 5 || c.maxOutstanding > 1_000 || c.maxEdgeBps > 1_000
+                || c.maxCooldown > MAX_COOLDOWN
+        ) revert OutOfBounds();
+        uint256 rows = _rows();
         uint256 maxBacking;
-        for (uint256 r; r < rows && r < MAX_BOARD; ++r) {
+        for (uint256 r; r < rows; ++r) {
             (, uint96 b) = board.rowAt(r);
             if (b > maxBacking) maxBacking = b;
         }
-        if (reserveTarget_ < 2 * maxBacking) revert OutOfBounds();
-        reserveTarget = reserveTarget_;
-        maintenanceInterval = maintenanceInterval_;
-        emit CapitalSet(reserveTarget_, maintenanceInterval_);
+        if (c.reserveTarget < 2 * maxBacking) revert OutOfBounds();
+        reserveTarget = c.reserveTarget;
+        maintenanceInterval = c.maintenanceInterval;
+        minLiveBps = c.minLiveBps;
+        maxOutstanding = c.maxOutstanding;
+        maxEdgeBps = c.maxEdgeBps;
+        maxCooldown = c.maxCooldown;
+        emit CapitalSet(c);
     }
 
     function _setModule(bytes32 kind, address module) internal {
         if (module.code.length == 0) revert ZeroAddress();
         if (kind == "board") board = IBoardPolicy(module);
         else if (kind == "pricing") pricing = IPricingPolicy(module);
-        else if (kind == "grail") grail = IGrailPolicy(module);
         else if (kind == "buyer") buyer = IEngineBuyer(module);
         else revert OutOfBounds();
         emit ModuleSet(kind, module);

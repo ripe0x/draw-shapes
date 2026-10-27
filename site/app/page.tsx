@@ -9,6 +9,23 @@ import { NotDeployed } from "./components/NotDeployed";
 import { TxStatus } from "./components/Tx";
 import { useTermsAcceptance } from "./lib/terms-acceptance";
 
+type Tier = { backing: bigint; count: number; probability: bigint };
+
+/** Groups listings or board rows by backing: how many, and their summed probability (1e18 = certain). */
+function tiersOf(rows: { backing: bigint; probability: bigint }[]): Tier[] {
+  const out: Tier[] = [];
+  for (const r of rows) {
+    const t = out.find((x) => x.backing === r.backing);
+    if (t) {
+      t.count += 1;
+      t.probability += r.probability;
+    } else {
+      out.push({ backing: r.backing, count: 1, probability: r.probability });
+    }
+  }
+  return out.sort((a, b) => (a.backing < b.backing ? -1 : 1));
+}
+
 export default function Play() {
   const { address } = useAccount();
   const { accepted } = useTermsAcceptance(deployment.chainId, address);
@@ -16,6 +33,8 @@ export default function Play() {
   const [count, setCount] = useState(1);
   const { data: game } = useReadContract({ address: deployment.lens, abi: lensAbi, functionName: "game", args: [lensAddresses], query: { enabled: deployment.deployed, refetchInterval: 15_000 } });
   const { data: market } = useReadContract({ address: deployment.lens, abi: lensAbi, functionName: "market", args: [lensAddresses], query: { enabled: deployment.deployed, refetchInterval: 15_000 } });
+  const { data: inventory } = useReadContract({ address: deployment.lens, abi: lensAbi, functionName: "inventory", args: [deployment.game], query: { enabled: deployment.deployed, refetchInterval: 30_000 } });
+  const { data: target } = useReadContract({ address: deployment.lens, abi: lensAbi, functionName: "targetBoard", args: [deployment.game], query: { enabled: deployment.deployed } });
   const { data: refund } = useReadContract({ address: deployment.fwaPool, abi: poolAbi, functionName: "acquisitionRefundCredit", args: [address ?? "0x0000000000000000000000000000000000000000"], query: { enabled: deployment.deployed && !!address } });
   const { writeContract, data: hash, error, isPending } = useWriteContract();
   const [quote, setQuote] = useState<{ fee: bigint; vrf: bigint } | undefined>();
@@ -52,6 +71,8 @@ export default function Play() {
   }
 
   const open = game?.acquisitionsEnabled && !game?.retiring;
+  const current = tiersOf((inventory ?? []).map((l) => ({ backing: l.backing, probability: l.probability })));
+  const modelled = tiersOf((target?.[0] ?? []).map((b, i) => ({ backing: b, probability: target![2][i] })));
   return (
     <>
       <h1>Pull a Shape</h1>
@@ -62,7 +83,7 @@ export default function Play() {
         <div className="grid">
           <div className="stat"><b>{eth(quote?.fee ?? game?.quoteFee, 5)}</b><span>ETH per pull (prize draw)</span></div>
           <div className="stat"><b>{eth(quote?.vrf, 5)}</b><span>+ VRF fee at current gas</span></div>
-          <div className="stat"><b>{game ? String(game.pullsBooked) : "…"}</b><span>pulls booked</span></div>
+          <div className="stat"><b>{game ? `${game.liveRows}/${game.boardRows}` : "…"}</b><span>board rows listed</span></div>
           <div className="stat"><b>{market ? (market.gated ? "closed" : "open") : "…"}</b><span>public ENGINE buys</span></div>
           <div className="stat"><b>{pct(market?.feeBps)}</b><span>ENGINE swap fee</span></div>
         </div>
@@ -75,6 +96,24 @@ export default function Play() {
           </button>
         </div>
         <TxStatus hash={hash} error={error} />
+        <h2>Prizes</h2>
+        <table>
+          <thead><tr><th>Shape backing</th><th>listed now</th><th>chance now</th><th>modelled full board</th><th>modelled chance</th></tr></thead>
+          <tbody>
+            {modelled.map((m) => {
+              const c = current.find((x) => x.backing === m.backing);
+              return (
+                <tr key={String(m.backing)}>
+                  <td>{eth(m.backing, 2)} ETH</td><td>{c ? c.count : 0}</td><td>{c ? (Number(c.probability) / 1e16).toFixed(3) : "0.000"} %</td>
+                  <td>{m.count}</td><td>{(Number(m.probability) / 1e16).toFixed(3)} %</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p className="note">"Now" is the live FWA pool: when prizes have just been won and not yet replaced, the board is
+          smaller and the chances shift until the next replacement window. The modelled board is the target the game
+          refills to. Price per pull is set by FWA from the live board.</p>
         {refund && refund > 0n ? (
           <div className="row">
             <span>Refund waiting: {eth(refund, 5)} ETH (a pull that expired or was refunded).</span>

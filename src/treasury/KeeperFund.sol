@@ -4,10 +4,12 @@ pragma solidity 0.8.28;
 import {Governed} from "../Governed.sol";
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+import {IFwaGame} from "../interfaces/IDrawShapes.sol";
 
 /// @title KeeperFund
-/// @notice Holds the keeper allowance and pays callers of keeper jobs. FwaGame funds it from the markup
-///         line of every booked pull up to `keeperTargetWei`; anything above the target goes to the Treasury.
+/// @notice Holds the keeper allowance and pays callers of keeper jobs. FwaGame funds it with the operating
+///         allocation of every booked pull; anything above `keeperTargetWei` goes back to the game (`overflow`,
+///         `returnOps`), where it reduces the net operating expense.
 /// @dev Tip formula (BUILD_PROMPT 4.6):
 ///        tip = min(tipCap, (gasUsed + gasOverhead) × min(basefee, basefeeCap) × (10,000 + premiumBps) / 10,000)
 ///            + maxBounty × min(age, rampSeconds) / rampSeconds × min(items, BOUNTY_ITEMS) / BOUNTY_ITEMS
@@ -16,7 +18,7 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 ///      nothing. A registered payer (a holder or sink running a keeper job) calls `tip`. The fund pays what it
 ///      can and never reverts for lack of balance; it keeps `maintenanceFloor` that only retirement steps may
 ///      spend. Tips are pushed with a gas stipend; a failed push is credited and withdrawn by the keeper
-///      (`withdrawTips`). Outflows: keepers and the Treasury.
+///      (`withdrawTips`). Outflows: keepers and the game.
 contract KeeperFund is Governed, ReentrancyGuard {
     uint256 internal constant BPS = 10_000;
     uint256 internal constant PUSH_GAS = 50_000;
@@ -31,7 +33,7 @@ contract KeeperFund is Governed, ReentrancyGuard {
     uint256 public constant MAX_FLOOR = 10 ether;
     uint256 public constant BOUNTY_ITEMS = 20;
 
-    address public immutable treasury;
+    address public overflow;
 
     uint256 public premiumBps;
     uint256 public basefeeCap;
@@ -61,6 +63,7 @@ contract KeeperFund is Governed, ReentrancyGuard {
         uint256 maintenanceFloor
     );
     event PayerSet(address indexed payer, bool allowed);
+    event OverflowSet(address overflow);
 
     error NotPayer();
     error NothingToWithdraw();
@@ -77,28 +80,27 @@ contract KeeperFund is Governed, ReentrancyGuard {
     }
 
     /// @dev Payable so the deploy script can seed the fund (`KEEPER_SEED`).
-    constructor(address governance_, address treasury_, Params memory p) payable Governed(governance_, true) {
-        if (treasury_ == address(0)) revert ZeroAddress();
-        treasury = treasury_;
+    constructor(address governance_, Params memory p) payable Governed(governance_, true) {
         _setParams(p);
     }
 
-    /// @notice One-shot wiring by the deployer: the payers that may call `tip`.
-    function wire(address[] calldata payers) external onlyWiring {
+    /// @notice One-shot wiring by the deployer: the payers that may call `tip` and the overflow recipient (the game).
+    function wire(address[] calldata payers, address overflow_) external onlyWiring {
         for (uint256 i; i < payers.length; ++i) {
             _setPayer(payers[i], true);
         }
+        _setOverflow(overflow_);
     }
 
     receive() external payable {}
 
-    /// @notice Funding from FwaGame's markup line. Anything above `keeperTargetWei` (net of credited
-    ///         tips) is forwarded to the Treasury.
+    /// @notice Funding from FwaGame's operating allocation. Anything above `keeperTargetWei` (net of credited
+    ///         tips) goes back to the overflow recipient.
     function fundKeeper() external payable nonReentrant {
         uint256 avail = address(this).balance - tipCreditTotal;
-        if (avail > keeperTargetWei) {
+        if (avail > keeperTargetWei && overflow != address(0)) {
             uint256 excess = avail - keeperTargetWei;
-            SafeTransferLib.forceSafeTransferETH(treasury, excess);
+            IFwaGame(overflow).returnOps{value: excess}();
             emit Overflow(excess);
         }
     }
@@ -165,6 +167,17 @@ contract KeeperFund is Governed, ReentrancyGuard {
         _setPayer(payer, allowed);
     }
 
+    /// @notice The game that receives overflow (a new game after a retirement).
+    function setOverflow(address overflow_) external onlyGovernance {
+        _setOverflow(overflow_);
+    }
+
+    function _setOverflow(address overflow_) internal {
+        if (overflow_.code.length == 0) revert ZeroAddress();
+        overflow = overflow_;
+        emit OverflowSet(overflow_);
+    }
+
     function _setParams(Params memory p) internal {
         if (
             p.premiumBps > MAX_PREMIUM_BPS || p.basefeeCap > MAX_BASEFEE_CAP || p.tipCap > MAX_TIP_CAP
@@ -197,5 +210,4 @@ contract KeeperFund is Governed, ReentrancyGuard {
         isPayer[payer] = allowed;
         emit PayerSet(payer, allowed);
     }
-
 }

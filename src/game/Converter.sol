@@ -30,7 +30,9 @@ interface IFeeView {
 /// @notice Prize conversion: the holder of a Shape the game's FWA pool delivered turns it into ENGINE. The Shape is
 ///         burned for its backing, that ETH buys ENGINE through EngineBuyer (fee-exempt) for the
 ///         caller, and the conversion bonus is paid from the farm's bonus pool at the executed price.
-/// @dev A module: it holds nothing between calls. Delivery is read from FWA's own record: the listing must be
+/// @dev A module: it holds nothing between calls. The ETH that buys is exactly the burned Shape's backing: there is no
+///      payable entry point, so no top-up, and EngineBuyer serves only registered callers, so this is no gateway for
+///      public buys during the gate. A bonus pool that has run dry never stops a conversion (`allowNoBonus`). Delivery is read from FWA's own record: the listing must be
 ///      the game's pool's, `Settled` (delivered to its purchaser), and not converted before. Eligibility follows
 ///      the token, not the original winner. The bonus rate is the pricing policy's, capped at `MAX_BONUS_BPS`
 ///      and at the market's sell fee, so converting and selling never returns more than the prize's backing.
@@ -41,6 +43,10 @@ contract Converter is ReentrancyGuard {
     IGameView public immutable game;
     IGenesisFarm public immutable farm;
     mapping(uint256 listingId => bool) public converted;
+    uint256 public conversions;
+    uint256 public totalEthIn; // redeemed backing spent buying ENGINE (player conversion purchases)
+    uint256 public totalEngineOut;
+    uint256 public totalBonus;
 
     event Converted(
         address indexed holder, uint256 indexed listingId, address collection, uint256 tokenId, uint256 backing, uint256 engineOut, uint256 bonus
@@ -87,6 +93,10 @@ contract Converter is ReentrancyGuard {
             if (farm.bonusPool() < bonus && !allowNoBonus) revert BonusUnavailable();
             bonus = farm.payBonus(msg.sender, bonus);
         }
+        ++conversions;
+        totalEthIn += spent;
+        totalEngineOut += engineOut;
+        totalBonus += bonus;
         emit Converted(msg.sender, listingId, collection, tokenId, value, engineOut, bonus);
     }
 

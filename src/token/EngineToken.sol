@@ -11,7 +11,7 @@ import {IMetadataRenderer} from "../interfaces/IDrawShapes.sol";
 ///         function, no transfer restriction and no upgrade path. Holders may burn their own tokens.
 ///         ERC-2612 permit is inherited from Solady. Metadata (`contractURI`, `tokenURI`) comes from a
 ///         replaceable renderer that only the timelock can set.
-/// @dev ENGINE is not a claim on any ETH held by the game, its prizes or its treasury.
+/// @dev ENGINE is not a claim on any ETH held by the game, its prizes, its vault or its buyback.
 contract EngineToken is ERC20, Governed {
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
 

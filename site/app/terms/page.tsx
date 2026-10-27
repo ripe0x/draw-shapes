@@ -13,14 +13,15 @@ export default function Terms() {
       <p>A pull costs more than the average prize is worth. Most pulls win the smallest prize, which is worth about two
         thirds of the ticket. Expect to lose money over time. Never play with money you cannot afford to lose.</p>
       <h2>3. ENGINE</h2>
-      <p>ENGINE is an ERC-20 token earned by playing during genesis and bought back with part of the game's revenue.
-        It gives no claim on the game's ETH, prizes or treasury, no share of revenue, and no right to anything. Its price
+      <p>ENGINE is an ERC-20 token earned by playing during genesis. The game spends realised profit it can spare buying
+        ENGINE and burning it; there may be none. ENGINE gives no claim on the game's ETH or prizes, no share of revenue
+        or profit, and no right to anything. Its price
         can fall to zero. During genesis the canonical ENGINE pool refuses public buys; sells are always possible. ENGINE
         can be traded elsewhere, and a won Shape can be bought on secondary markets and converted.</p>
       <h2>4. Who can move the game's funds</h2>
       <p>The game's contracts have no withdraw function. Governance, a timelock controlled by the operator, chooses the
-        active game contract, the treasury's destinations (buyback and GRAIL contracts) and the modules that set prices
-        and policy. Governance can therefore direct the game's ETH to any contract it registers. The timelock's delay is
+        active game contract, the buyback's profit sources, promotion budgets and the modules that set prices and
+        policy. Governance can therefore direct the game's ETH to any contract it registers. The timelock's delay is
         the only notice of such a change, and at launch the delay is zero. The operator's own income is the Shapes mint
         fee on each prize minted. No independent audit has been done.</p>
       <h2>5. Eligibility</h2>

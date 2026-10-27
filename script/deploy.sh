@@ -23,7 +23,7 @@ warn_or_refuse() {
   if [[ "$DRY_RUN" == "1" ]]; then echo "(DRY_RUN: continuing)"; else exit 1; fi
 }
 
-REQUIRED=(CHAIN_ID RPC_URL DEPLOYER GOVERNANCE SHAPES FWA_FACTORY FWA_IMPLEMENTATION POOL_MANAGER LADDER)
+REQUIRED=(CHAIN_ID RPC_URL DEPLOYER GOVERNANCE SHAPES FWA_FACTORY FWA_IMPLEMENTATION POOL_MANAGER LADDER LAUNCH_ETH_WEI)
 for v in "${REQUIRED[@]}"; do
   [[ -n "${!v:-}" ]] || refuse "$v is empty in $ENV_FILE"
 done
@@ -76,7 +76,7 @@ if git ls-files --error-unmatch .env >/dev/null 2>&1; then refuse ".env is track
 
 # Holders must fit EIP-170.
 forge build --skip test
-for c in FwaGame GenesisFarm ProtocolLiquidity Treasury KeeperFund PrizeVault EngineToken EngineHook Lens; do
+for c in FwaGame GenesisFarm ProtocolLiquidity Buyback KeeperFund PrizeVault EngineToken EngineHook Lens; do
   SIZE=$(( ($(forge inspect "$c" deployedBytecode | wc -c) - 3) / 2 ))
   (( SIZE <= 24576 )) || refuse "$c runtime is $SIZE bytes, over 24576"
 done
