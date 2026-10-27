@@ -48,6 +48,8 @@ cast rpc anvil_impersonateAccount "$PLAYER" --rpc-url "$R" >/dev/null
 read -r FEE _ TOTAL < <(cast call "$P" 'quoteAcquisitionPrice(uint256)(uint256,uint256,uint256)' 1 --rpc-url "$R" | awk '{print $1}' | tr '\n' ' ')
 VERSION=$(cast call "$P" 'inventoryVersion()(uint256)' --rpc-url "$R" | awk '{print $1}')
 DEADLINE=$(( $(cast block latest --field timestamp --rpc-url "$R") + 3600 ))
-cast send "$P" 'acquire(address,uint256,uint256,uint256,uint256,uint256)' "$PLAYER" "$FEE" 0 10000 "$VERSION" "$DEADLINE" --value "$TOTAL" --from "$PLAYER" --unlocked --rpc-url "$R" >/dev/null
+# The quote ran at gas price 0, so it leaves out FWA's VRF fee (gas price x 1.95M); send a margin, FWA refunds the rest.
+VALUE=$(( TOTAL + 10000000000000000 ))
+cast send "$P" 'acquire(address,uint256,uint256,uint256,uint256,uint256)' "$PLAYER" "$FEE" 0 10000 "$VERSION" "$DEADLINE" --value "$VALUE" --from "$PLAYER" --unlocked --rpc-url "$R" >/dev/null
 echo "pull: issued, lastIssuedSequence=$(cast call "$P" 'lastIssuedSequence()(uint64)' --rpc-url "$R")"
 echo "rehearsal complete"
