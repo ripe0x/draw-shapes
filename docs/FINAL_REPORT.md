@@ -65,7 +65,7 @@ on a local anvil fork.
 
 1. Read docs/IMPLEMENTOR_DECISIONS.md and decide on: Packs (D3), the trust model wording (D21), the VRF fee impact (D29).
 2. Choose `LAUNCH_ETH` (recommended 5 ETH), opening capital (recommended 3 ETH), `KEEPER_SEED` (recommended 0.5 ETH).
-3. Fill `GOVERNANCE` (and `KEEPER_ACCOUNT` name) in `script/env/mainnet.env`; make sure the deploy wallet holds ETH for the
+3. Fill `GOVERNANCE` (and the `KEYSTORE_ACCOUNT` name) in `script/env/mainnet.env`; make sure the deploy wallet holds ETH for the
    FWA fee purchase (50,000 FWA at spot + 5 %), the keeper seed and ~34M gas.
 4. Commission an independent audit before outside money is material.
 5. Merge to `main`, run `DRY_RUN=1 script/deploy.sh mainnet`, then broadcast with the owner's keystore.
