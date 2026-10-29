@@ -76,7 +76,7 @@ if git ls-files --error-unmatch .env >/dev/null 2>&1; then refuse ".env is track
 
 # Holders must fit EIP-170.
 forge build --skip test
-for c in FwaGame GenesisFarm ProtocolLiquidity Buyback KeeperFund PrizeVault EngineToken EngineHook Lens; do
+for c in FwaGame PoolOwner GenesisFarm ProtocolLiquidity Buyback KeeperFund PrizeVault EngineToken EngineHook Lens; do
   SIZE=$(( ($(forge inspect "$c" deployedBytecode | wc -c) - 3) / 2 ))
   (( SIZE <= 24576 )) || refuse "$c runtime is $SIZE bytes, over 24576"
 done
@@ -118,4 +118,4 @@ forge script script/Deploy.s.sol:Deploy --rpc-url "$RPC_URL" "${DEPLOY_ARGS[@]}"
 G=$(jq -r .game "$RECORD"); T=$(jq -r .timelock "$RECORD"); P=$(jq -r .fwaPool "$RECORD"); E=$(jq -r .engine "$RECORD")
 echo "record: $RECORD"
 echo "readback: engine supply=$(cast call --rpc-url "$RPC_URL" "$E" 'totalSupply()(uint256)') game.governance=$(cast call --rpc-url "$RPC_URL" "$G" 'governance()(address)') timelock=$T"
-echo "readback: fwaPool=$P owner=$(cast call --rpc-url "$RPC_URL" "$P" 'owner()(address)') purchaseOperator=$(cast call --rpc-url "$RPC_URL" "$P" 'purchaseOperator()(address)')"
+echo "readback: poolOwner=$(jq -r .poolOwner "$RECORD") fwaPool=$P owner=$(cast call --rpc-url "$RPC_URL" "$P" 'owner()(address)') purchaseOperator=$(cast call --rpc-url "$RPC_URL" "$P" 'purchaseOperator()(address)')"

@@ -492,7 +492,17 @@ choices the brief left open are in `docs/IMPLEMENTOR_DECISIONS.md`.
     (GRAILs: only as pre-funded, bounded promotions, no per-pull decay). The ordinary board is the 100-item form of
     6 × 0.01 / 9 × 0.05 / 5 × 0.5 at 5 % markup. Implementation choices: IMPLEMENTOR_DECISIONS D31–D43.
 
-Open for the owner after the follow-up (see the final report): `LAUNCH_ETH` (recommended 5; it also fixes the genesis
-rate cap at deploy), opening capital (recommended about 28 ETH: the 15.15 ETH board and a 12 ETH reserve), whether a
-smaller reserve and occasional empty rows are acceptable instead, the 80 / 19 / 1 split versus a larger genesis share
-(D40), `KEEPER_SEED` (recommended 0.5 ETH), and when to raise the timelock delay.
+62. **Collection-games review** (owner's instruction on PR #9, 2026-10-29). Adopted: a zero-ETH single-sided launch
+    (supersedes `LAUNCH_ETH`); Shape Packs (mainnet `0xf21514B090Da7dF4390803497d6ae673801E5cA7`) as a prize kind; a
+    purchase gate on live FWA state (10 in flight, a full batch of 5 assumed); step-by-step recovery in `sync`; booking
+    at the highest edge ever accepted with a true-up and per-listing markup and allocation; keeper pay as gas plus an
+    hourly flat fee, seed 0.05 ETH, vault top-ups from trading fees capped at 1 ETH for good; restock only with nothing
+    in flight unless the board is short, trigger 3 rows, 5-minute interval, six cooldowns; exposure capped at inventory
+    cost. Plan answers: split FwaGame in two (yes); quantify farm selling into the single-sided pool and recommend, but
+    do not change the split (yes); keep the 30 / 45 / 25 Shapes board and present Pack boards (yes); propose the opening
+    valuation from the launch model (ok). Implementation choices: IMPLEMENTOR_DECISIONS D44–D52.
+
+Open for the owner (see the final report): `START_TICK` (recommended 184,200, ≈ 10 ETH FDV; 5 ETH FDV is the
+alternative that favours opening buyers), what to do about farm selling during genesis (D52: keep, a smaller farm, a
+time-weighted rate cap, or a lower start), whether to adopt Pack board A or B, opening capital (recommended about
+28 ETH: the 15.15 ETH board and a 12 ETH reserve), the 80 / 19 / 1 split (D40), and when to raise the timelock delay.

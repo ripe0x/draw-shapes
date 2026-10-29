@@ -10,6 +10,8 @@ FORK_BLOCK="${FORK_BLOCK:-26279000}"
 PORT="${PORT:-8545}"
 R="http://127.0.0.1:${PORT}"
 set -a; source script/env/anvil.env; set +a
+# The rehearsal needs nothing from the network but the RPC: offline mode stops forge from waiting on signature lookups.
+export FOUNDRY_OFFLINE=true
 anvil --fork-url "$FORK_URL" --fork-block-number "$FORK_BLOCK" --chain-id 31337 --port "$PORT" --silent &
 ANVIL=$!
 # KEEP_ANVIL=1 leaves the fork running after the rehearsal (for the keeper or the site).

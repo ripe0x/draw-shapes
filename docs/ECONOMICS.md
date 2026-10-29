@@ -15,15 +15,16 @@ trading-fee inflow is assumed anywhere: the game is sized to stand on its own ca
 | Operating allocation | 300 bps of the quote's expected replacement cost | section 4; D33 |
 | Reserve target | 12 ETH | section 5; D41 |
 | Opening capital | about 28 ETH: board 15.15 + reserve 12 + about 1 working cash | section 5 |
-| Admission | close below 80% fill, above 20 unsettled, FWA edge above 5%, cooldown above 5 min | D36 |
-| Maintenance interval / list batch | 30 min / 20 | D25 |
+| Purchase gate | refuse unless the board keeps 80% + a batch of 5 + every unsettled request; at most 10 in flight; FWA edge ≤ 5%, cooldown ≤ 5 min | section 11; D45 |
+| Admission | close below 80% fill, FWA edge above 5%, cooldown above 5 min | D36 |
+| Restock | when nothing is in flight (or near the gate's line); 3 rows waiting or 5 min (≥ 6 FWA cooldowns) | section 11; D49 |
 | Buyback | profit only; slice ≤ 0.05 ETH, 1 h spacing, 3% impact cap, 2% same-block deviation, 100% burned | D39 |
-| Genesis | 190M ENGINE; 14 steady epochs at F/17.5, then 87.5% … 12.5%; rate cap 10% of ticket ETH at the launch price | section 7; D34 |
+| Genesis | 190M ENGINE; 14 steady epochs at F/17.5, then 87.5% … 12.5%; rate cap 10% of ticket ETH at the start price | section 7; D34 |
 | Supply | 800M protocol liquidity / 190M genesis / 10M conversion bonus | section 8; D40 |
-| `LAUNCH_ETH` | 5 ETH recommended (fixes the rate cap at 16M ENGINE per ETH) | section 8 |
+| `START_TICK` | 184,200 recommended (≈ 10 ETH FDV, ≈ 99.8M ENGINE per ETH); single-sided, no ETH paired; fixes the rate cap at ≈ 9.98M ENGINE per ETH | section 8; D50 |
 | VRF fee (FWA's) | 1,500,000 gas × gas price × 1.3 per pull, paid by the player | section 3 |
-| Keeper | premium 20%, basefee cap 30 gwei, tip cap 0.01, bounty 0.002 over 6 h, overhead 40k gas, target 0.5 ETH, floor 0.05 ETH | BUILD_PROMPT 4.6 |
-| `KEEPER_SEED` | 0.5 ETH recommended | covers keeper gas before the operating allocation builds up |
+| Keeper | (gas + 70k) × min(gas price, 5 gwei), capped at 0.05 ETH, + 0.0003 ETH flat fee at most hourly per job; target 0.5 ETH, floor 0.05 ETH | section 4; D48 |
+| `KEEPER_SEED` | 0.05 ETH | the vault tops KeeperFund up from trading fees (floor + 0.1 ETH, ≤ 1 ETH over its life) |
 
 ## 2. Ordinary prize mix
 
@@ -67,17 +68,18 @@ Each figure is the call's execution gas plus the 21,000 base cost.
 
 | call | gas | ETH at 1 gwei | 5 gwei |
 |---|---|---|---|
-| a player's `acquire` (FWA) | 584,985 | 0.00058 | 0.00292 |
-| `sync`: 1 pull booked + its replacement minted and listed | 1,233,895 | 0.00123 | 0.00617 |
-| `sync`: 5 pulls + 5 replacements | 2,902,099 | 0.00290 | 0.01451 |
-| `sync`: 20 pulls + 20 replacements | 9,819,782 | 0.00982 | 0.04910 |
-| `Buyback.process` (one slice, bought and burned) | 343,615 | 0.00034 | 0.00172 |
-| `Converter.convert` | 457,803 | 0.00046 | 0.00229 |
-| `GenesisFarm.finalize`, one epoch | 160,830 | 0.00016 | 0.00080 |
-| `GenesisFarm.claim`, one epoch | 126,933 | 0.00013 | 0.00063 |
+| a player's `acquire` (FWA; now includes the purchase gate) | 609,937 | 0.00061 | 0.00305 |
+| `sync`: 1 pull booked + its replacement minted and listed | 1,377,074 | 0.00138 | 0.00689 |
+| `sync`: 5 pulls + 5 replacements | 3,000,604 | 0.00300 | 0.01500 |
+| `sync`: 20 pulls + 20 replacements | 9,969,589 | 0.00997 | 0.04985 |
+| `Buyback.process` (one slice, bought and burned) | 409,894 | 0.00041 | 0.00205 |
+| `Converter.convert` | 463,661 | 0.00046 | 0.00232 |
+| `GenesisFarm.finalize`, one epoch | 231,744 | 0.00023 | 0.00116 |
+| `GenesisFarm.claim`, one epoch | 126,911 | 0.00013 | 0.00063 |
 
-Per pull, `sync` costs about 452k gas beyond the first pull of a call: almost all of it is the replacement (a Shapes mint
-and an FWA listing). The player also pays FWA's VRF fee (1.95M gas-equivalents × gas price): 0.00195 ETH at 1 gwei,
+Per pull, `sync` costs about 452k gas beyond the first pull of a call: almost all of it is the replacement (a
+Shapes mint through PoolOwner and an FWA listing). The 20-pull figure was measured with the gate's floor lowered to 50%
+so 20 captures fit before a restock (at 80% at most 16 do). The player also pays FWA's VRF fee (1.95M gas-equivalents × gas price): 0.00195 ETH at 1 gwei,
 0.0039 at 2 gwei, 0.0098 at 5 gwei. Net of the VRF fee the expected return is 84.6% at 0.5 gwei, 82.1% at 1 gwei,
 77.4% at 2 gwei and 66.0% at 5 gwei.
 
@@ -85,12 +87,13 @@ and an FWA listing). The player also pays FWA's VRF fee (1.95M gas-equivalents �
 
 The allocation is 3% of C (C = the quote's expected replacement cost), 0.000820 ETH per pull. Measured on the fork
 (`test_operatingAllocationAgainstMeasuredKeeperGas`: 120 pulls, a sync per 10 pulls with replacements, 12 syncs,
-62.3M gas, each call its own transaction with cold storage as on mainnet): it covers the keeper gas plus overhead up
-to about a **1.6 gwei** base fee (1.66 locally, 1.60 in CI on forge 1.8.6). In the 60-day models at 1 gwei,
-keeper cost (gas × 1.2 premium + bounty) was 1.9 to 2.7 ETH per 100 ETH of turnover against an allocation of 2.72, and
-KeeperFund never ran short. Above about 1.6 gwei the allocation does not pay for every sync. Tips are capped by what
-KeeperFund holds, keepers wait for cheaper blocks (the bounty ramps over 6 h), and settlement never waits on tips.
-Unspent allocation above KeeperFund's 0.5 ETH target returns to the game and raises realised profit.
+63.5M gas, each call its own transaction with cold storage as on mainnet): it covers the keeper gas plus overhead up
+to about a **1.6 gwei** base fee (1.62 with `--isolate` after the PoolOwner split). Keepers are paid the gas they used
+at the gas price they paid (up to 5 gwei; at most 0.05 ETH a call) plus a 0.0003 ETH flat fee at most once an hour per
+job, so splitting work earns nothing extra and idle time earns nothing (D48). Above about 1.6 gwei the allocation does
+not pay for every sync; the vault then tops KeeperFund up from trading fees, at most 1 ETH over its life (about 70M
+gas of listing at 10 gwei), and those top-ups go back to the vault before any overflow reaches the game. Settlement
+never waits on tips, and the purchase gate keeps the board safe whether or not anyone syncs.
 
 ## 5. Capital and replenishment
 
@@ -117,66 +120,81 @@ Conditions under which the game pauses distributions or new purchases: docs/RUNB
 ## 6. Results after execution costs, variation and availability (60 days, no trading fees)
 
 From `sim/results/sustainability.md` section 4: 100-item board, 12 ETH reserve, keeper at 1 gwei syncing at 10 pulls,
-20 empty rows or 4 idle hours. Profit is realised profit after the operating allocation. Percentiles are across 40
-seeded runs (12 for busy).
+3 empty rows, near the gate's line or 4 idle hours, paid gas at cost plus the hourly flat fee; purchases through the
+gate. Profit is realised profit after the operating allocation. Percentiles are across 40 seeded runs (12 for busy).
 
-| scenario | turnover | realised profit, mean (p05 … p95) | per 100 ETH, mean (p05 … p95) | distributed | deepest P&L | hours closed |
-|---|---|---|---|---|---|---|
-| low: 1 ETH/day | 62 ETH | +2.64 (−2.41 … +7.06) | +4.29 (−3.74 … +11.80) | 3.74 | −6.33 | 0 |
-| base: 5 ETH/day, bursts | 306 ETH | +11.51 (+2.76 … +21.34) | +3.77 (+0.90 … +6.97) | 13.35 | −4.67 | 0.3 |
-| busy: 30 ETH/day | 1,688 ETH | +59.74 (+17.26 … +81.24) | +3.54 (+1.02 … +4.79) | 61.74 | −5.12 | 24.9 |
-| clumped: 5 ETH/day in 4 sessions | 299 ETH | +10.30 (+1.83 … +21.43) | +3.44 (+0.61 … +7.10) | 11.91 | −7.90 | 4.0 |
-| adverse: 5 headline wins first | 315 ETH | +12.91 (+2.07 … +20.70) | +4.10 (+0.66 … +6.69) | 14.43 | −10.91 | 0 |
+| scenario | turnover | realised profit, mean (p05 … p95) | per 100 ETH, mean (p05 … p95) | distributed | deepest P&L | keeper cost per 100 ETH | hours closed |
+|---|---|---|---|---|---|---|---|
+| low: 1 ETH/day | 61 ETH | +2.58 (−2.70 … +6.27) | +4.26 (−4.28 … +10.67) | 3.66 | −6.00 | 2.91 | 0 |
+| base: 5 ETH/day, bursts | 293 ETH | +10.14 (+0.65 … +21.40) | +3.47 (+0.22 … +7.38) | 12.03 | −6.32 | 2.42 | 0 |
+| busy: 30 ETH/day | 1,577 ETH | +52.97 (+19.64 … +75.80) | +3.36 (+1.24 … +4.73) | 54.78 | −3.69 | 2.22 | 0 |
+| clumped: 5 ETH/day in 4 sessions | 294 ETH | +11.70 (+4.31 … +24.66) | +3.98 (+1.49 … +8.30) | 13.01 | −5.97 | 2.04 | 0.2 |
+| adverse: 5 headline wins first | 303 ETH | +10.40 (+0.96 … +18.05) | +3.43 (+0.32 … +5.99) | 12.07 | −10.19 | 2.67 | 0 |
 
 - **Actual distributable profit.** Realised profit averaged 3.4 to 4.3 ETH per 100 ETH of gameplay, below the 4.195
-  expectation. Rows emptied between windows shift the board towards dearer prizes, and the cheapest prizes carry the
-  margin. At low volume a 60-day run loses money one time in ten. Over the long run distributions approach realised
-  profit; they are never more than it.
-- **Headline frequency.** 0.46 to 0.51 headline wins per ETH of gameplay, against 0.453 for a full board: one per 2.0
-  to 2.2 ETH.
-- **Availability.** Each row is empty 39 to 137 hours per 60 days, waiting for the 30-minute window and the keeper's
-  batching. Purchases close (below 80% fill) only under clumped or very busy play.
-- **Busy.** At 30 ETH a day one run in twelve briefly ran short of cash after a deep headline run, and purchases closed
-  about 25 hours in 60 days while the board refilled. More capital or a faster keeper cadence absorbs it.
+  expectation: rows emptied between restocks shift the board towards dearer prizes, and the cheapest prizes carry the
+  margin. At low volume a 60-day run loses money about one time in ten. Distributions are never more than realised
+  profit.
+- **Availability.** With the 3-row trigger each row is empty 4 to 17 hours per 60 days (39 to 137 with the old
+  30-minute window and 20-row batches). The gate closed purchases only in the clumped case, about 12 minutes in 60 days.
+- **Keeper cost** is 2.0 to 2.9 ETH per 100 ETH at 1 gwei against an allocation of 2.72: the hourly flat fee weighs
+  most at low volume; vault top-ups cover the difference within their 1 ETH limit.
+- **Busy.** At 30 ETH a day the lowest headroom went 1.65 ETH below replacements owed for a while after a headline run
+  (rows waited for cash); more capital absorbs it.
+- **Small boards.** The 20-row board needs a 50% floor under the gate (an 80% floor plus a batch of 5 exceeds 20 rows);
+  with it, drift refunds rise to 16-26% at 5 ETH a day (section 11).
 
 ## 7. Genesis rewards
 
 `pot(e) = min(allocationCap(e), eligibleTicketETH(e) × rateCap(e))`, with F = 190M ENGINE, steady cap F/17.5 =
 10,857,143 ENGINE, and both caps multiplied by 87.5% … 12.5% over the last seven epochs. The rate cap is fixed at deploy
-to 10% of ticket ETH valued at the launch price: at LAUNCH_ETH 5 against the 800M float, 16,000,000 ENGINE per ETH.
+to 10% of ticket ETH valued at the start price: at `START_TICK` 184,200, 9,983,996 ENGINE per ETH.
 
-| eligible ticket ETH per day | pot | rewards as % of ticket ETH at the launch price | burned at finalization |
+| eligible ticket ETH per day | pot | rewards as % of ticket ETH at the start price | burned at finalization |
 |---|---|---|---|
-| 0.2 | 3.2M | 10.00% | 7.66M |
-| 0.68 | 10.86M | 9.98% | 0 |
-| 2 | 10.86M | 3.39% | 0 |
-| 5 | 10.86M | 1.36% | 0 |
-| 20 | 10.86M | 0.34% | 0 |
+| 0.2 | 2.0M | 10.00% | 8.86M |
+| 1.09 | 10.86M | 9.98% | 0 |
+| 2 | 10.86M | 5.44% | 0 |
+| 5 | 10.86M | 2.17% | 0 |
+| 20 | 10.86M | 0.54% | 0 |
 
-A single 0.03 ETH pull earns 482k ENGINE, 4.4% of a steady pot, never the pot. Below about 0.68 ETH a day the rate cap
-binds and the unearned rest of each cap is burned when the epoch becomes final. Above it the allocation cap binds and
-rewards per ETH fall as activity grows. The reward value is at the launch price only; the market sets the rest.
+A single 0.03 ETH pull earns about 300k ENGINE, under 3% of a steady pot, never the pot. Below about 1.09 ETH a day the
+rate cap binds and the unearned rest of each cap is burned when the epoch becomes final. Above it the allocation cap
+binds and rewards per ETH fall as activity grows. ENGINE can trade only at or above the start price, so the value is a
+floor; what selling rewards takes from the pool is in section 8.
 
-## 8. Supply split and LAUNCH_ETH
+## 8. Single-sided launch and the supply split
 
-| split (LP / genesis / bonus) | launch FDV at 5 ETH | genesis value at the launch price | genesis / LP tokens |
+`ProtocolLiquidity.launch` pairs no ETH: the 800M float is one position over `[TICK_LOWER, START_TICK)`, so the start
+price is the lowest valuation ENGINE can ever trade at, and sellers can take out only the ETH buyers put in
+(`sim/results/launch.md`, D50).
+
+| start FDV | `START_TICK` | 1 ETH opening buy moves the price | largest buyer after a 5 ETH opening | genesis budget at the start price |
+|---|---|---|---|---|
+| 5 ETH | 191,200 | +55% | 24% of supply | 0.95 ETH |
+| **10 ETH (recommended)** | **184,200** | **+26%** | **14%** | **1.90 ETH** |
+| 20 ETH | 177,200 | +12% | 7% | 3.83 ETH |
+
+Farm selling (D52): public buys are closed through genesis, so farm rewards sold then meet only the opening market's
+ETH, conversions and buybacks. With no conversions, 1 ETH of opening buys and 20 ETH of genesis tickets at 10 ETH FDV,
+full farm selling takes the price back to the start and opening buyers exit with nothing; with 25% of delivered prize
+backing converted the same opening exits at 1.3×, and at 100-300 ETH of tickets conversions dominate. A seeded
+two-sided position would not protect buyers: it gives farm sellers the owner's ETH too and removes the floor. The
+80 / 19 / 1 split is unchanged (D40); a smaller farm, a time-weighted rate cap or a lower start are the owner's options.
+
+| split (LP / genesis / bonus) | start FDV | genesis value at the start price | genesis / LP tokens |
 |---|---|---|---|
-| 80 / 19 / 1 (adopted) | 6.25 ETH | 1.19 ETH | 0.24 |
-| 70 / 29 / 1 | 7.14 ETH | 2.07 ETH | 0.41 |
-| 50 / 49 / 1 | 10.00 ETH | 4.90 ETH | 0.98 |
-| 10 / 10 / 1 + 79% reserve (PR #9) | 50.00 ETH | 5.00 ETH | 1.00 |
+| 80 / 19 / 1 (adopted) | 10.02 ETH | 1.90 ETH | 0.24 |
+| 70 / 29 / 1 | 10.02 ETH | 2.90 ETH | 0.41 |
+| 50 / 49 / 1 | 10.02 ETH | 4.91 ETH | 0.98 |
 
-80 / 19 / 1 removes the dependence on a seasons reserve and keeps everything the farm can ever pay at 24% of the pool's
-token depth. Its cost is a low launch valuation, so genesis rewards are a modest incentive at the launch price. A
-larger LAUNCH_ETH raises the price, lowers the rate cap in ENGINE terms (same 10% value), and deepens the pool for
-conversions and buybacks. 5 ETH remains the recommendation for a first launch; the owner may raise it. The farm's
-budget is a constructor argument if the owner prefers 70 / 29 / 1.
+Single-sided, the start FDV is set by `START_TICK`, not by the split.
 
 ## 9. Sizes
 
-Runtime bytes (legacy codegen, optimizer 200), from `forge build --sizes`: FwaGame about 23,500 (about 1.1 KB under
-24,576), Lens about 18,200, ProtocolLiquidity 8,578, GenesisFarm about 7,000, EngineHook about 6,100, KeeperFund
-about 4,500, EngineBuyer 4,190, Buyback about 4,000, Converter about 3,750, PrizeVault about 3,450, EngineToken 2,940.
+Runtime bytes (legacy codegen, optimizer 200), from `forge build --sizes`: FwaGame 24,195 (381 under 24,576), Lens
+18,992, PoolOwner 8,917, ProtocolLiquidity 8,699, GenesisFarm 6,953, EngineHook 6,123, KeeperFund 4,747, PrizeVault
+4,661, Converter 4,319, EngineBuyer 4,190, Buyback 3,936, EngineToken 2,940.
 Exact figures in `docs/FINAL_REPORT.md`.
 
 ## 10. Model limits
@@ -185,7 +203,24 @@ Exact figures in `docs/FINAL_REPORT.md`.
   assumption.
 - Each FWA request settles against the live pool in order, with the 10% positive-slippage refund and no negative-
   slippage refunds (the site sends 100% tolerance). VRF latency within a burst is not modelled.
-- The keeper syncs at 10 pulls, 20 empty rows or 4 idle hours. Real keepers and bots will differ, and a slower keeper
-  leaves rows empty longer.
+- The keeper syncs at 10 pulls, 3 empty rows, near the gate's line or 4 idle hours. Real keepers and bots will differ,
+  and a slower keeper leaves rows empty (and the gate closed) longer.
+- `sim/launch.py` models the pool exactly (concentrated liquidity) but buyers and farmers as fixed patterns; real
+  traders will differ. `sim/throughput.py` models VRF latency and FWA's ordering, not gas competition.
 - No trading fees, no promotions, no conversions and no market model: the token's price does not enter the game's
   accounts, and none of these figures implies anything about it.
+
+## 11. Gate throughput and Pack boards
+
+`sim/results/throughput.md` (in-flight limit × board size; 30% of purchases batches of 5): on the 100-row board at
+10 ETH a day, limit 10 completes the most draws with 0.02% refused and 0.45% refunded on FWA's drift guard; at 50 ETH a
+day, 3.3% refused and 2.2% refunded, against 12-16% refused at limits 3-5 (one batch fills those). A 50-row board refunds
+11-18% at any limit (each cheap capture moves FWA's fee more), so the limit and the board are set together. Launch:
+limit 10, 100 rows (D45).
+
+`sim/results/boards.md` (Pack costs read from the fork): the Shapes board returns 87.4% before VRF (82.1% at 1 gwei)
+with a 0.5 ETH headline 1 in 73; Pack board A (seven levels, 30 Packs) returns 86.0% on half the board capital (7.72
+ETH) with a rarer 0.5 ETH headline (1 in 393); Pack board B (40 Packs, 1 ETH headline 1 in 715) returns 86.2% on 12.02
+ETH. Packs carry one mint fee per Shape inside, so the mint-fee share of the ticket rises from 3.3% to about 4.5-4.7%.
+The launch board stays Shapes-only (D51).
+

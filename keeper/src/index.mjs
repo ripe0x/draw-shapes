@@ -63,7 +63,8 @@ async function tick() {
   const work = await pub.readContract({ address: dep.lens, abi: lensAbi, functionName: "work", args: [addrs] });
   for (const job of jobs(work)) {
     const age = await ageOf(job, block.timestamp);
-    if (!shouldAct({ ageSeconds: age, basefeeWei: basefee, backupAfterSeconds: backupAfter, basefeeGateWei: gate })) {
+    const urgent = job.urgent ?? false;
+    if (!shouldAct({ ageSeconds: age, basefeeWei: basefee, backupAfterSeconds: backupAfter, basefeeGateWei: gate, urgent })) {
       console.log(`${job.name}: waiting (age ${age}s, basefee ${basefee})`);
       continue;
     }

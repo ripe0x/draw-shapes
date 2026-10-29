@@ -42,7 +42,7 @@ abstract contract LaunchConfig is DeploySystem {
         for (uint256 i; i < 100; ++i) {
             c.boardBackings[i] = uint96(i < 30 ? unit : i < 75 ? 5 * unit : 50 * unit);
         }
-        c.listBatch = 3; // restock trigger: list once 3 rows are missing (D47)
+        c.listBatch = 3; // restock trigger: list once 3 rows are missing (D49)
         c.markupBps = 500;
         c.opsBps = 300;
         c.conversionBonusBps = 200;
@@ -51,7 +51,7 @@ abstract contract LaunchConfig is DeploySystem {
         c.snipeWindow = 60 minutes;
         c.capital = FwaGame.Capital({
             reserveTarget: 1_200 * unit, // 12 ETH on mainnet: docs/ECONOMICS.md section 5
-            maintenanceInterval: 5 minutes, // and at least six FWA cooldowns apart (D47)
+            maintenanceInterval: 5 minutes, // and at least six FWA cooldowns apart (D49)
             minLiveBps: 8_000,
             maxInFlight: 10, // the purchase gate assumes a full batch of 5 on top (D45)
             maxEdgeBps: 500, // FWA's edge at launch; a higher edge closes purchases until governance accepts it

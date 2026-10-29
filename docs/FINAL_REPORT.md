@@ -1,11 +1,55 @@
-# Final report: Draw Shapes + ENGINE, sustainability follow-up
+# Final report: Draw Shapes + ENGINE
 
-Date: 2026-10-27. Branch: `claude/relaxed-goodall-mmbzpd` (PR #9). This follows the original build (D1–D30) with the
-owner's follow-up: make the game sustainable after genesis. No independent audit has been done. Nothing was broadcast to
-any live network. No private key was created or used. Time manipulation happened only in local fork tests and on a local
-anvil fork.
+Date: 2026-10-29. Branch: `claude/relaxed-goodall-mmbzpd` (PR #9). This covers the original build (D1–D30), the
+sustainability follow-up (D31–D43) and the collection-games review (D44–D52). No independent audit has been done.
+Nothing was broadcast to any live network. No private key was created or used. Time manipulation happened only in
+local fork tests and on a local anvil fork.
 
-## What changed
+## This round: designs adopted from collection-games (D44–D52)
+
+The owner asked which `ripe0x/collection-games` designs to adopt and approved: a zero-ETH single-sided launch; Shape
+Packs (mainnet `0xf21514B0…5cA7`) as a prize; the purchase gate, step recovery, fixed booking, keeper pay, restock
+cadence and exposure changes; FwaGame split in two; farm selling quantified without changing the split; the Shapes
+board kept with Pack boards presented; the opening valuation proposed from a model.
+
+- **PoolOwner** (D44) creates and owns the FWA pool, holds and lists prizes, mints Shapes and Packs with exactly the
+  game's ETH, turns withdrawn or recovered prizes back into ETH, and is FWA's purchase operator. FwaGame keeps the
+  books (24,195 bytes, 381 under the limit).
+- **Purchase gate** (D45) on live FWA state: refuses past 10 in flight, outside the edge/cooldown range, or when the
+  board would fall below 80% + a batch of 5 + every unsettled request. It binds FWA's own site and holds while nobody
+  syncs: in a day-long keeper outage direct purchases stopped with 84 prizes in the draw; one sync booked all 16 pulls
+  and reopened.
+- **Step recovery** (D46): each `sync` step in its own `try`, `StepFailed` events; booking reads no module.
+- **Booking** (D47) at the highest edge ever accepted, trued up to what FWA paid; markup and operating allocation
+  frozen per listing.
+- **Keepers** (D48): gas at the price paid (≤ 5 gwei, ≤ 0.05 ETH) plus a 0.0003 ETH hourly flat fee; seed 0.05 ETH;
+  the vault tops KeeperFund up from trading fees within a 1 ETH lifetime limit, returned to the vault before any
+  overflow reaches the game.
+- **Restock and exposure** (D49): 3-row trigger, 5-minute interval (≥ 6 FWA cooldowns), only with nothing in flight
+  unless near the gate's line; exposure = min(unsettled × costliest prize, inventory cost).
+- **Single-sided launch** (D50): no ETH; start price from `START_TICK` (replaces `LAUNCH_ETH_WEI`), which also sets the
+  rate cap. Recommended 184,200 (≈ 10 ETH FDV).
+- **Shape Packs** (D51) minted with the fewest Shapes, redeemed on withdraw, recovery, conversion and retirement;
+  tested end to end on the real contract. Launch board unchanged.
+- **Keeper and site**: the keeper acts at once when the gate is closed with rows waiting; the site shows the gate,
+  Pack prizes and converts either collection.
+- A regression found and fixed during the split: the operating allocation had lost its edge division (5% too high);
+  `test_pullFulfilledBookedToTheWei` caught it.
+
+**Findings for the owner:**
+
+1. **Farm selling can take the opening market's ETH** (D52). Public buys are closed through genesis and the rate cap is
+   valued at the start price, so with no conversions, 1 ETH of opening buys and 20 ETH of genesis tickets, full farm
+   selling returns the price to the start and opening buyers exit with nothing (with 25% of prizes converted they exit
+   at 1.3×). Options: a smaller farm, a time-weighted rate cap (contract change), a lower start. Split unchanged.
+2. **Start valuation**: 10 ETH FDV recommended; 5 ETH FDV favours opening buyers at the price of concentration (a 5 ETH
+   opening leaves the largest buyer 24% of supply against 14%).
+3. **Throughput**: limit 10 on 100 rows is best (0.02% refused at 10 ETH a day; 3.3% refused and 2.2% drift-refunded at
+   50 ETH a day). Ten in-flight cheap captures in a row can trigger FWA's drift refund (8 of 10 settled in the fork test).
+4. **Small boards**: the gate needs at least floor + 5 rows; a board under 25 rows needs `minLiveBps` below 80%.
+5. **Pack board A** offers seven prize levels on half the board capital (7.72 ETH) with a rarer headline.
+
+## Sustainability follow-up (D31–D43)
 
 **Funding routes** (D31). ENGINE trading fees go from the hook straight to the PrizeVault and reach the game as capital,
 all of them, even above any target. Realised, distributable game profit goes to a burn-only `Buyback`. Promotions have
@@ -79,19 +123,46 @@ Each was checked against the vendored source, the fork, or both.
 
 `script/LaunchConfig.sol`:
 
-- Board 30 / 45 / 25 (15.15 ETH at cost), markup 500, operating allocation 300.
-- Reserve target 12 ETH; admission fill 80%, max 20 unsettled, max edge 5%, max cooldown 5 min; market lead 48 h.
-- Rate cap 10% of ticket ETH at the launch price; buyback slice 0.05 ETH, hourly, impact 3%, deviation 2%.
+- Board 30 / 45 / 25 Shapes (15.15 ETH at cost), markup 500, operating allocation 300.
+- Reserve target 12 ETH; admission fill 80%; purchase gate: 10 in flight, a batch of 5 assumed, max edge 5%, max
+  cooldown 5 min; restock trigger 3 rows, 5-minute interval; market lead 48 h.
+- Start tick 184,200 (≈ 10 ETH FDV, single-sided); rate cap 10% of ticket ETH at the start price; buyback slice
+  0.05 ETH, hourly, impact 3%, deviation 2%.
+- Keepers: tip cap 0.05 ETH, gas price cap 5 gwei, overhead 70,000, flat fee 0.0003 ETH hourly; target 0.5 ETH, floor
+  0.05 ETH; vault top-up target 0.1 ETH, ≤ 1 ETH over its life.
 
 Owner-funded:
 
 - Opening capital about 28 ETH (board + reserve + about 1 ETH working cash).
-- `LAUNCH_ETH` 5 ETH; it also fixes the rate cap at deploy, so set `LAUNCH_ETH_WEI` before deploying.
-- `KEEPER_SEED` 0.5 ETH; the FWA creation fee (50,000 FWA at spot + 5%).
+- No launch ETH (single-sided); set `START_TICK` before deploying.
+- `KEEPER_SEED` 0.05 ETH; the FWA creation fee (50,000 FWA at spot + 5%).
 
 ## Tests and sims run
 
-All on the pinned fork (block 26,279,000) with the real Shapes, FWA factory and VRF service (callbacks driven through
+Totals after this round: 102 tests in 12 suites (unit 26; fork 63 including the new resilience suite and the gas
+receipt; the invariant suite, 10 invariants and a fixed walk; the genesis rehearsal), all passing locally on the pinned
+fork. New this round:
+
+- **Resilience** (6): keeper outage with direct FWA purchases then recovery; reverting board and pricing modules;
+  booking unchanged by markup, operating-allocation and edge changes; Shape Packs minted, listed, won, converted,
+  recovered after a failed delivery and redeemed at retirement; keeper top-ups within the lifetime limit; a sync
+  topping KeeperFund up.
+- **Accounting**: full batches with requests in flight (a third batch refused; drift refunds counted); gate refusal
+  counting in-flight requests; restock waiting for requests in flight.
+- **Market**: single-sided launch position and rate cap; no sale before any buy; price never above the start and
+  sellers taking out at most buyers' ETH.
+- **Invariants**: keeper top-ups bounded and returned; booking never ahead of FWA; gate headroom; PoolOwner holds
+  nothing.
+- **KeeperFund unit**: the gas-plus-flat-fee formula, splitting earns no more, overflow to the vault first, bounds.
+- **Sims**: `sim/launch.py`, `sim/throughput.py`, `sim/boards.py`; `sim/sustainability.py` updated to the gate,
+  cadence and keeper pay.
+- **Anvil rehearsal** (`script/rehearse-anvil.sh`, rerun): full `deploy.sh anvil` broadcast with postflight (41.6M gas
+  estimated); readback shows the FWA pool owned by PoolOwner with PoolOwner as purchase operator; `launch()` with no
+  ETH; 28 ETH opening capital, 100 listings with 12.85 ETH cash; `openGame` through the timelock; one player pull
+  through FWA admitted by the gate. The Sepolia simulation passed as well. Forge stalled on network lookups through the session's proxy until run with
+  `FOUNDRY_OFFLINE=true`, now set by the script.
+
+From the sustainability follow-up, all on the pinned fork (block 26,279,000) with the real Shapes, FWA factory and VRF service (callbacks driven through
 the real service), FWA token and hook, and the v4 PoolManager. Runs used a local anvil node forking a public archive RPC,
 because the public endpoints rate-limit.
 
@@ -149,12 +220,13 @@ because the public endpoints rate-limit.
 From docs/ECONOMICS.md.
 
 - **Per 100 ETH of gameplay, expected:** backing 87.38, mint 3.32, operating 2.72, FWA 2.38, margin 4.20.
-- **After execution costs, realised (60-day models):** 3.4 to 4.3 ETH profit per 100 ETH. The 5th to 95th percentile
-  in the base case is +0.9 to +7.0. At 1 ETH a day a run loses money about one time in ten. Keeper cost was 1.9 to
-  2.7 per 100 ETH at 1 gwei, within the allocation.
+- **After execution costs, realised (60-day models, rerun with the gate, cadence and keeper pay of this round):** 3.4
+  to 4.3 ETH profit per 100 ETH. The 5th to 95th percentile in the base case is +0.2 to +7.4. At 1 ETH a day a run
+  loses money about one time in ten. Keeper cost was 2.0 to 2.9 per 100 ETH at 1 gwei against an allocation of 2.72;
+  vault top-ups cover the difference within their 1 ETH limit.
 - **Headline frequency:** 0.45 per ETH for a full board; 0.46 to 0.51 in play.
-- **Availability:** rows wait 39 to 137 hours per 60 days for windows and keeper batching. Purchases close only under
-  clumped or very busy play: 4 to 25 hours in 60 days.
+- **Availability:** rows wait 4 to 17 hours per 60 days with the 3-row trigger (39 to 137 before). The gate closed
+  purchases about 12 minutes in 60 days, only in the clumped case.
 - **Capital:** inventory 15.15 ETH; working cash about 1 ETH; reserve 12 ETH. With that reserve, 200 runs saw no cash
   shortfall; at 3 ETH, 97% did. KeeperFund target 0.5 ETH.
 - **Distributable profit in tested paths:** never more than realised profit; zero while a loss is carried (fork tests
@@ -163,20 +235,19 @@ From docs/ECONOMICS.md.
 
 ## Blockers and limits
 
-- **No audit.** The accounting and admission code is new and should be reviewed independently.
-- **FwaGame size.** FwaGame is 23,489 bytes, about 1.1 KB under the limit; further features need another module split.
+- **No audit.** The accounting, admission, PoolOwner, gate, Packs, keeper and launch code is new and should be
+  reviewed independently (docs/SECURITY.md).
+- **FwaGame size.** FwaGame is 24,195 bytes, 381 under the limit; further features need another module split.
 - **Keeper gas.** At base fees above about 1.6 gwei the operating allocation does not pay for every sync. Keepers wait;
   settlement does not.
 - **Buyback price check.** It defeats a same-block sandwich, not a manipulation held across a block boundary; the slice
   and the impact cap bound that.
-- **Admission timing.** Admission is enforced at the next `sync`, so a burst inside one block can exceed the limits
-  until then. FWA's own caps (5 per transaction, 10 outstanding VRF requests per pool) bound it.
-- **Edge changes.** If FWA changes its edge between a request and its booking, that request's proceeds are computed at
-  the new edge (D32). Admission closes above a 5% edge.
-- **Low launch valuation.** With 80% of supply in the pool, genesis rewards are worth about 1.2 ETH at the launch
-  price (D40).
-- **Release gates not repeated here:** the Sepolia simulation (`DRY_RUN=1 script/deploy.sh sepolia`) was not rerun for
-  this follow-up, and CI on PR #9 needs a private archive `MAINNET_RPC_URL`.
+- **Admission timing.** Resolved by the purchase gate (D45): FWA asks it before every purchase, without a sync.
+- **Edge changes.** Proceeds are booked at the highest edge governance accepted and trued up to what FWA paid (D47).
+- **Farm selling and the start valuation** (D50, D52): see the findings above.
+- **Release gates:** the Sepolia simulation (`DRY_RUN=1 script/deploy.sh sepolia`) was rerun for this round and passed
+  (everything except FWA, which Sepolia's older factory cannot create, and Shape Packs, which Sepolia lacks). CI on
+  PR #9 reads `MAINNET_RPC_URL`.
 
 ## Implications for existing commitments
 
@@ -190,8 +261,9 @@ From docs/ECONOMICS.md.
 
 ## Next steps that need the owner
 
-1. Review docs/IMPLEMENTOR_DECISIONS.md D31–D43, especially the supply split (D40) and the reserve (D41).
-2. Choose `LAUNCH_ETH` (sets the rate cap at deploy), the opening capital and `KEEPER_SEED`.
+1. Review docs/IMPLEMENTOR_DECISIONS.md D44–D52, especially the start valuation (D50) and farm selling (D52), and
+   D31–D43 (supply split D40, reserve D41).
+2. Choose `START_TICK` (start price and rate cap), the opening capital and whether to adopt a Pack board.
 3. Commission an independent audit before outside money is material.
 4. Run the Sepolia simulation and CI with a private archive RPC; then `DRY_RUN=1 script/deploy.sh mainnet` and the
    owner's broadcast.

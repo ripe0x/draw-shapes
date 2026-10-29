@@ -5,10 +5,10 @@ const addrs =
 
 export const lensAbi = parseAbi([
   addrs,
-  "struct GameView { address pool; bool acquisitionsEnabled; bool admissible; bool opened; bool paused; bool retiring; bool retired; uint256 liveListings; uint256 boardRows; uint256 liveRows; uint256 seenSeq; uint256 openRequests; uint256 lastIssuedSeq; uint256 unsettled; uint256 quoteFee; uint256 quoteVrf; uint256 inventoryVersion; uint256 purchasesResumeAt; uint256 promoListing; uint256 promoEndBlock; }",
+  "struct GameView { address pool; bool acquisitionsEnabled; bool admissible; bool opened; bool paused; bool retiring; bool retired; uint256 liveListings; uint256 boardRows; uint256 liveRows; uint256 seenSeq; uint256 openRequests; uint256 lastIssuedSeq; uint256 unsettled; uint256 quoteFee; uint256 quoteVrf; uint256 inventoryVersion; uint256 purchasesResumeAt; uint256 promoListing; uint256 promoEndBlock; bool gateOpen; uint256 maxInFlight; }",
   "struct AccountsView { uint256 capitalIn; uint256 cash; uint256 inventoryBacking; uint256 inventoryCost; uint256 replacementsOwed; uint256 opsOwed; uint256 exposure; uint256 protectedCash; uint256 distributable; uint256 turnover; uint256 promoTurnover; uint256 pullsBooked; uint256 revenue; uint256 prizeExpense; uint256 opsAccrued; uint256 opsReturned; int256 profit; uint256 distributed; uint256 promoBudget; uint256 promoFunded; uint256 promoSpent; uint256 promoProceeds; uint256 promoReleased; }",
   "struct FundingView { uint256 tradingFees; uint256 contributions; uint256 vaultBalance; uint256 promotionsFunded; uint256 profitReceived; uint256 buybackSpent; uint256 engineBurned; uint256 conversions; uint256 conversionEthIn; uint256 conversionEngineOut; uint256 conversionBonus; }",
-  "struct Listing { uint256 listingId; uint256 row; uint256 backing; uint256 price; uint256 probability; }",
+  "struct Listing { uint256 listingId; uint256 row; uint256 kind; uint256 backing; uint256 price; uint256 probability; }",
   "struct MarketView { bool gated; uint256 genesisEndBlock; uint256 currentEpoch; uint256 feeBps; uint256 snipeFeeBps; uint160 sqrtPriceX96; uint256 enginePerEth; }",
   "struct EpochView { uint256 epoch; uint256 allocationCap; uint256 rateCap; uint256 weight; uint256 pot; uint256 userWeight; uint256 reward; bool isFinal; bool finalized; bool claimed; }",
   "function game(Addresses a) view returns (GameView)",

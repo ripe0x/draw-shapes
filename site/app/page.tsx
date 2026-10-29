@@ -9,18 +9,18 @@ import { NotDeployed } from "./components/NotDeployed";
 import { TxStatus } from "./components/Tx";
 import { useTermsAcceptance } from "./lib/terms-acceptance";
 
-type Tier = { backing: bigint; count: number; probability: bigint };
+type Tier = { backing: bigint; kind: bigint; count: number; probability: bigint };
 
-/** Groups listings or board rows by backing: how many, and their summed probability (1e18 = certain). */
-function tiersOf(rows: { backing: bigint; probability: bigint }[]): Tier[] {
+/** Groups listings or board rows by prize (kind and backing): how many, and their summed probability (1e18 = certain). */
+function tiersOf(rows: { backing: bigint; kind: bigint; probability: bigint }[]): Tier[] {
   const out: Tier[] = [];
   for (const r of rows) {
-    const t = out.find((x) => x.backing === r.backing);
+    const t = out.find((x) => x.backing === r.backing && x.kind === r.kind);
     if (t) {
       t.count += 1;
       t.probability += r.probability;
     } else {
-      out.push({ backing: r.backing, count: 1, probability: r.probability });
+      out.push({ backing: r.backing, kind: r.kind, count: 1, probability: r.probability });
     }
   }
   return out.sort((a, b) => (a.backing < b.backing ? -1 : 1));
@@ -71,14 +71,18 @@ export default function Play() {
   }
 
   const open = game?.acquisitionsEnabled && !game?.retiring;
-  const current = tiersOf((inventory ?? []).map((l) => ({ backing: l.backing, probability: l.probability })));
-  const modelled = tiersOf((target?.[0] ?? []).map((b, i) => ({ backing: b, probability: target![2][i] })));
+  // The purchase gate (FWA's purchase operator) refuses while the board waits for a restock, also on FWA's own site.
+  const gateOpen = game?.gateOpen ?? false;
+  const kindOfBacking = new Map((inventory ?? []).map((l) => [l.backing, l.kind]));
+  const current = tiersOf((inventory ?? []).map((l) => ({ backing: l.backing, kind: l.kind, probability: l.probability })));
+  const modelled = tiersOf((target?.[0] ?? []).map((b, i) => ({ backing: b, kind: kindOfBacking.get(b) ?? 0n, probability: target![2][i] })));
   return (
     <>
       <h1>Pull a Shape</h1>
-      <p>Each pull draws one Shape from a board of {game ? String(game.liveListings) : "…"} with Chainlink VRF on an FWA V2
-        pool. Bigger Shapes are rarer: odds are inverse to price. Every Shape holds its ETH and can be burned for it.
-        During genesis every delivered pull earns ENGINE. Pulls made on FWA's own site count the same.</p>
+      <p>Each pull draws one prize (a Shape, or a Shape Pack of several Shapes) from a board of
+        {game ? ` ${game.liveListings}` : " …"} with Chainlink VRF on an FWA V2 pool. Bigger prizes are rarer: odds are
+        inverse to price. Every Shape holds its ETH and can be burned for it; a Pack is redeemed for its ETH. During
+        genesis every delivered pull earns ENGINE. Pulls made on FWA's own site count the same.</p>
       <NotDeployed>
         <div className="grid">
           <div className="stat"><b>{eth(quote?.fee ?? game?.quoteFee, 5)}</b><span>ETH per pull (prize draw)</span></div>
@@ -91,20 +95,20 @@ export default function Play() {
           {[1, 5].map((n) => (
             <button key={n} className={count === n ? "btn-filled" : "btn-outline"} onClick={() => setCount(n)}>{n} pull{n > 1 ? "s" : ""}</button>
           ))}
-          <button className="btn-filled" disabled={!address || accepted !== true || !open || isPending} onClick={pull}>
-            {open ? "Pull" : "Game not open"}
+          <button className="btn-filled" disabled={!address || accepted !== true || !open || !gateOpen || isPending} onClick={pull}>
+            {!open ? "Game not open" : !gateOpen ? "Paused: restocking" : "Pull"}
           </button>
         </div>
         <TxStatus hash={hash} error={error} />
         <h2>Prizes</h2>
         <table>
-          <thead><tr><th>Shape backing</th><th>listed now</th><th>chance now</th><th>modelled full board</th><th>modelled chance</th></tr></thead>
+          <thead><tr><th>prize</th><th>listed now</th><th>chance now</th><th>modelled full board</th><th>modelled chance</th></tr></thead>
           <tbody>
             {modelled.map((m) => {
-              const c = current.find((x) => x.backing === m.backing);
+              const c = current.find((x) => x.backing === m.backing && x.kind === m.kind);
               return (
-                <tr key={String(m.backing)}>
-                  <td>{eth(m.backing, 2)} ETH</td><td>{c ? c.count : 0}</td><td>{c ? (Number(c.probability) / 1e16).toFixed(3) : "0.000"} %</td>
+                <tr key={`${m.kind}-${m.backing}`}>
+                  <td>{eth(m.backing, 2)} ETH {m.kind === 1n ? "Pack" : "Shape"}</td><td>{c ? c.count : 0}</td><td>{c ? (Number(c.probability) / 1e16).toFixed(3) : "0.000"} %</td>
                   <td>{m.count}</td><td>{(Number(m.probability) / 1e16).toFixed(3)} %</td>
                 </tr>
               );
@@ -112,8 +116,10 @@ export default function Play() {
           </tbody>
         </table>
         <p className="note">"Now" is the live FWA pool: when prizes have just been won and not yet replaced, the board is
-          smaller and the chances shift until the next replacement window. The modelled board is the target the game
-          refills to. Price per pull is set by FWA from the live board.</p>
+          smaller and the chances shift until replacements list (once three rows wait, or five minutes after the last
+          change). The modelled board is the target the game refills to. Price per pull is set by FWA from the live
+          board. Purchases pause, here and on FWA's site, when a batch of five could take the board below its floor or
+          {game ? ` ${game.maxInFlight}` : " …"} draws already wait for their VRF word, until the next restock or settlement.</p>
         {refund && refund > 0n ? (
           <div className="row">
             <span>Refund waiting: {eth(refund, 5)} ETH (a pull that expired or was refunded).</span>

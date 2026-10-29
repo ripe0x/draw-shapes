@@ -129,6 +129,7 @@ contract Lens {
         uint256[] finalizable;
         bool bonusRetireReady;
         uint256 keeperFundAvailable;
+        bool gateOpen; // the purchase gate admits a purchase now (false while the board waits for a restock)
     }
 
     struct MarketView {
@@ -333,6 +334,7 @@ contract Lens {
             w.syncable = (last >= seen ? last - seen + 1 : 0) + g.openCount();
             w.admissionChange =
                 !g.retiring() && g.opened() && (!g.paused() && g.admissible()) != p.localPurchasesEnabled();
+            w.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(0));
         }
         uint256 rows = g.board().rowCount();
         w.unlistedRows = rows - _popcount(g.liveRows() & ((rows >= 256 ? 0 : (uint256(1) << rows)) - 1));

@@ -9,9 +9,9 @@ import { eth, pct } from "../lib/format";
 import { NotDeployed } from "../components/NotDeployed";
 import { TxStatus } from "../components/Tx";
 
-type Prize = { listingId: bigint; tokenId: bigint; value: bigint };
+type Prize = { listingId: bigint; collection: Address; tokenId: bigint; value: bigint };
 
-/** Shapes this pool delivered to the connected wallet that it still holds and has not converted. */
+/** Prizes (Shapes or Shape Packs) this pool delivered to the connected wallet that it still holds and has not converted. */
 function usePrizes(owner?: Address) {
   const client = usePublicClient();
   const [prizes, setPrizes] = useState<Prize[]>([]);
@@ -25,12 +25,12 @@ function usePrizes(owner?: Address) {
       const out: Prize[] = [];
       for (const l of logs) {
         const listingId = l.args.listingId!;
-        const [ok, , tokenId] = await client.readContract({ address: deployment.converter, abi: converterAbi, functionName: "convertible", args: [listingId] });
+        const [ok, collection, tokenId] = await client.readContract({ address: deployment.converter, abi: converterAbi, functionName: "convertible", args: [listingId] });
         if (!ok) continue;
-        const holder = await client.readContract({ address: deployment.shapes, abi: shapesAbi, functionName: "ownerOf", args: [tokenId] }).catch(() => undefined);
+        const holder = await client.readContract({ address: collection, abi: shapesAbi, functionName: "ownerOf", args: [tokenId] }).catch(() => undefined);
         if (holder?.toLowerCase() !== owner.toLowerCase()) continue;
-        const value = await client.readContract({ address: deployment.shapes, abi: shapesAbi, functionName: "valueOf", args: [tokenId] });
-        out.push({ listingId, tokenId, value });
+        const value = await client.readContract({ address: collection, abi: shapesAbi, functionName: "valueOf", args: [tokenId] });
+        out.push({ listingId, collection, tokenId, value });
       }
       setPrizes(out);
     })().catch(() => setPrizes([]));
@@ -47,9 +47,9 @@ export default function Convert() {
 
   async function convert(p: Prize) {
     if (!client || !address) return;
-    const approved = await client.readContract({ address: deployment.shapes, abi: shapesAbi, functionName: "getApproved", args: [p.tokenId] });
+    const approved = await client.readContract({ address: p.collection, abi: shapesAbi, functionName: "getApproved", args: [p.tokenId] });
     if (approved.toLowerCase() !== deployment.converter.toLowerCase()) {
-      writeContract({ address: deployment.shapes, abi: shapesAbi, functionName: "approve", args: [deployment.converter, p.tokenId] });
+      writeContract({ address: p.collection, abi: shapesAbi, functionName: "approve", args: [deployment.converter, p.tokenId] });
       return;
     }
     const [quote] = await client.readContract({ address: deployment.lens, abi: lensAbi, functionName: "conversionQuote", args: [lensAddresses, p.value] });
@@ -60,17 +60,17 @@ export default function Convert() {
   return (
     <>
       <h1>Convert a prize to ENGINE</h1>
-      <p>Turn a Shape you won from this pool into ENGINE: the Shape is burned for its ETH, that ETH buys ENGINE with no
-        swap fee, and a bonus of {pct(bonus)} is added from the bonus pool while it lasts. Anyone holding a delivered
-        Shape may convert it, once. The first click approves the Shape; the second converts.</p>
+      <p>Turn a prize you won from this pool into ENGINE: a Shape is burned for its ETH (a Shape Pack is redeemed for its
+        ETH), that ETH buys ENGINE with no swap fee, and a bonus of {pct(bonus)} is added from the bonus pool while it
+        lasts. Anyone holding a delivered prize may convert it, once. The first click approves it; the second converts.</p>
       <NotDeployed>
         {!address ? <p className="note">Connect a wallet.</p> : prizes.length === 0 ? <p className="note">No convertible prizes found.</p> : (
           <table>
-            <thead><tr><th>Shape</th><th>backing</th><th></th></tr></thead>
+            <thead><tr><th>prize</th><th>backing</th><th></th></tr></thead>
             <tbody>
               {prizes.map((p) => (
                 <tr key={String(p.listingId)}>
-                  <td>#{String(p.tokenId)}</td><td>{eth(p.value)} ETH</td>
+                  <td>{p.collection.toLowerCase() === deployment.shapes.toLowerCase() ? "Shape" : "Pack"} #{String(p.tokenId)}</td><td>{eth(p.value)} ETH</td>
                   <td><button className="btn-outline" disabled={isPending} onClick={() => convert(p)}>Convert</button></td>
                 </tr>
               ))}

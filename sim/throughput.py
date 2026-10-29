@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Purchase gate throughput: in-flight limit x board size (docs/IMPLEMENTOR_DECISIONS.md D45-D47).
+"""Purchase gate throughput: in-flight limit x board size (docs/IMPLEMENTOR_DECISIONS.md D45, D49).
 
 Every input is an assumption; every output is a model result, not a forecast. Standard library only; fixed seeds.
 Writes sim/results/throughput.md.

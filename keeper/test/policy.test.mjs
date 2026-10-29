@@ -12,7 +12,7 @@ test("acts only after six hours or below the basefee gate", () => {
 });
 
 const idle = { syncable: 0n, unlistedRows: 0n, syncAge: 0n, admissionChange: false, buybackReady: false,
-  buybackSlice: 0n, buybackPriceOk: true, finalizable: [], bonusRetireReady: false, keeperFundAvailable: 0n };
+  buybackSlice: 0n, buybackPriceOk: true, finalizable: [], bonusRetireReady: false, keeperFundAvailable: 0n, gateOpen: true };
 
 test("lists only jobs with work", () => {
   assert.deepEqual(jobs(idle), []);
@@ -24,4 +24,14 @@ test("lists only jobs with work", () => {
 
 test("leaves a buyback whose price moved this block", () => {
   assert.deepEqual(jobs({ ...idle, buybackReady: true, buybackSlice: 1n, buybackPriceOk: false }), []);
+});
+
+test("acts at once when the purchase gate is closed with rows waiting", () => {
+  const closed = jobs({ ...idle, unlistedRows: 3n, gateOpen: false });
+  assert.equal(closed[0].urgent, true);
+  assert.equal(jobs({ ...idle, unlistedRows: 3n })[0].urgent, false, "gate open: the usual backup wait");
+  assert.equal(
+    shouldAct({ ageSeconds: 10n, basefeeWei: 5n * gate, backupAfterSeconds: after, basefeeGateWei: gate, urgent: true }),
+    true,
+  );
 });

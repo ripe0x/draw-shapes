@@ -3,7 +3,7 @@ import { parseAbi } from "viem";
 
 export const lensAbi = parseAbi([
   "struct Addresses { address game; address farm; address keeperFund; address buyback; address swapPolicy; address liquidity; address vault; address converter; }",
-  "struct WorkView { uint256 syncable; uint256 unlistedRows; uint256 syncAge; bool admissionChange; bool buybackReady; uint256 buybackSlice; bool buybackPriceOk; uint256[] finalizable; bool bonusRetireReady; uint256 keeperFundAvailable; }",
+  "struct WorkView { uint256 syncable; uint256 unlistedRows; uint256 syncAge; bool admissionChange; bool buybackReady; uint256 buybackSlice; bool buybackPriceOk; uint256[] finalizable; bool bonusRetireReady; uint256 keeperFundAvailable; bool gateOpen; }",
   "function work(Addresses a) view returns (WorkView)",
 ]);
 

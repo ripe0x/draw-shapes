@@ -6,8 +6,10 @@ an entry the build later changed is marked **Revised** and keeps its number.
 
 Sources: the task text the build was issued with, `docs/BUILD_PROMPT.md` at 4d3e811 (module seams), the
 amendment ecdc9eb ("amend the build prompt after design review", committed to the branch while the build was
-running), and the sustainability follow-up to PR #9 (D31 onward), which wins over older instructions on revenue
-routing, ordinary prizes, farming and post-genesis rewards. Entries it replaced are marked **Superseded** or
+running), the sustainability follow-up to PR #9 (D31 onward), which wins over older instructions on revenue
+routing, ordinary prizes, farming and post-genesis rewards, and the owner's review of the collection-games designs
+(D44 onward: zero-ETH single-sided launch, Shape Packs, and the recommended gate, recovery, booking, keeper, cadence
+and exposure changes). Entries it replaced are marked **Superseded** or
 **Removed** and kept for the record.
 
 ## Process and sources
@@ -182,7 +184,7 @@ counted resolved without a unit and stays open until FWA settles it (its economi
 delivery that fails and is never refunded: the walk and later epochs keep progressing, and epoch 0 becomes final
 after the grace period.
 
-**D25. Maintenance windows.** Every FWA inventory change bumps `inventoryVersion` (in-flight purchases revert) and
+**D25. Maintenance windows. Revised by D49.** Every FWA inventory change bumps `inventoryVersion` (in-flight purchases revert) and
 restarts the factory cooldown (0 on mainnet at the fork block; 5 minutes by default). FwaGame changes inventory
 only when a full batch (`listBatch`, launch 20) is waiting or `maintenanceInterval` (launch 30 minutes, bound
 ≤ 1 day) has passed since its last change; GRAIL listing and repricing happen in the same windows.
@@ -277,7 +279,7 @@ also depletes more slowly, keeps intermediate wins steady and needs fewer replac
 more inventory capital. The PR #9 board (80/15/5 at 0.01/0.05/0.1) was dropped: its headline is 0.1 ETH and its mint
 fees take 7% of turnover. Pack rows are now rejected by `BoardPolicy` (the game never minted them).
 
-**D36. Admission control at the pool.** FwaGame opens and closes FWA's own purchase switch from `sync`, so the rules bind
+**D36. Admission control at the pool. Revised by D45.** FwaGame opens and closes FWA's own purchase switch from `sync`, so the rules bind
 direct FWA purchases, not only the site: closed below 80% board fill, above `maxOutstanding` (20) unsettled requests,
 when FWA's edge exceeds `maxEdgeBps` (500, the launch edge) or its inventory cooldown exceeds `maxCooldown` (5 min), or
 when paused. FWA itself caps a transaction at 5 requests and, at the pinned block, a pool at 10 outstanding VRF requests.
@@ -301,7 +303,7 @@ than 2% against the buyer since the block opened. The hook records that opening 
 which costs one storage write per block. This defeats a same-block sandwich; a manipulation held across a block boundary
 is not prevented, only bounded by the slice and the impact cap. The keeper's `minOut` can only tighten these limits.
 
-**D40. Supply split 80 / 19 / 1 for a fresh deployment.** 800M ENGINE to the protocol position, 190M genesis, 10M bonus.
+**D40. Supply split 80 / 19 / 1 for a fresh deployment. Launch valuation revised by D50.** 800M ENGINE to the protocol position, 190M genesis, 10M bonus.
 No deployment exists, so nothing is redistributed. Compared with 70/29/1, 50/49/1 and the PR #9 split (10/10/1 with a 79%
 reserve) in `sim/results/sustainability.md` section 7: it removes the reserve dependence and keeps farm supply at 24%
 of the pool's token depth; the cost is a low launch valuation (about 6.25 ETH FDV at LAUNCH_ETH 5), so genesis rewards
@@ -316,7 +318,88 @@ more opening capital. A shortfall is not insolvency (every listed prize is owned
 **D42. Removed:** `sim/engine_genesis.py` and its results (they modelled the Treasury, recurring player buybacks and the
 old farm); `test/unit/Treasury.t.sol` (its KeeperFund cases moved to `test/unit/KeeperFund.t.sol`).
 
-**D43. FwaGame size.** The follow-up's accounting and admission brought FwaGame to about 23.5 KB on the legacy pipeline,
+**D43. FwaGame size. Superseded by D44.** The follow-up's accounting and admission brought FwaGame to about 23.5 KB on the legacy pipeline,
 about 1.1 KB under the limit, after making ten bound constants internal and dropping `nav()` (Lens computes it). GRAIL
 repricing and the relist queue were removed. Further growth needs another module split.
+
+## Collection-games review (D44 onward)
+
+The owner asked which designs from `ripe0x/collection-games` (a1d4646) should be adopted here, then approved a plan:
+a zero-ETH single-sided launch, Shape Packs as a prize (mainnet `0xf21514B0…5cA7`), and the recommended gate,
+recovery, booking, keeper, cadence and exposure changes; FwaGame split in two; farm selling quantified without
+changing the split; the Shapes board kept with Pack boards presented; the opening valuation proposed from a model.
+
+**D44. FwaGame split into PoolOwner and the ledger.** FwaGame had about 1.1 KB left (D43), not enough for Packs and
+the gate. `PoolOwner` now creates and permanently owns the FWA pool (paying the FWA creation fee from FWA it holds),
+holds and lists prizes, mints them with exactly the ETH the game sends, turns withdrawn or recovered prizes back into
+ETH (a Shape burned, a Pack redeemed) and forwards every wei to the game, collects owner proceeds, and is FWA's
+purchase operator. It has no module, no generic call and no withdraw; its only ETH destinations are Shapes, Shape Packs
+and the game (invariant: it holds no ETH, Shape or Pack between calls). FwaGame keeps the books, the walk, admission,
+promotions and retirement, and is 24,195 bytes on the legacy pipeline (381 under the limit; no via_ir). Alternative:
+a library split (smaller saving, same trust surface).
+
+**D45. Purchase gate on live FWA state.** `PoolOwner.canPurchase`, which FWA calls for every purchase (its own site
+included) with a 100,000-gas stipend and fails closed, refuses when `maxInFlight` requests are unsettled, when FWA's
+edge or inventory cooldown is outside the accepted range, or when the active listings would fall below
+`unsettled + 5 + floor`, floor = ceil(`minLiveBps` × rows). FWA does not tell the operator the batch size, so it
+assumes a full batch (`maxAcquisitionsPerTx`, 5, read at pool creation). It reads only FWA state and settings the game
+pushes, so it holds while nobody syncs (test: a day without keepers, direct FWA purchases stop after 16 captures with
+84 prizes in the draw; one sync books everything and reopens). Launch `maxInFlight` 10 (two batches; FWA's VRF layer
+separately refuses an 11th request awaiting a word). Consequences: a board needs at least floor + 5 rows (an 80% floor
+admits nothing below 25 rows; a small board needs a lower `minLiveBps`); and FWA's drift guard refunds about 2% of
+accepted draws at 50 ETH a day on the 100-row board (`sim/results/throughput.md`; `test_fullBatchesWithRequestsInFlight`
+sees 8 of 10 settle when ten cheap prizes are taken in a row). Admission (FWA's switch) still closes below the floor and
+outside the range, as D36.
+
+**D46. Step-by-step recovery.** `sync` runs FWA processing, booking, proceeds collection, the true-up and payment, then
+maintenance, admission, the keeper top-up and the tip, each in its own `try`; a failing step emits `StepFailed` and the
+others run. Booking and retirement read no module, so a reverting board or pricing module stops listing only (test:
+`test_revertingModulesStopOnlyTheirSteps`). A delivery refund whose recovery fails stays open and is retried.
+
+**D47. Booking that configuration cannot move.** Proceeds are booked at `bookingEdgeBps`, the highest FWA edge
+governance has ever accepted (so lowering `maxEdgeBps` later never inflates booked revenue), then trued up to what FWA
+actually paid once no request is outstanding and FWA holds no proceeds for the game. Each listing's markup and operating
+allocation are fixed when it lists. The operating allocation is computed on the base price at the booking edge, as
+before (a regression from the split, caught by `test_pullFulfilledBookedToTheWei`, was fixed). Invariant: booked
+proceeds never exceed what FWA paid plus what it holds.
+
+**D48. Keeper pay and vault top-ups.** KeeperFund pays `min(tipCap, (gas + 70,000) × min(tx.gasprice, 5 gwei))` plus a
+0.0003 ETH flat fee at most once an hour per job; a call with no work earns nothing (the game reverts it). Launch:
+`tipCap` 0.05 ETH (lists 20 prizes in one call at up to about 5 gwei), seed 0.05 ETH (the maintenance floor). The vault
+refills KeeperFund from trading fees to its floor plus 0.1 ETH in every sync, at most 1 ETH over the vault's life
+(`KEEPER_TOP_UP_LIMIT`, permanent); KeeperFund returns top-ups to the vault before any overflow reaches the game, so
+fees never become game profit (invariant: KeeperFund's `capitalHeld` equals top-ups less returns). Replaces the 20%
+premium and age bounty, which paid splitting and idle time.
+
+**D49. Restock cadence and exposure.** Replacements list when nothing is in flight (FWA would otherwise stage them),
+unless the board is within `maxInFlight` + 5 rows of the gate's floor (so steady play never closes the gate for want of
+a restock); then once 3 rows wait (`listBatch`, now the trigger) or 5 minutes, and at least six FWA cooldowns, after the
+last inventory change. Settlement exposure is `min(unsettled × costliest prize, inventory cost)`.
+
+**D50. Zero-ETH single-sided launch.** `ProtocolLiquidity.launch` takes no ETH: it initialises the pool at `START_TICK`
+and places the whole 80% float in one position over `[TICK_LOWER, START_TICK)`. The price can never return above the
+start (ENGINE never trades below its launch valuation) and sellers can take out only the ETH buyers put in. The genesis
+rate cap is derived from the start price (10% of ticket ETH valued there). `LAUNCH_ETH_WEI` is replaced by `START_TICK`.
+Recommended start: **10 ETH FDV, `START_TICK` 184,200** (≈ 99.8M ENGINE per ETH; `sim/results/launch.md`): 1 ETH of
+opening buys moves the price about a quarter (5 ETH FDV: more than half) and leaves less concentration. 5 ETH FDV is
+the alternative that favours opening buyers. No seeded ETH: it would be exit liquidity from the owner and remove the
+floor. Needs owner review.
+
+**D51. Shape Packs as a second prize kind.** A board row has a kind (0 Shape, 1 Pack); Pack rows must be at least Shape
+Packs' 0.03 ETH minimum (read from the contract at deployment; on a chain without Shape Packs no Pack row is allowed).
+A Pack is minted with the fewest Shapes (`defaultMakeup`) and costs its backing plus 0.001 ETH per Shape inside
+(read from the fork: 0.03 → 0.033, 0.08 → 0.084, 0.25 → 0.253). Withdrawn, recovered and retired Packs are redeemed;
+converted Packs are redeemed by the Converter. The launch board stays Shapes-only (owner's decision); two Pack boards
+are presented in `sim/results/boards.md` (board A: seven prize levels on half the board capital, 7.72 ETH, with a rarer
+headline; board B: a 1 ETH headline). Board changes apply as rows are next vacated. Tested end to end against the real
+Shape Packs contract (`test_packsMintListWinConvertRecoverRetire`).
+
+**D52. Farm selling under the single-sided launch (finding, not changed).** Public buys stay closed through genesis
+(D34), so farm rewards sold during genesis meet only the opening market's ETH, conversions and buybacks. The rate cap is
+valued at the start price, and ENGINE trades above it once anyone buys, so the rewards are worth more than 10% of ticket
+ETH. In the worst case modelled (no conversions, 1 ETH of opening buys, 20 ETH of genesis tickets at 10 ETH FDV), full
+farm selling takes the price back to the start and opening buyers exit with nothing; with 25% of prizes converted the
+same opening exits at 1.3×. The split is unchanged (the owner did not approve a change). Options for the owner: a
+smaller farm (for example 10% with the rest to the float); valuing the rate cap at a time-weighted pool price (a
+contract change); a lower start FDV. Needs owner review.
 
