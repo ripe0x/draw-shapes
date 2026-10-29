@@ -12,12 +12,14 @@ Model of the contracts (src/game/FwaGame.sol, FWAClone):
 - Accounting: revenue = owner proceeds; expense = the captured prize's cost, once; operating allocation = 3% of the
   quote's expected replacement cost (EV / (1 + markup)). Profit is cumulative; losses carry. A distribution is
   min(undistributed profit, cash - replacements owed - ops owed - reserve - unsettled x largest prize cost).
-- Keeper: syncs once 10 requests wait to be booked, 20 rows wait to be listed, or `idle_hours` have passed with any
-  work; replacements list at most 20 per sync, at most once per 30-minute maintenance window (or at once when the
-  board falls below the admission fill), while cash covers them. Tip = gas x base fee x 1.2 + bounty
-  (0.002 ETH x age ramp over 6 h x items / 20), paid by KeeperFund while it has funds; anything unpaid is reported
-  as a keeper shortfall (settlement never depends on it).
-- Admission: new purchases close below 80% board fill or above `max_outstanding` unsettled requests.
+- Keeper: syncs once 10 requests wait to be booked, 3 rows wait to be listed, the board nears the purchase gate's
+  line, or `idle_hours` have passed with any work; replacements list at most 20 per sync, when 3 rows wait or 5
+  minutes after the last change (at once near the gate's line), while cash covers them. Tip = (gas + 70,000) x
+  min(base fee, 5 gwei) + a 0.0003 ETH flat fee at most once an hour, paid by KeeperFund while it has funds;
+  anything unpaid is reported as a keeper shortfall (settlement never depends on it).
+- Admission (the purchase gate): a purchase is refused unless the board keeps 80% of its rows plus a full batch of 5
+  after it (requests settle within the minute here, so none are counted in flight), and a batch is at most the
+  in-flight limit (10).
 - Keeper cost: gas from docs/receipts/gas.json (sync of 1 pull vs 20 pulls gives the per-pull increment) at an
   assumed base fee; KeeperFund keeps 0.5 ETH and returns the rest of the operating allocation to the game.
 - No trading-fee inflow anywhere in this file: the game must stand on its own capital and results.
@@ -114,7 +116,7 @@ def burst_refunds(board, burst, runs=20000, markup=0.05, seed=1):
 
 
 class Game:
-    def __init__(self, board, capital, reserve=3.0, markup=0.05, ops=0.03, min_live=0.8, max_outstanding=20,
+    def __init__(self, board, capital, reserve=3.0, markup=0.05, ops=0.03, min_live=0.8, max_outstanding=10,
                  basefee_gwei=2.0, idle_hours=4, seed=0):
         self.t = tiers(board, markup)
         self.rows = sum(x["n"] for x in self.t)
@@ -152,8 +154,14 @@ class Game:
     def profit(self):
         return self.revenue + self.ops_returned - self.expense - self.ops_accrued
 
+    def floor(self):
+        return math.ceil(self.min_live * self.rows)
+
     def admissible(self, unsettled=0):
-        return self.live() >= self.min_live * self.rows and unsettled <= self.max_outstanding
+        return self.live() >= self.floor() + 5 and unsettled < self.max_outstanding
+
+    def near_gate(self):
+        return self.live() < self.floor() + self.max_outstanding + 5
 
     def burst(self, n, forced=None):
         """`n` requests accepted on one quote, settled in order against the live pool."""
@@ -201,8 +209,7 @@ class Game:
         # keeper gas for the pulls booked since the last sync, paid by KeeperFund from the operating allocation
         gas = SYNC_BASE + SYNC_PER_PULL * max(self.pending_pulls - 1, 0) if self.pending_pulls else 0
         listed = 0
-        due = minute - self.last_maint >= 30 or self.live() < self.min_live * self.rows \
-            or self.rows - self.live() >= 20
+        due = minute - self.last_maint >= 5 or self.near_gate() or self.rows - self.live() >= 3
         if due:
             for k, x in enumerate(self.t):
                 while self.counts[k] < x["n"] and listed < 20 and self.cash >= x["cost"]:
@@ -216,9 +223,13 @@ class Game:
             gas = SYNC_BASE
         items = self.pending_pulls + listed
         self.pending_pulls = 0
-        age = min(minute - self.last_sync, 360) / 360
         self.last_sync = minute
-        cost = gas * self.basefee * 1.2 + (0.002 * age * min(items, 20) / 20 if items else 0.0)
+        cost = 0.0
+        if items:
+            cost = (gas + 70_000) * min(self.basefee, 5e-9)
+            if minute - getattr(self, "_last_fee", -10 ** 9) >= 60:
+                self._last_fee = minute
+                cost += 0.0003
         self.keeper_spent += cost
         paid = min(cost, max(self.keeper_fund, 0.0))
         self.keeper_short += cost - paid
@@ -275,7 +286,7 @@ class Game:
                 self.closed_minutes += 1
             self.unavailable_row_minutes += self.rows - self.live()
             missing = self.rows - self.live()
-            if self.pending_pulls >= 10 or missing >= 20 or self.live() < self.min_live * self.rows \
+            if self.pending_pulls >= 10 or missing >= 3 or self.near_gate() \
                     or ((self.pending_pulls or missing) and m - self.last_sync >= self.idle):
                 if m - self.last_sync >= 1:
                     self.sync(m)
@@ -310,10 +321,12 @@ def scenario(board, label, runs, days, **kw):
     capital = kw.pop("capital", None)
     reserve = kw.pop("reserve", 3.0)
     basefee = kw.pop("basefee_gwei", 2.0)
+    min_live = kw.pop("min_live", 0.8)
     res = []
     for s in range(runs):
         inv = sum(n * (b + MINT) for n, b in board)
-        g = Game(board, capital if capital else inv + reserve, reserve=reserve, basefee_gwei=basefee, seed=s)
+        g = Game(board, capital if capital else inv + reserve, reserve=reserve, basefee_gwei=basefee, min_live=min_live,
+                 seed=s)
         g.run(days, **kw)
         res.append(g)
     return label, res
@@ -348,23 +361,27 @@ def summarize(label, res):
 # ------------------------------------------------------------------ genesis farm
 
 
-def farm_table(launch_eth=5.0, lp_tokens=800e6, genesis=190e6, reward_value=0.10):
-    price = launch_eth / lp_tokens  # ETH per ENGINE at launch
-    rate = reward_value * lp_tokens / launch_eth  # ENGINE per ETH of ticket ETH
+START_TICK = 184_200  # the single-sided launch price (sim/launch.py): 1.0001^tick ENGINE per ETH, FDV about 10 ETH
+P0 = 1.0001 ** START_TICK
+
+
+def farm_table(genesis=190e6, reward_value=0.10):
+    price = 1 / P0  # ETH per ENGINE at the start
+    rate = reward_value * P0  # ENGINE per ETH of ticket ETH
     cap = genesis / 17.5
     rows = []
-    for daily in (0.2, 0.68, 2, 5, 20, 50):
+    for daily in (0.2, round(cap / rate, 2), 2, 5, 20, 50):
         pot = min(cap, daily * rate)
         rows.append((daily, pot, pot * price / daily, cap - pot))
     return rate, cap, rows
 
 
-def split_table(launch_eth=5.0):
+def split_table():
     rows = []
     for name, lp, gen, bonus in (("80 / 19 / 1 (adopted)", 0.80, 0.19, 0.01), ("70 / 29 / 1", 0.70, 0.29, 0.01),
                                   ("50 / 49 / 1", 0.50, 0.49, 0.01), ("10 / 10 / 1 + 79 reserve (PR #9 before)", 0.10, 0.10, 0.01)):
         supply = 1e9
-        price = launch_eth / (lp * supply)
+        price = 1 / P0
         rows.append((name, lp * supply, supply * price, gen * supply * price, gen / lp))
     return rows
 
@@ -422,7 +439,8 @@ def main():
     w(f"\nKeeper gas: a sync costs {SYNC_BASE:,.0f} gas for its first pull and about {SYNC_PER_PULL:,.0f} gas per "
       f"further pull (booking plus the replacement's mint and listing). The operating allocation, "
       f"{e100['ops']:.6f} ETH per pull, pays that up to a base fee of about "
-      f"{e100['ops'] / SYNC_PER_PULL / 1.2 * 1e9:.2f} gwei with the 20% tip premium "
+      f"{e100['ops'] / SYNC_PER_PULL * 1e9:.2f} gwei with gas refunded at cost (plus a 0.0003 ETH flat fee at most "
+      f"once an hour) "
       f"(fork measurement with cold storage per call: break-even about 1.6 gwei, test/fork/Accounting.t.sol).\n")
 
     w("## 4. The game over 60 days, no trading fees\n")
@@ -446,7 +464,9 @@ def main():
             if board_name == "20" and "busy" in label:
                 continue
             runs = 12 if "busy" in label else 40
-            name, res = scenario(board, label, runs, 60, reserve=RESERVE, basefee_gwei=BASEFEE, **kw)
+            # the gate keeps the floor plus a batch of 5: a 20-row board needs a 50% floor (80% would admit nothing)
+            ml = 0.5 if board_name == "20" else 0.8
+            name, res = scenario(board, label, runs, 60, reserve=RESERVE, basefee_gwei=BASEFEE, min_live=ml, **kw)
             s = summarize(name, res)
             rows.append((board_name, s))
             w(f"| {s['label']} | {board_name} | {s['turnover']:.1f} | {s['profit_mean']:+.3f} ({s['profit_p05']:+.3f}, "
@@ -456,7 +476,7 @@ def main():
               f"{s['keeper_per100']:.3f} | {s['keeper_short']:.3f} | {s['closed_hours']:.1f} | {s['row_hours']:.2f} |")
     w("\nReading: profit can only be distributed once it is realised and cash stays above every protected amount; "
       "the worst P&L low is the loss the reserve and capital had to absorb before the game recovered. A board that "
-      "never runs short of cash keeps every row listed except during the 30-minute maintenance wait.\n")
+      "never runs short of cash keeps every row listed except while fewer than 3 wait (at most 5 minutes).\n")
 
     w("## 5. Capital requirement\n")
     w("Deterministic obligations: the board at cost (15.15 ETH for the 100-item board) and the replacements owed "
@@ -490,24 +510,26 @@ def main():
 
     w("## 6. Genesis farm: rate cap scenarios\n")
     rate, cap, frows = farm_table()
-    w(f"Launch: 5 ETH against the 800M float (price {5 / 800e6:.3e} ETH per ENGINE). Rate cap = 10% of ticket ETH in "
-      f"ENGINE at that price = {rate:,.0f} ENGINE per ETH; steady allocation cap = {cap:,.0f} ENGINE per epoch.\n")
-    w("| eligible ticket ETH per day | pot (ENGINE) | rewards as % of ticket ETH at launch price | burned at finalization |")
+    w(f"Single-sided launch at START_TICK {START_TICK:,} (price {1 / P0:.3e} ETH per ENGINE, FDV {1e9 / P0:.2f} ETH). "
+      f"Rate cap = 10% of ticket ETH in ENGINE at the start price = {rate:,.0f} ENGINE per ETH; steady allocation cap "
+      f"= {cap:,.0f} ENGINE per epoch. ENGINE can trade only at or above the start, so rewards are worth at least "
+      f"this (sim/launch.py measures what selling them takes from the pool).\n")
+    w("| eligible ticket ETH per day | pot (ENGINE) | rewards as % of ticket ETH at the start price | burned at finalization |")
     w("|---|---|---|---|")
     for daily, pot, pct, burned in frows:
         w(f"| {daily} | {pot:,.0f} | {pct:.2%} | {burned:,.0f} |")
-    w("\nBelow about 0.68 ETH a day the rate cap binds (a pull earns 10% of its ticket in ENGINE at the launch price, "
+    w(f"\nBelow about {cap / rate:.2f} ETH a day the rate cap binds (a pull earns 10% of its ticket in ENGINE at the start price, "
       "never a whole pot); above it the allocation cap binds and rewards per ETH fall as activity grows. The "
       "taper multiplies both caps by 87.5% down to 12.5% over the last seven epochs.\n")
 
     w("## 7. Supply split\n")
-    w("| split (LP / genesis / bonus) | LP tokens | launch FDV at 5 ETH | genesis value at launch price | genesis / LP |")
+    w("| split (LP / genesis / bonus) | LP tokens | start FDV | genesis value at the start price | genesis / LP |")
     w("|---|---|---|---|---|")
     for name, lp, fdv, gv, ratio in split_table():
         w(f"| {name} | {lp:,.0f} | {fdv:.2f} ETH | {gv:.2f} ETH | {ratio:.2f} |")
-    w("\nWith 80% in the protocol position the farm can at most add 19/80 of the pool's token depth, and the 79% "
-      "seasons reserve disappears. The cost is a low launch FDV: the whole genesis allocation is worth about "
-      "1.2 ETH at the launch price, so rewards are a modest incentive unless the market values ENGINE higher.\n")
+    w("\nWith 80% in the protocol position the farm can at most add 19/80 of the pool's token depth. Single-sided, the "
+      "start FDV is set by the start price, not by the split: the whole genesis allocation is worth about "
+      f"{0.19e9 / P0:.1f} ETH at the start price, a modest incentive unless the market values ENGINE higher.\n")
 
     path = os.path.join(HERE, "results", "sustainability.md")
     open(path, "w").write("\n".join(out) + "\n")

@@ -61,7 +61,7 @@ FWA allows at most 5 requests per transaction and, at the pinned block, 10 outst
 | 5 gwei | 0.00975 ETH | 0.03988 ETH | 66.02% |
 | 20 gwei | 0.03900 ETH | 0.06913 ETH | 38.08% |
 
-Keeper gas: a sync costs 1,233,895 gas for its first pull and about 451,889 gas per further pull (booking plus the replacement's mint and listing). The operating allocation, 0.000820 ETH per pull, pays that up to a base fee of about 1.51 gwei with the 20% tip premium (fork measurement with cold storage per call: break-even about 1.6 gwei, test/fork/Accounting.t.sol).
+Keeper gas: a sync costs 1,377,074 gas for its first pull and about 452,238 gas per further pull (booking plus the replacement's mint and listing). The operating allocation, 0.000820 ETH per pull, pays that up to a base fee of about 1.81 gwei with gas refunded at cost (plus a 0.0003 ETH flat fee at most once an hour) (fork measurement with cold storage per call: break-even about 1.6 gwei, test/fork/Accounting.t.sol).
 
 ## 4. The game over 60 days, no trading fees
 
@@ -69,17 +69,17 @@ Capital = board cost + reserve target (12 ETH). Keeper at a 1 gwei base fee. 40 
 
 | scenario | board | turnover (ETH) | profit mean (p05, p95) | per 100 ETH mean (p05, p95) | distributed | deepest P&L (p05 of runs) | lowest headroom (p05) | refunded | turned away | headlines per ETH | keeper cost per 100 ETH | keeper unpaid per 100 ETH | hours closed | row-hours missing per row |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| low: 1 ETH/day, single pulls | 100 | 61.9 | +2.644 (-2.405, +7.056) | +4.29 (-3.74, +11.80) | 3.744 | -6.328 (-3.385) | +3.617 (+7.310) | 0.00% | 0.00% | 0.4630 | 2.719 | 0.000 | 0.0 | 39.06 |
-| base: 5 ETH/day, bursts mean 2 | 100 | 305.6 | +11.507 (+2.759, +21.344) | +3.77 (+0.90, +6.97) | 13.346 | -4.671 (-3.856) | +3.707 (+5.574) | 0.01% | 0.01% | 0.4873 | 2.141 | 0.000 | 0.3 | 66.48 |
-| busy: 30 ETH/day, bursts mean 3 | 100 | 1687.9 | +59.736 (+17.259, +81.242) | +3.54 (+1.02, +4.79) | 61.735 | -5.121 (-5.121) | -3.903 (-3.903) | 0.34% | 0.91% | 0.5071 | 1.947 | 0.009 | 24.9 | 136.85 |
-| clumped: 5 ETH/day in 4 sessions | 100 | 298.9 | +10.296 (+1.833, +21.432) | +3.44 (+0.61, +7.10) | 11.912 | -7.895 (-4.459) | +3.248 (+3.476) | 0.14% | 4.41% | 0.5130 | 2.045 | 0.000 | 4.0 | 68.76 |
-| adverse: 5 headlines first, then 5 ETH/day | 100 | 315.2 | +12.911 (+2.066, +20.703) | +4.10 (+0.66, +6.69) | 14.429 | -10.910 (-6.396) | +0.795 (+2.652) | 0.00% | 0.00% | 0.4904 | 2.159 | 0.000 | 0.0 | 66.32 |
-| low: 1 ETH/day, single pulls | 20 | 67.6 | +3.228 (-1.304, +7.256) | +4.78 (-1.90, +11.09) | 4.199 | -4.324 (-3.884) | +5.460 (+7.098) | 0.00% | 0.15% | 0.4936 | 2.530 | 0.000 | 5.0 | 130.86 |
-| base: 5 ETH/day, bursts mean 2 | 20 | 230.6 | +10.134 (+0.253, +19.310) | +4.41 (+0.11, +8.30) | 11.800 | -3.941 (-2.978) | +4.534 (+6.422) | 30.20% | 1.11% | 0.5175 | 2.198 | 0.000 | 21.2 | 147.03 |
-| clumped: 5 ETH/day in 4 sessions | 20 | 184.4 | +7.066 (-1.004, +14.633) | +3.84 (-0.53, +7.80) | 8.736 | -5.577 (-3.663) | +4.171 (+5.690) | 29.60% | 25.92% | 0.5213 | 2.216 | 0.000 | 15.8 | 61.00 |
-| adverse: 5 headlines first, then 5 ETH/day | 20 | 338.6 | +13.934 (+2.948, +21.583) | +4.12 (+0.85, +6.42) | 15.122 | -9.371 (-8.264) | +1.725 (+3.739) | 0.00% | 1.16% | 0.5209 | 2.193 | 0.000 | 32.8 | 150.62 |
+| low: 1 ETH/day, single pulls | 100 | 60.8 | +2.579 (-2.698, +6.269) | +4.26 (-4.28, +10.67) | 3.660 | -5.996 (-4.095) | +3.967 (+6.894) | 0.00% | 0.00% | 0.4548 | 2.905 | 0.000 | 0.0 | 14.25 |
+| base: 5 ETH/day, bursts mean 2 | 100 | 293.2 | +10.142 (+0.652, +21.399) | +3.47 (+0.22, +7.38) | 12.034 | -6.322 (-4.003) | +3.387 (+5.015) | 0.00% | 0.00% | 0.4712 | 2.422 | 0.000 | 0.0 | 12.16 |
+| busy: 30 ETH/day, bursts mean 3 | 100 | 1576.5 | +52.973 (+19.642, +75.798) | +3.36 (+1.24, +4.73) | 54.776 | -3.688 (-3.688) | -1.650 (-1.650) | 0.00% | 0.00% | 0.4706 | 2.218 | 0.000 | 0.0 | 16.68 |
+| clumped: 5 ETH/day in 4 sessions | 100 | 293.7 | +11.700 (+4.314, +24.656) | +3.98 (+1.49, +8.30) | 13.010 | -5.970 (-4.885) | +1.868 (+3.782) | 0.00% | 0.10% | 0.4730 | 2.039 | 0.000 | 0.2 | 4.39 |
+| adverse: 5 headlines first, then 5 ETH/day | 100 | 303.2 | +10.395 (+0.958, +18.052) | +3.43 (+0.32, +5.99) | 12.071 | -10.189 (-6.547) | +0.881 (+1.315) | 0.00% | 0.00% | 0.4773 | 2.665 | 0.000 | 0.0 | 15.79 |
+| low: 1 ETH/day, single pulls | 20 | 60.2 | +2.545 (-2.072, +6.554) | +4.25 (-3.54, +11.27) | 3.599 | -6.007 (-3.289) | +3.963 (+7.702) | 0.00% | 0.00% | 0.4516 | 5.182 | 1.632 | 0.0 | 1.66 |
+| base: 5 ETH/day, bursts mean 2 | 20 | 245.5 | +5.764 (-4.343, +16.047) | +2.36 (-1.74, +6.82) | 8.378 | -8.789 (-6.254) | +1.578 (+4.095) | 15.80% | 0.00% | 0.4772 | 3.598 | 0.674 | 0.1 | 6.78 |
+| clumped: 5 ETH/day in 4 sessions | 20 | 221.7 | +6.928 (-0.213, +18.529) | +3.13 (-0.10, +8.42) | 8.530 | -8.398 (-4.601) | +2.542 (+3.777) | 26.30% | 4.51% | 0.5117 | 2.345 | 0.000 | 4.5 | 5.66 |
+| adverse: 5 headlines first, then 5 ETH/day | 20 | 301.0 | +10.162 (+1.436, +18.088) | +3.38 (+0.48, +6.04) | 11.882 | -9.903 (-6.624) | +0.797 (+1.508) | 0.00% | 0.00% | 0.4743 | 4.732 | 1.845 | 0.0 | 8.30 |
 
-Reading: profit can only be distributed once it is realised and cash stays above every protected amount; the worst P&L low is the loss the reserve and capital had to absorb before the game recovered. A board that never runs short of cash keeps every row listed except during the 30-minute maintenance wait.
+Reading: profit can only be distributed once it is realised and cash stays above every protected amount; the worst P&L low is the loss the reserve and capital had to absorb before the game recovered. A board that never runs short of cash keeps every row listed except while fewer than 3 wait (at most 5 minutes).
 
 ## 5. Capital requirement
 
@@ -87,37 +87,37 @@ Deterministic obligations: the board at cost (15.15 ETH for the 100-item board) 
 
 | reserve target | runs with a cash shortfall | worst headroom | mean row-hours missing per row | mean hours closed | distributed (mean) |
 |---|---|---|---|---|---|
-| 3 ETH | 97.0% | -6.000 | 104.40 | 0.4 | 19.303 |
-| 5 ETH | 40.0% | -4.560 | 100.75 | 0.4 | 18.972 |
-| 8 ETH | 6.5% | -3.307 | 99.49 | 0.4 | 18.920 |
-| 10 ETH | 1.5% | -1.696 | 99.33 | 0.4 | 18.910 |
-| 12 ETH | 0.0% | +0.091 | 99.30 | 0.4 | 18.909 |
+| 3 ETH | 95.0% | -5.204 | 22.26 | 0.0 | 17.908 |
+| 5 ETH | 37.5% | -4.203 | 19.28 | 0.0 | 17.689 |
+| 8 ETH | 5.5% | -3.019 | 18.50 | 0.0 | 17.608 |
+| 10 ETH | 2.0% | -1.564 | 18.38 | 0.0 | 17.595 |
+| 12 ETH | 0.0% | +0.354 | 18.37 | 0.0 | 17.597 |
 
 A shortfall here is not insolvency: every prize on the board is already owned and every accepted request settles; it means some rows stay empty until profit refills cash. The reserve is capital, not profit: a larger reserve barely changes what is distributed over time (last column), it only locks more opening capital. The launch value is a 12 ETH reserve target (no shortfall in the 200 base runs); recommended opening capital is the 15.15 ETH board plus the 12 ETH reserve plus about 1 ETH of working cash, **about 28 ETH**. With zero trading fees the low, base, clumped and adverse scenarios then need no further capital; at 30 ETH a day one run in twelve briefly ran short (section 4), which more capital or a faster keeper cadence absorbs. A smaller reserve is a choice to accept occasional empty rows after a run of headline wins.
 
 ## 6. Genesis farm: rate cap scenarios
 
-Launch: 5 ETH against the 800M float (price 6.250e-09 ETH per ENGINE). Rate cap = 10% of ticket ETH in ENGINE at that price = 16,000,000 ENGINE per ETH; steady allocation cap = 10,857,143 ENGINE per epoch.
+Single-sided launch at START_TICK 184,200 (price 1.002e-08 ETH per ENGINE, FDV 10.02 ETH). Rate cap = 10% of ticket ETH in ENGINE at the start price = 9,983,996 ENGINE per ETH; steady allocation cap = 10,857,143 ENGINE per epoch. ENGINE can trade only at or above the start, so rewards are worth at least this (sim/launch.py measures what selling them takes from the pool).
 
-| eligible ticket ETH per day | pot (ENGINE) | rewards as % of ticket ETH at launch price | burned at finalization |
+| eligible ticket ETH per day | pot (ENGINE) | rewards as % of ticket ETH at the start price | burned at finalization |
 |---|---|---|---|
-| 0.2 | 3,200,000 | 10.00% | 7,657,143 |
-| 0.68 | 10,857,143 | 9.98% | 0 |
-| 2 | 10,857,143 | 3.39% | 0 |
-| 5 | 10,857,143 | 1.36% | 0 |
-| 20 | 10,857,143 | 0.34% | 0 |
-| 50 | 10,857,143 | 0.14% | 0 |
+| 0.2 | 1,996,799 | 10.00% | 8,860,344 |
+| 1.09 | 10,857,143 | 9.98% | 0 |
+| 2 | 10,857,143 | 5.44% | 0 |
+| 5 | 10,857,143 | 2.17% | 0 |
+| 20 | 10,857,143 | 0.54% | 0 |
+| 50 | 10,857,143 | 0.22% | 0 |
 
-Below about 0.68 ETH a day the rate cap binds (a pull earns 10% of its ticket in ENGINE at the launch price, never a whole pot); above it the allocation cap binds and rewards per ETH fall as activity grows. The taper multiplies both caps by 87.5% down to 12.5% over the last seven epochs.
+Below about 1.09 ETH a day the rate cap binds (a pull earns 10% of its ticket in ENGINE at the start price, never a whole pot); above it the allocation cap binds and rewards per ETH fall as activity grows. The taper multiplies both caps by 87.5% down to 12.5% over the last seven epochs.
 
 ## 7. Supply split
 
-| split (LP / genesis / bonus) | LP tokens | launch FDV at 5 ETH | genesis value at launch price | genesis / LP |
+| split (LP / genesis / bonus) | LP tokens | start FDV | genesis value at the start price | genesis / LP |
 |---|---|---|---|---|
-| 80 / 19 / 1 (adopted) | 800,000,000 | 6.25 ETH | 1.19 ETH | 0.24 |
-| 70 / 29 / 1 | 700,000,000 | 7.14 ETH | 2.07 ETH | 0.41 |
-| 50 / 49 / 1 | 500,000,000 | 10.00 ETH | 4.90 ETH | 0.98 |
-| 10 / 10 / 1 + 79 reserve (PR #9 before) | 100,000,000 | 50.00 ETH | 5.00 ETH | 1.00 |
+| 80 / 19 / 1 (adopted) | 800,000,000 | 10.02 ETH | 1.90 ETH | 0.24 |
+| 70 / 29 / 1 | 700,000,000 | 10.02 ETH | 2.90 ETH | 0.41 |
+| 50 / 49 / 1 | 500,000,000 | 10.02 ETH | 4.91 ETH | 0.98 |
+| 10 / 10 / 1 + 79 reserve (PR #9 before) | 100,000,000 | 10.02 ETH | 1.00 ETH | 1.00 |
 
-With 80% in the protocol position the farm can at most add 19/80 of the pool's token depth, and the 79% seasons reserve disappears. The cost is a low launch FDV: the whole genesis allocation is worth about 1.2 ETH at the launch price, so rewards are a modest incentive unless the market values ENGINE higher.
+With 80% in the protocol position the farm can at most add 19/80 of the pool's token depth. Single-sided, the start FDV is set by the start price, not by the split: the whole genesis allocation is worth about 1.9 ETH at the start price, a modest incentive unless the market values ENGINE higher.
 
