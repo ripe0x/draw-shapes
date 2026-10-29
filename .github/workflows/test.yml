@@ -74,3 +74,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 sim/sustainability.py > /dev/null
+      - run: python3 sim/launch.py > /dev/null
+      - run: python3 sim/throughput.py > /dev/null
+      - run: python3 sim/boards.py > /dev/null
