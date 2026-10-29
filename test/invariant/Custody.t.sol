@@ -15,7 +15,7 @@ contract CustodyInvariants is ForkBase {
     function setUp() public {
         deployLaunch();
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         openGame();
         handler = new Handler(sys, pool, SHAPES, POOL_MANAGER);
         targetContract(address(handler));
@@ -35,7 +35,35 @@ contract CustodyInvariants is ForkBase {
         uint256 rhs = sys.game.capitalIn() + sys.game.revenue() + sys.game.opsReturned() - sys.game.prizeExpense()
             - sys.game.opsPaid() - sys.game.distributed();
         assertGe(lhs, rhs, "books");
-        assertGe(address(sys.vault).balance + sys.game.capitalIn(), handler.vaultFunded(), "capital");
+        // keeper top-ups leave the vault as capital and come back as capital
+        assertGe(
+            address(sys.vault).balance + sys.game.capitalIn() + sys.vault.keeperTopUps() - sys.vault.keeperReturned(),
+            handler.vaultFunded(),
+            "capital"
+        );
+    }
+
+    /// @notice I9 keeper top-ups: within the 1 ETH lifetime limit, and KeeperFund holds exactly the top-ups not yet
+    ///         returned, so trading fees cannot reach game profit through its overflow.
+    function invariant_keeperTopUpsBounded() public view {
+        assertLe(sys.vault.keeperTopUps(), 1 ether, "lifetime limit");
+        assertEq(sys.keeperFund.capitalHeld(), sys.vault.keeperTopUps() - sys.vault.keeperReturned(), "capital held");
+    }
+
+    /// @notice I10 booking: proceeds are booked at an edge at least FWA's, so the books never claim more than FWA paid
+    ///         or holds for us; the true-up only closes the difference to what was actually collected.
+    function invariant_bookingNeverAheadOfFwa() public view {
+        assertLe(sys.game.proceedsBooked(), sys.game.proceedsCollected() + pool.ownerProceeds(), "booked <= paid");
+        assertGe(sys.game.bookingEdgeBps(), factory.edgeBps(), "booking edge at least FWA's");
+    }
+
+    /// @notice I11 gate: whenever the gate admits a purchase, the board keeps a full batch, every unsettled request and
+    ///         the floor; and it never admits past the in-flight limit.
+    function invariant_gateHeadroom() public view {
+        if (!sys.poolOwner.canPurchase(address(this))) return;
+        uint256 u = pool.unsettledAcquisitionCount();
+        assertLt(u, sys.poolOwner.maxInFlight(), "in flight");
+        assertGe(pool.activeListingCount(), u + sys.poolOwner.maxBatch() + sys.poolOwner.minListed(), "headroom");
     }
 
     /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; weight never exceeds the
@@ -95,6 +123,10 @@ contract CustodyInvariants is ForkBase {
             assertEq(sys.engine.balanceOf(m[i]), 0, "ENGINE");
         }
         assertEq(sys.engine.balanceOf(address(sys.buyback)), 0, "buyback ENGINE");
+        // the PoolOwner passes everything through within a call: no ETH, no prize and no FWA left behind
+        assertEq(address(sys.poolOwner).balance, 0, "pool owner ETH");
+        assertEq(shapes.balanceOf(address(sys.poolOwner)), 0, "pool owner Shapes");
+        assertEq(IERC721Bal(SHAPE_PACKS).balanceOf(address(sys.poolOwner)), 0, "pool owner Packs");
     }
 
     /// @notice I7 every live listing's prize is in FWA escrow, or FWA has already allocated it to a purchaser
@@ -103,7 +135,7 @@ contract CustodyInvariants is ForkBase {
         uint256 backing;
         for (uint256 i; i < sys.game.liveCount(); ++i) {
             uint256 id = sys.game.liveAt(i);
-            (uint48 tokenId, uint80 b,,,,) = sys.game.items(id);
+            (uint48 tokenId, uint72 b,,,,,,) = sys.game.items(id);
             (,, address purchaser,,,,, IFWAPool.ListingStatus st) = pool.listings(id);
             if (st == IFWAPool.ListingStatus.Active || st == IFWAPool.ListingStatus.Staged) {
                 assertEq(shapes.ownerOf(tokenId), address(pool), "escrowed");
@@ -145,4 +177,8 @@ contract CustodyInvariants is ForkBase {
         invariant_modulesHoldNothing();
         invariant_inventoryInEscrow();
     }
+}
+
+interface IERC721Bal {
+    function balanceOf(address) external view returns (uint256);
 }

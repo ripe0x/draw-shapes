@@ -13,7 +13,7 @@ contract SmokeTest is ForkBase {
         fundAndFill(OPENING_CAPITAL);
         emit log_named_uint("live", sys.game.liveCount());
         emit log_named_uint("cash", sys.game.cash());
-        openMarket(LAUNCH_ETH);
+        openMarket();
         openGame();
         address alice = makeAddr("alice");
         uint256 id = pullAndSettle(alice, 12345);

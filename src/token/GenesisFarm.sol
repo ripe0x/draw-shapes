@@ -212,7 +212,7 @@ contract GenesisFarm is ReentrancyGuard, Governed {
             ++done;
         }
         if (done == 0) revert NoWork();
-        if (address(keeperFund) != address(0)) keeperFund.tip(msg.sender, gasStart - gasleft(), 0, done, false);
+        if (address(keeperFund) != address(0)) keeperFund.tip(msg.sender, gasStart - gasleft(), done, false);
     }
 
     /// @notice Claims the caller's rewards for `epochs`, each final and unclaimed (finalizing it if needed).

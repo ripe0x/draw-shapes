@@ -205,7 +205,7 @@ contract Handler is Test {
     function burnOwnShape(uint256 seed) external {
         (uint256 i, address a) = _actor(seed);
         for (uint256 lid = 1; lid < 400; ++lid) {
-            (uint48 t,,,,,) = s.game.items(lid);
+            (uint48 t,,,,,,,) = s.game.items(lid);
             if (t != 0 && _ownerOf(t) == a) {
                 uint256 value = shapes.valueOf(t);
                 Snap memory b = _snap();
@@ -335,23 +335,42 @@ contract Handler is Test {
         bytes memory data;
         address target;
         fn = fn % 17;
-        if (fn == 0) (target, data) = (address(s.vault), abi.encodeCall(s.vault.setActiveGame, (a)));
-        else if (fn == 1) (target, data) = (address(s.vault), abi.encodeCall(s.vault.retireGame, ()));
-        else if (fn == 2) (target, data) = (address(s.vault), abi.encodeCall(s.vault.repay, (true)));
-        else if (fn == 3) (target, data) = (address(s.game), abi.encodeCall(s.game.retire, ()));
-        else if (fn == 4) (target, data) = (address(s.game), abi.encodeCall(s.game.setModule, ("buyer", address(this))));
-        else if (fn == 5) (target, data) = (address(s.buyback), abi.encodeCall(s.buyback.setSource, (a, true)));
-        else if (fn == 6) (target, data) = (address(s.keeperFund), abi.encodeCall(s.keeperFund.tip, (a, 1e6, 1e6, 20, true)));
-        else if (fn == 7) (target, data) = (address(s.farm), abi.encodeCall(s.farm.payBonus, (a, 1)));
-        else if (fn == 8) (target, data) = (address(s.farm), abi.encodeCall(s.farm.addLedger, (a)));
-        else if (fn == 9) (target, data) = (address(s.buyer), abi.encodeCall(s.buyer.buy, (0, a, 100)));
-        else if (fn == 10) (target, data) = (address(s.liquidity), abi.encodeCall(s.liquidity.addLiquidity, (0)));
-        else if (fn == 11) (target, data) = (address(s.engine), abi.encodeCall(s.engine.setRenderer, (a)));
-        else if (fn == 12) (target, data) = (address(s.hook), abi.encodeCall(s.hook.setPolicy, (a)));
-        else if (fn == 13) (target, data) = (address(s.game), abi.encodeCall(s.game.startPromotion, (0.01 ether, 5_000, block.number + 10)));
-        else if (fn == 14) (target, data) = (address(s.game), abi.encodeCall(s.game.receiveFunding, ()));
-        else if (fn == 15) (target, data) = (address(s.game), abi.encodeCall(s.game.returnOps, ()));
-        else (target, data) = (address(s.farm), abi.encodeCall(s.farm.start, ()));
+        if (fn == 0) {
+            (target, data) = (address(s.vault), abi.encodeCall(s.vault.setActiveGame, (a)));
+        } else if (fn == 1) {
+            (target, data) = (address(s.vault), abi.encodeCall(s.vault.retireGame, ()));
+        } else if (fn == 2) {
+            (target, data) = (address(s.vault), abi.encodeCall(s.vault.repay, (true)));
+        } else if (fn == 3) {
+            (target, data) = (address(s.game), abi.encodeCall(s.game.retire, ()));
+        } else if (fn == 4) {
+            (target, data) = (address(s.game), abi.encodeCall(s.game.setModule, ("buyer", address(this))));
+        } else if (fn == 5) {
+            (target, data) = (address(s.buyback), abi.encodeCall(s.buyback.setSource, (a, true)));
+        } else if (fn == 6) {
+            (target, data) = (address(s.keeperFund), abi.encodeCall(s.keeperFund.tip, (a, 1e6, 20, true)));
+        } else if (fn == 7) {
+            (target, data) = (address(s.farm), abi.encodeCall(s.farm.payBonus, (a, 1)));
+        } else if (fn == 8) {
+            (target, data) = (address(s.farm), abi.encodeCall(s.farm.addLedger, (a)));
+        } else if (fn == 9) {
+            (target, data) = (address(s.buyer), abi.encodeCall(s.buyer.buy, (0, a, 100)));
+        } else if (fn == 10) {
+            (target, data) = (address(s.liquidity), abi.encodeCall(s.liquidity.addLiquidity, (0)));
+        } else if (fn == 11) {
+            (target, data) = (address(s.engine), abi.encodeCall(s.engine.setRenderer, (a)));
+        } else if (fn == 12) {
+            (target, data) = (address(s.hook), abi.encodeCall(s.hook.setPolicy, (a)));
+        } else if (fn == 13) {
+            (target, data) =
+            (address(s.game), abi.encodeCall(s.game.startPromotion, (0.01 ether, 5_000, block.number + 10)));
+        } else if (fn == 14) {
+            (target, data) = (address(s.game), abi.encodeCall(s.game.receiveFunding, ()));
+        } else if (fn == 15) {
+            (target, data) = (address(s.game), abi.encodeCall(s.game.returnOps, ()));
+        } else {
+            (target, data) = (address(s.farm), abi.encodeCall(s.farm.start, ()));
+        }
         Snap memory b = _snap();
         vm.prank(a);
         (bool ok,) = target.call(data);

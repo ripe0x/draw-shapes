@@ -23,7 +23,8 @@ interface IVrfRouted {
 ///         configuration. Addresses match `deployments/dependencies.json`, chain 1.
 abstract contract ForkBase is Test, LaunchConfig {
     uint256 internal constant FORK_BLOCK = 26_279_000;
-    uint256 internal constant LAUNCH_ETH = 5 ether;
+    /// @dev The launch price: 1.0001^184,200 ≈ 100M ENGINE per ETH (FDV ≈ 10 ETH), as in script/env/mainnet.env.
+    int24 internal constant START_TICK = 184_200;
     /// @dev Opening capital in the tests: the 15.15 ETH board plus the 12 ETH reserve target, with room to spare.
     uint256 internal constant OPENING_CAPITAL = 30 ether;
 
@@ -52,7 +53,7 @@ abstract contract ForkBase is Test, LaunchConfig {
     ///      FWA fee purchase.
     function deployLaunch() internal {
         setUpFork();
-        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether, LAUNCH_ETH);
+        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether, START_TICK);
         cfg.create2Deployer = address(this);
         cfg.createPool = true;
         cfg.fwaFeeEth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
@@ -73,11 +74,10 @@ abstract contract ForkBase is Test, LaunchConfig {
         }
     }
 
-    /// @dev Opens the ENGINE market with `eth` against the 80% float.
-    function openMarket(uint256 eth) internal {
-        vm.deal(address(sys.timelock), eth);
+    /// @dev Opens the ENGINE market: the 80% float as one single-sided position below `START_TICK`, no ETH.
+    function openMarket() internal {
         vm.prank(address(sys.timelock));
-        sys.liquidity.launch{value: eth}();
+        sys.liquidity.launch();
     }
 
     /// @dev Opens the game, first letting the 48-hour public market run if it has not yet.
@@ -150,7 +150,7 @@ abstract contract ForkBase is Test, LaunchConfig {
             if (id == 0) continue;
             (,,,, uint256 weight,,, IFWAPool.ListingStatus st) = pool.listings(id);
             if (st != IFWAPool.ListingStatus.Active) continue;
-            (, uint80 backing,,,,) = sys.game.items(id);
+            (, uint72 backing,,,,,,) = sys.game.items(id);
             if (backing == wantBacking || wantBacking == 0) return prefix;
             prefix += weight;
         }
@@ -160,7 +160,10 @@ abstract contract ForkBase is Test, LaunchConfig {
     /// @dev Sync until there is nothing left to do.
     function syncAll() internal {
         for (uint256 i; i < 30; ++i) {
-            try sys.game.sync(100) {} catch { return; }
+            try sys.game.sync(100) {}
+                catch {
+                return;
+            }
         }
     }
 

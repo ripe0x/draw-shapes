@@ -39,6 +39,7 @@ interface IFWAPool {
     function updatePrice(uint256 listingId, uint256 newPrice) external;
     function recoverRefundedNFT(uint256 listingId) external;
     function setBool(uint256 key, bool value) external;
+    function setPurchaseOperator(address newOperator) external;
     function retirePool() external;
     function withdrawOwnerProceeds() external returns (uint256 amount);
     function processAcquisitions(uint256 maxCount) external returns (uint256 processed);
@@ -138,6 +139,7 @@ interface IFWAFactory {
     function globalWithdrawOnly() external view returns (bool);
     function globalPurchasesEnabled() external view returns (bool);
     function inventoryChangeCooldown() external view returns (uint256);
+    function maxAcquisitionsPerTx() external view returns (uint16);
     function owner() external view returns (address);
     function setGlobalWithdrawOnly(bool enabled) external;
 }

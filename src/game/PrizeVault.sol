@@ -26,6 +26,14 @@ contract PrizeVault is ReentrancyGuard, Governed {
     uint256 public tradingFees;
     uint256 public contributions;
     uint256 public promotionsFunded;
+    /// @notice Most ETH the vault may ever send KeeperFund (D48): enough to pay for listing the opening board at high
+    ///         gas; after it, keepers live on the operating allocation.
+    uint256 public constant KEEPER_TOP_UP_LIMIT = 1 ether;
+    uint256 public constant MAX_KEEPER_TOP_UP_TARGET = 0.5 ether;
+    address public keeperFund;
+    uint256 public keeperTopUpTarget; // KeeperFund is refilled to its floor plus this
+    uint256 public keeperTopUps; // total sent to KeeperFund
+    uint256 public keeperReturned; // total KeeperFund sent back
 
     event GameActivated(address indexed game);
     event Funded(address indexed game, uint256 amount);
@@ -53,11 +61,15 @@ contract PrizeVault is ReentrancyGuard, Governed {
     /// @dev Trading fees arrive from the PoolManager in the middle of every swap; kept cheap.
     receive() external payable {
         if (msg.sender == poolManager) tradingFees += msg.value;
+        else if (msg.sender == keeperFund) keeperReturned += msg.value;
         else contributions += msg.value;
     }
 
     /// @notice One-shot wiring by the deployer: the first game.
-    function wire(address game) external onlyWiring {
+    function wire(address game, address keeperFund_, uint256 keeperTopUpTarget_) external onlyWiring {
+        if (keeperFund_ == address(0)) revert ZeroAddress();
+        keeperFund = keeperFund_;
+        _setKeeperTopUpTarget(keeperTopUpTarget_);
         _activate(game);
     }
 
@@ -84,6 +96,33 @@ contract PrizeVault is ReentrancyGuard, Governed {
         totalFunded += amount;
         IFwaGame(game).receiveFunding{value: amount}();
         emit Funded(game, amount);
+    }
+
+    /// @notice Refills KeeperFund to its maintenance floor plus `keeperTopUpTarget` from the vault's balance (trading
+    ///         fees, contributions), within `KEEPER_TOP_UP_LIMIT` over the vault's life. Anyone may call; the game calls
+    ///         it in every sync. KeeperFund returns top-ups to the vault before any overflow reaches the game, so this
+    ///         capital never becomes game profit.
+    function topUpKeeper() external nonReentrant returns (uint256 amount) {
+        IKeeperFundView kf = IKeeperFundView(keeperFund);
+        uint256 have = keeperFund.balance - kf.tipCreditTotal();
+        uint256 target = kf.maintenanceFloor() + keeperTopUpTarget;
+        if (have >= target) return 0;
+        amount = target - have;
+        uint256 left = KEEPER_TOP_UP_LIMIT - keeperTopUps;
+        if (amount > left) amount = left;
+        if (amount > address(this).balance) amount = address(this).balance;
+        if (amount == 0) return 0;
+        keeperTopUps += amount;
+        kf.topUp{value: amount}();
+    }
+
+    function setKeeperTopUpTarget(uint256 target) external onlyGovernance {
+        _setKeeperTopUpTarget(target);
+    }
+
+    function _setKeeperTopUpTarget(uint256 target) internal {
+        if (target > MAX_KEEPER_TOP_UP_TARGET) revert OutOfBounds();
+        keeperTopUpTarget = target;
     }
 
     /// @notice Sends `amount` to the active game's promotion budget. Promotions are funded explicitly, never from profit.
@@ -137,4 +176,10 @@ contract PrizeVault is ReentrancyGuard, Governed {
         shutdownDelay = delay;
         emit ShutdownDelaySet(delay);
     }
+}
+
+interface IKeeperFundView {
+    function tipCreditTotal() external view returns (uint256);
+    function maintenanceFloor() external view returns (uint256);
+    function topUp() external payable;
 }

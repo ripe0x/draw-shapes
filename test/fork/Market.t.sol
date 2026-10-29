@@ -10,6 +10,7 @@ import {Buyback} from "../../src/treasury/Buyback.sol";
 import {Converter} from "../../src/game/Converter.sol";
 import {IFWAPool} from "../../src/interfaces/IFWA.sol";
 import {PrizeVault} from "../../src/game/PrizeVault.sol";
+import {FixedPointMathLib as FPM} from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice The ENGINE market on the real v4 PoolManager: launch, fees to the vault, the gate and its exact end, router
 ///         semantics, anti-snipe, profit-funded burn-only buybacks, conversions, liquidity.
@@ -20,7 +21,7 @@ contract MarketForkTest is ForkBase {
     function setUp() public {
         deployLaunch();
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         swapper = new Swapper(IPoolManager(POOL_MANAGER), sys.liquidity.poolKey());
         vm.deal(trader, 100 ether);
     }
@@ -37,17 +38,64 @@ contract MarketForkTest is ForkBase {
         vm.stopPrank();
     }
 
+    function _enginePerEth() internal view returns (uint256) {
+        uint256 p = uint256(sys.liquidity.sqrtPriceX96());
+        return FPM.fullMulDiv(p, p, 1 << 192);
+    }
+
+    /// @notice The single-sided launch: no ETH paired, the whole float in one position below the start price.
     function test_launchPriceAndPosition() public view {
         assertTrue(sys.liquidity.launched());
         assertGt(sys.liquidity.totalLiquidity(), 0);
-        // 800M ENGINE against 5 ETH: 160M ENGINE per ETH
-        uint256 p = uint256(sys.liquidity.sqrtPriceX96());
-        uint256 enginePerEth = p * p / (1 << 192);
-        assertApproxEqRel(enginePerEth, 160_000_000, 1e15);
-        // the genesis rate cap: 10% of ticket ETH in ENGINE at the launch price
-        assertEq(sys.farm.rateCap(), 16_000_000 ether);
+        // 1.0001^184,200 ≈ 99.84M ENGINE per ETH (FDV ≈ 10.02 ETH)
+        assertApproxEqRel(_enginePerEth(), 99_839_959, 1e15);
+        assertEq(int256(sys.liquidity.startTick()), int256(START_TICK));
+        // the genesis rate cap: 10% of ticket ETH in ENGINE at the start price
+        assertEq(sys.farm.rateCap(), rateCapAt(START_TICK));
+        assertApproxEqRel(sys.farm.rateCap(), 9_983_996 ether, 1e15);
+        // the whole float is in the pool (dust burned), and no ETH was paired
         assertLt(sys.engine.balanceOf(address(sys.liquidity)), 1e18);
-        assertLt(address(sys.liquidity).balance, 1e15);
+        assertEq(address(sys.liquidity).balance, 0);
+        assertGt(sys.engine.balanceOf(POOL_MANAGER), LP_FLOAT - 1e18);
+    }
+
+    /// @notice Nothing can be sold into the pool before anyone has bought: there is no ETH in it.
+    function test_singleSidedNoSaleBeforeAnyBuy() public {
+        deal(address(sys.engine), trader, 1_000_000 ether);
+        vm.warp(block.timestamp + 2 hours);
+        uint256 ethOut;
+        vm.startPrank(trader);
+        sys.engine.approve(address(swapper), 1_000_000 ether);
+        try swapper.sell(1_000_000 ether, false) returns (uint256, uint256 out) {
+            ethOut = out;
+        } catch {}
+        vm.stopPrank();
+        assertEq(ethOut, 0, "no ETH to sell into");
+        assertGe(_enginePerEth(), uint256(99_839_959) * 999 / 1000, "the price did not move above the start");
+    }
+
+    /// @notice Whatever sells, the price never goes above the start (ENGINE per ETH never below it), and sellers can
+    ///         take out no more ETH than buyers put in.
+    function test_singleSidedPriceNeverAboveStart() public {
+        vm.warp(block.timestamp + 2 hours);
+        uint256 start = _enginePerEth();
+        uint256 poolEthBefore = POOL_MANAGER.balance;
+        uint256 got = _buy(2 ether);
+        assertLt(_enginePerEth(), start, "a buy raises the ENGINE price");
+        uint256 poolEthIn = POOL_MANAGER.balance - poolEthBefore;
+        // sell everything bought, plus ENGINE from elsewhere (farm rewards in practice)
+        deal(address(sys.engine), trader, got + 50_000_000 ether);
+        vm.startPrank(trader);
+        sys.engine.approve(address(swapper), type(uint256).max);
+        uint256 ethOut;
+        try swapper.sell(got + 50_000_000 ether, false) returns (uint256, uint256 out) {
+            ethOut = out;
+        } catch {
+            (, ethOut) = swapper.sell(got, false);
+        }
+        vm.stopPrank();
+        assertGe(_enginePerEth(), start * 9_999 / 10_000, "never above the start");
+        assertLe(ethOut, poolEthIn, "sellers take out at most what buyers put in");
     }
 
     function test_antiSnipeDecaysAndFeeGoesToTheVault() public {
@@ -136,7 +184,8 @@ contract MarketForkTest is ForkBase {
         vm.expectRevert();
         swapper.buy{value: 0.1 ether}(0.1 ether, false);
         assertFalse(sys.swapPolicy.exempt(address(swapper)));
-        (bool ok,) = address(sys.swapPolicy).call(abi.encodeWithSignature("setExempt(address,bool)", address(swapper), true));
+        (bool ok,) =
+            address(sys.swapPolicy).call(abi.encodeWithSignature("setExempt(address,bool)", address(swapper), true));
         assertFalse(ok, "no exemption setter");
         vm.prank(trader);
         vm.expectRevert(EngineBuyer.NotCaller.selector);
@@ -246,14 +295,13 @@ contract MarketForkTest is ForkBase {
         deliverWord(id, wordFor(id, 0.05 ether));
         pool.processAcquisitions(5);
         (,,, uint256 listingId,) = pool.acquisitions(id);
-        (uint48 tokenId,,,,,) = sys.game.items(listingId);
+        (uint48 tokenId,,,,,,,) = sys.game.items(listingId);
         // stray ETH in the converter does not join the purchase
         vm.deal(address(sys.converter), 5 ether);
         vm.startPrank(trader);
         shapes.approve(address(sys.converter), tokenId);
-        (bool ok,) = address(sys.converter).call{value: 1 ether}(
-            abi.encodeCall(Converter.convert, (listingId, 1, true))
-        );
+        (bool ok,) =
+            address(sys.converter).call{value: 1 ether}(abi.encodeCall(Converter.convert, (listingId, 1, true)));
         assertFalse(ok, "convert is not payable");
         sys.converter.convert(listingId, 1, true);
         vm.stopPrank();

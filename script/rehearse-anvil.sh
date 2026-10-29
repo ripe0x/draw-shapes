@@ -30,7 +30,7 @@ tl() { # target value calldata salt: schedule and execute through the timelock (
   cast send "$T" "execute(address,uint256,bytes,bytes32,bytes32)" "$1" "$2" "$3" "$Z" "$salt" --value "$2" --from "$GOVERNANCE" --unlocked --rpc-url "$R" >/dev/null
 }
 OPENING="${OPENING_CAPITAL_WEI:-28000000000000000000}"
-LAUNCH="$LAUNCH_ETH_WEI"
+LAUNCH=0 # single-sided: no ETH is paired
 cast rpc anvil_setBalance "$GOVERNANCE" 0x3635C9ADC5DEA00000 --rpc-url "$R" >/dev/null
 tl "$L" "$LAUNCH" "$(cast calldata 'launch()')" 1
 echo "market: launched=$(cast call "$L" 'launched()(bool)' --rpc-url "$R")"

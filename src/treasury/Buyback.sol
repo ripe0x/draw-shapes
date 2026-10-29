@@ -113,9 +113,8 @@ contract Buyback is Governed, ReentrancyGuard {
         ++purchases;
         IBurnable(engine).burn(out);
         emit Bought(spent, out);
-        uint256 age = block.timestamp - lastRunAt;
         lastRunAt = block.timestamp;
-        keeperFund.tip(msg.sender, gasStart - gasleft(), age, 1, false);
+        keeperFund.tip(msg.sender, gasStart - gasleft(), 1, false);
     }
 
     function setParams(uint256 sliceWei_, uint256 minSpacing_, uint256 maxImpactBps_, uint256 maxDeviationBps_)

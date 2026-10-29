@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {ForkBase} from "./ForkBase.sol";
+import {FwaGame} from "../../src/game/FwaGame.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 /// @notice Gas receipts (BUILD_PROMPT rule 9), measured on the fork with every top-level call its own
@@ -18,7 +19,7 @@ contract GasReceipts is ForkBase {
     function setUp() public {
         deployLaunch();
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         openGame();
     }
 
@@ -38,6 +39,12 @@ contract GasReceipts is ForkBase {
 
     function test_gasReceipts() public {
         uint256 g;
+        // the purchase gate keeps 80 prizes plus a full batch in the draw; measuring a 20-pull booking needs room for
+        // 20 captures before a replacement lists, so the floor is lowered to 50%
+        FwaGame.Capital memory c = cfg.capital;
+        c.minLiveBps = 5_000;
+        vm.prank(address(sys.timelock));
+        sys.game.setCapital(c);
         // a player's pull (FWA's acquire, for reference)
         (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice(1);
         uint256 version = pool.inventoryVersion();

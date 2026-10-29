@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {ForkBase} from "./ForkBase.sol";
 import {IFWAPool} from "../../src/interfaces/IFWA.sol";
+import {PoolOwner} from "../../src/game/PoolOwner.sol";
 import {FwaGame} from "../../src/game/FwaGame.sol";
 import {Governed} from "../../src/Governed.sol";
 import {Converter} from "../../src/game/Converter.sol";
@@ -26,7 +27,7 @@ contract GameForkTest is ForkBase {
     function setUp() public {
         deployLaunch();
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         openGame();
         vm.warp(block.timestamp + 1);
     }
@@ -38,16 +39,16 @@ contract GameForkTest is ForkBase {
     // ------------------------------------------------------------------ pool and listing
 
     function test_poolCreatedAndPermanentlyOwned() public {
-        assertEq(pool.owner(), address(sys.game));
-        assertEq(pool.purchaseOperator(), address(0));
+        assertEq(pool.owner(), address(sys.poolOwner));
+        assertEq(pool.purchaseOperator(), address(sys.poolOwner), "the gate sees every purchase");
         assertTrue(pool.localPurchasesEnabled());
-        vm.prank(address(sys.game));
+        vm.prank(address(sys.poolOwner));
         vm.expectRevert();
         IOwnable(address(pool)).transferOwnership(alice);
-        vm.expectRevert(FwaGame.PoolExists.selector);
-        sys.game.createPool(bytes32(uint256(1)));
-        // no FWA left in the game
-        assertEq(IERC20Like(FWA_TOKEN).balanceOf(address(sys.game)), 0);
+        vm.expectRevert(PoolOwner.PoolExists.selector);
+        sys.poolOwner.createPool(bytes32(uint256(1)));
+        // no FWA left behind
+        assertEq(IERC20Like(FWA_TOKEN).balanceOf(address(sys.poolOwner)), 0);
     }
 
     function test_boardListedAtMarkupPrices() public view {
@@ -55,7 +56,7 @@ contract GameForkTest is ForkBase {
         assertEq(pool.activeListingCount(), 100);
         uint256 id = sys.game.liveAt(0);
         (,,,,, uint256 price,,) = pool.listings(id);
-        (, uint80 backing, uint80 cost,, uint16 markup,) = sys.game.items(id);
+        (, uint72 backing, uint72 cost,, uint16 markup,,,) = sys.game.items(id);
         assertEq(cost, backing + 0.001 ether);
         assertEq(price, uint256(cost) * 10_500 / 10_000);
         assertEq(markup, 500);
@@ -113,12 +114,13 @@ contract GameForkTest is ForkBase {
         deliverWord(id, wordFor(id, 0.01 ether));
         assertEq(uint8(statusOf(id)), uint8(IFWAPool.AcquisitionStatus.Fulfilled));
         (, uint256 requestBlock, uint256 paid, uint256 listingId,) = pool.acquisitions(id);
-        (uint48 tokenId,, uint80 cost,, uint16 markupBps,) = sys.game.items(listingId);
+        (uint48 tokenId,, uint72 cost,, uint16 markupBps,,,) = sys.game.items(listingId);
         assertEq(shapes.ownerOf(tokenId), alice);
         Lines memory l = _lines(paid, markupBps);
         // FWA's owner split, from its request-time base price, is within 1 wei of the formula (never below it)
         assertApproxEqAbs(pool.ownerProceeds(), l.proceeds, 1, "FWA owner split");
         assertGe(pool.ownerProceeds(), l.proceeds);
+        uint256 actual = pool.ownerProceeds();
 
         uint256 keeperBefore = address(sys.keeperFund).balance;
         vm.txGasPrice(0);
@@ -126,12 +128,15 @@ contract GameForkTest is ForkBase {
         sys.game.sync(10);
         assertEq(sys.game.pullsBooked(), 1);
         assertEq(sys.game.turnover(), paid);
-        assertEq(sys.game.revenue(), l.proceeds, "revenue: owner proceeds");
+        // booked at the booking edge, then trued up to what FWA paid once nothing is outstanding
+        assertEq(sys.game.proceedsBooked(), actual, "booked, then trued up");
+        assertEq(sys.game.proceedsCollected(), actual);
+        assertEq(sys.game.revenue(), actual, "revenue: owner proceeds");
         assertEq(sys.game.prizeExpense(), cost, "expense: the prize's carried cost, once");
         assertEq(sys.game.opsAccrued(), l.ops, "ops: 3% of the expected replacement cost");
         assertEq(sys.game.opsPaid(), l.ops, "paid to KeeperFund");
         assertEq(address(sys.keeperFund).balance + keeper.balance - keeperBefore, l.ops);
-        int256 p = int256(l.proceeds) - int256(uint256(cost)) - int256(l.ops);
+        int256 p = int256(actual) - int256(uint256(cost)) - int256(l.ops);
         assertEq(sys.game.profit(), p);
         assertGt(p, 0, "a cheap win is a profit");
         assertEq(sys.game.distributed(), uint256(p), "the whole realised profit is distributable");
@@ -221,8 +226,8 @@ contract GameForkTest is ForkBase {
         sys.game.sync(10);
         assertEq(sys.game.seenSeq(), 2);
         assertEq(sys.game.openCount(), 1);
-        (, uint80 backing, uint80 cost,,,) = sys.game.items(listingId);
-        (,,,,, bool live) = sys.game.items(listingId);
+        (, uint72 backing, uint72 cost,,,,,) = sys.game.items(listingId);
+        (,,,,,,, bool live) = sys.game.items(listingId);
         assertFalse(live, "FWA took it out of the draw; so does the game");
         assertEq(sys.game.liveCount(), 100, "and its row is replaced while the delivery is pending");
         uint256 b = pullAndSettle(bob, 99);
@@ -237,7 +242,7 @@ contract GameForkTest is ForkBase {
         vm.prank(alice);
         pool.refundFailedDelivery(listingId);
         assertEq(uint8(statusOf(a)), uint8(IFWAPool.AcquisitionStatus.DeliveryRefunded));
-        (uint48 tokenId,,,,,) = sys.game.items(listingId);
+        (uint48 tokenId,,,,,,,) = sys.game.items(listingId);
         uint256 expenseBefore = sys.game.prizeExpense();
         uint256 cashBefore = sys.game.cash();
         sys.game.sync(10);
@@ -258,7 +263,7 @@ contract GameForkTest is ForkBase {
         (uint256 a, uint256 listingId) = _failDelivery(alice);
         (, uint256 requestBlock,,,) = pool.acquisitions(a);
         sys.game.sync(10);
-        (,, uint80 cost,,,) = sys.game.items(listingId);
+        (,, uint72 cost,,,,,) = sys.game.items(listingId);
         // the row is replaced; the stuck prize stays carried at cost until FWA settles it
         assertEq(sys.game.liveCount(), 100);
         assertEq(sys.game.replacementsOwed(), 0);
@@ -339,7 +344,7 @@ contract GameForkTest is ForkBase {
         deliverWord(a, wordFor(a, 0.01 ether));
         sys.game.sync(10);
         (,,, listingId,) = pool.acquisitions(a);
-        (tokenId,,,,,) = sys.game.items(listingId);
+        (tokenId,,,,,,,) = sys.game.items(listingId);
     }
 
     function test_convertDeliveredShape() public {
@@ -464,7 +469,9 @@ contract GameForkTest is ForkBase {
         pool.refundFailedDelivery(listingId);
         uint256 vaultBefore = address(sys.vault).balance;
         sys.game.retireStep(10);
-        assertEq(address(sys.vault).balance - vaultBefore, 0.01 ether, "the recovered prize's backing reaches the vault");
+        assertEq(
+            address(sys.vault).balance - vaultBefore, 0.01 ether, "the recovered prize's backing reaches the vault"
+        );
         assertEq(address(sys.game).balance, 0);
         assertEq(sys.game.liveCount(), 0);
     }

@@ -5,6 +5,7 @@ import {ForkBase} from "../fork/ForkBase.sol";
 import {Swapper} from "../utils/Swapper.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFWAPool} from "../../src/interfaces/IFWA.sol";
+import {PoolOwner} from "../../src/game/PoolOwner.sol";
 import {FwaGame} from "../../src/game/FwaGame.sol";
 import {Lens} from "../../src/Lens.sol";
 
@@ -119,7 +120,7 @@ contract GenesisRehearsal is ForkBase {
 
     function _preMarket() internal {
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         swapper = new Swapper(IPoolManager(POOL_MANAGER), sys.liquidity.poolKey());
         // 48 h of pre-market trading: buys and sells, anti-snipe decays in the first hour
         for (uint256 h; h < 48; h += 4) {
@@ -243,12 +244,12 @@ contract GenesisRehearsal is ForkBase {
     }
 
     function _secondGame() internal returns (FwaGame g2) {
+        PoolOwner po2 = new PoolOwner(address(sys.timelock), SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL);
         g2 = new FwaGame(
             FwaGame.Config({
                 governance: address(sys.timelock),
-                shapes: SHAPES,
                 factory: FACTORY,
-                expectedImplementation: FWA_IMPL,
+                poolOwner: address(po2),
                 vault: address(sys.vault),
                 farm: address(sys.farm),
                 buyback: address(sys.buyback),
@@ -262,8 +263,9 @@ contract GenesisRehearsal is ForkBase {
         );
         uint256 eth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
         vm.deal(address(this), eth);
-        sys.feeBuyer.buyTo{value: eth}(address(g2), factory.poolCreationFee());
-        g2.createPool(keccak256("draw-shapes.fwa-pool.v2"));
+        po2.wire(address(g2));
+        sys.feeBuyer.buyTo{value: eth}(address(po2), factory.poolCreationFee());
+        po2.createPool(keccak256("draw-shapes.fwa-pool.v2"));
         vm.startPrank(address(sys.timelock));
         sys.farm.addLedger(address(g2));
         sys.keeperFund.setPayer(address(g2), true);

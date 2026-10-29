@@ -36,10 +36,10 @@ contract Deploy is Script, LaunchConfig {
             vm.envAddress("FWA_IMPLEMENTATION"),
             vm.envAddress("POOL_MANAGER"),
             IShapes(vm.envAddress("SHAPES")).unit(),
-            vm.envUint("LAUNCH_ETH_WEI")
+            int24(vm.envInt("START_TICK"))
         );
         c.create2Deployer = CREATE2_DEPLOYER;
-        c.keeperSeed = vm.envOr("KEEPER_SEED", uint256(0));
+        c.keeperSeed = vm.envOr("KEEPER_SEED", c.keeperSeed);
         bool createPool = vm.envOr("CREATE_FWA_POOL", true);
 
         _preflight(c, deployer, createPool);
@@ -58,7 +58,9 @@ contract Deploy is Script, LaunchConfig {
     }
 
     function _preflight(Config memory c, address deployer, bool createPool) internal view {
-        _check(c.governance != address(0) && c.governance != deployer, "GOVERNANCE must be set and differ from DEPLOYER");
+        _check(
+            c.governance != address(0) && c.governance != deployer, "GOVERNANCE must be set and differ from DEPLOYER"
+        );
         _check(c.shapes.code.length != 0, "Shapes has no code");
         _check(c.fwaFactory.code.length != 0, "FWA factory has no code");
         _check(c.poolManager.code.length != 0, "PoolManager has no code");
@@ -91,6 +93,7 @@ contract Deploy is Script, LaunchConfig {
         k.serialize("boardPolicy", address(s.board));
         k.serialize("pricingPolicy", address(s.pricing));
         k.serialize("vault", address(s.vault));
+        k.serialize("poolOwner", address(s.poolOwner));
         k.serialize("game", address(s.game));
         k.serialize("converter", address(s.converter));
         k.serialize("fwaPool", address(s.game.pool()));
@@ -100,6 +103,8 @@ contract Deploy is Script, LaunchConfig {
         k.serialize("shapePacks", c.packs);
         k.serialize("poolManager", c.poolManager);
         string memory out = k.serialize("lens", address(s.lens));
-        vm.writeJson(out, vm.envOr("DEPLOYMENT_RECORD", string.concat("deployments/", vm.toString(block.chainid), ".json")));
+        vm.writeJson(
+            out, vm.envOr("DEPLOYMENT_RECORD", string.concat("deployments/", vm.toString(block.chainid), ".json"))
+        );
     }
 }

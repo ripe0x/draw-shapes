@@ -9,7 +9,7 @@ import {Governed} from "../../src/Governed.sol";
 import {TestLedger} from "../utils/TestLedger.sol";
 
 contract StubKeeper {
-    function tip(address, uint256, uint256, uint256, bool) external pure returns (uint256) {
+    function tip(address, uint256, uint256, bool) external pure returns (uint256) {
         return 0;
     }
 }

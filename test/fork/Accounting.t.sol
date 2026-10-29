@@ -24,7 +24,7 @@ contract AccountingForkTest is ForkBase {
     function setUp() public {
         deployLaunch();
         fundAndFill(OPENING_CAPITAL);
-        openMarket(LAUNCH_ETH);
+        openMarket();
         openGame();
         vm.warp(block.timestamp + 1);
     }
@@ -40,7 +40,7 @@ contract AccountingForkTest is ForkBase {
             - g.prizeExpense() - g.opsPaid() - g.distributed() - g.promoSpent() - g.promoReleased();
         // promotion prizes held are carried in the budget's spending, so add back their cost while live
         if (g.promoListing() != 0) {
-            (,, uint80 cost,,,) = g.items(g.promoListing());
+            (,, uint72 cost,,,,,) = g.items(g.promoListing());
             rhs -= cost;
         }
         assertGe(lhs, rhs, "books: assets below capital plus results");
@@ -98,20 +98,21 @@ contract AccountingForkTest is ForkBase {
     }
 
     /// @notice Headline prizes won early: losses are booked and carried, nothing is distributed, the replacements are
-    ///         paid from capital at the next window and the board is whole again.
+    ///         paid from capital as soon as three rows wait (the restock trigger) and the board is whole again.
     function test_severalHeadlinesWonEarly() public {
         consumeWindow();
         int256 p0 = sys.game.profit();
-        for (uint256 i; i < 3; ++i) {
+        for (uint256 i; i < 2; ++i) {
             _win(alice, 0.5 ether);
         }
         sys.game.sync(10);
+        assertEq(sys.game.liveCount(), 98, "two rows wait for the trigger or the interval");
+        assertEq(sys.game.replacementsOwed(), 2 * 0.501 ether);
+        _win(alice, 0.5 ether);
+        sys.game.sync(10);
         int256 p = sys.game.profit();
         assertLt(p - p0, -1.3 ether, "three 0.5 wins against ~0.03 tickets");
-        assertEq(sys.game.replacementsOwed(), 3 * 0.501 ether);
-        window();
-        sys.game.sync(10);
-        assertEq(sys.game.liveCount(), 100, "replaced from capital");
+        assertEq(sys.game.liveCount(), 100, "three waiting: replaced from capital at once");
         assertEq(sys.game.replacementsOwed(), 0);
         assertEq(sys.game.profit(), p, "replacing is not a second expense");
         // ordinary wins afterwards recover the loss before anything is distributed
@@ -131,14 +132,11 @@ contract AccountingForkTest is ForkBase {
         sys.game.sync(10);
         int256 p = sys.game.profit();
         assertLt(p, 0);
-        // trading activity pays fees to the vault (sells stay open through genesis)
-        Swapper swapper = new Swapper(IPoolManager(POOL_MANAGER), sys.liquidity.poolKey());
-        address trader = makeAddr("trader");
-        deal(address(sys.engine), trader, 50_000_000 ether);
-        vm.startPrank(trader);
-        sys.engine.approve(address(swapper), type(uint256).max);
-        swapper.sell(50_000_000 ether, false);
-        vm.stopPrank();
+        // trading fees reach the vault (public buys are gated during genesis, so the fee transfer from the PoolManager
+        // stands in for trading; the vault counts what the PoolManager sends as trading fees)
+        vm.prank(POOL_MANAGER);
+        (bool sent,) = address(sys.vault).call{value: 1 ether}("");
+        assertTrue(sent);
         uint256 fees = sys.vault.tradingFees();
         assertGt(fees, 0, "sell fees reached the vault");
         sys.vault.fund();
@@ -205,40 +203,60 @@ contract AccountingForkTest is ForkBase {
 
     // ------------------------------------------------------------------ admission
 
-    /// @notice New purchases close when the board cannot be replenished and reopen once capital arrives; requests
-    ///         already accepted keep settling while purchases are closed.
+    /// @notice When the board cannot be replenished the purchase gate refuses new purchases at FWA itself, counting
+    ///         requests in flight and a full batch; admission closes as well once the fill is below the floor; requests
+    ///         already accepted keep settling; capital reopens both.
     function test_admissionClosesWhenTheBoardCannotRefillAndReopens() public {
         FwaGame.Capital memory c = cfg.capital;
-        c.minLiveBps = 9_900;
+        c.minLiveBps = 9_000; // the gate keeps 90 prizes, plus a batch of 5 and every unsettled request
         _setCapital(c);
-        // drain the game's cash (as if capital had run out) and capture two headline prizes
+        assertEq(sys.poolOwner.minListed(), 90);
+        // drain the game's cash (as if capital had run out) and capture headline prizes down to 95 live
         vm.deal(address(sys.game), 0);
-        _win(alice, 0.5 ether);
-        _win(alice, 0.5 ether);
+        for (uint256 i; i < 5; ++i) {
+            _win(alice, 0.5 ether);
+        }
+        assertTrue(sys.poolOwner.canPurchase(alice), "95 live, nothing in flight: 95 >= 90 + 5");
         // an accepted request in flight
         uint256 inflight = pull(bob);
+        assertFalse(sys.poolOwner.canPurchase(alice), "one in flight: 95 < 90 + 5 + 1");
         vm.roll(block.number + 3);
         window();
         sys.game.sync(10);
-        assertFalse(pool.localPurchasesEnabled(), "98 of 100 live and no cash to refill: closed");
-        // direct FWA purchases are refused at FWA, not just on the site
+        assertEq(sys.game.liveCount(), 95, "no cash to refill");
+        // direct FWA purchases are refused at FWA, not just on the site, whether or not anyone synced
         (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice(1);
         uint256 version = pool.inventoryVersion();
         vm.deal(bob, 1 ether);
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSignature("AcquisitionsNotEnabled()"));
+        vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()"));
         pool.acquire{value: total}(bob, fee, 0, 10_000, version, block.timestamp + 1 hours);
         // settlement continues
         deliverWord(inflight, wordFor(inflight, 0.05 ether));
         pool.processAcquisitions(5);
         assertEq(uint8(statusOf(inflight)), uint8(IFWAPool.AcquisitionStatus.Fulfilled));
+        // a higher floor closes admission too (once the capture is booked)
+        sys.game.sync(10);
+        c.minLiveBps = 9_600;
+        _setCapital(c);
+        assertLt(sys.game.liveCount(), 96);
+        assertFalse(pool.localPurchasesEnabled(), "below the floor of 96: closed");
+        (fee,, total) = pool.quoteAcquisitionPrice(1);
+        version = pool.inventoryVersion();
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()")); // FWA asks the gate before the switch
+        pool.acquire{value: total}(bob, fee, 0, 10_000, version, block.timestamp + 1 hours);
         // capital arrives; the next sync refills and reopens
-        vm.deal(address(sys.vault), 2 ether);
+        vm.deal(address(sys.vault), 4 ether);
         sys.vault.fund();
         window();
         sys.game.sync(10);
         assertEq(sys.game.liveCount(), 100);
         assertTrue(pool.localPurchasesEnabled(), "reopened");
+        assertFalse(sys.poolOwner.canPurchase(alice), "a 96 floor leaves no room for a batch on 100 rows");
+        c.minLiveBps = 9_000;
+        _setCapital(c);
+        assertTrue(sys.poolOwner.canPurchase(alice), "100 >= 90 + 5");
     }
 
     /// @notice FWA settings moving outside the supported range close new purchases until they return.
@@ -267,11 +285,11 @@ contract AccountingForkTest is ForkBase {
         assertTrue(pool.localPurchasesEnabled(), "back in range: open");
     }
 
-    /// @notice Too many unsettled requests close new purchases; FWA's batch limit is 5 per call and every request in
-    ///         a batch is booked on its own.
+    /// @notice The gate refuses a purchase once `maxInFlight` requests are unsettled; FWA's batch limit is 5 per call and
+    ///         every request in a batch is booked on its own.
     function test_outstandingLimitAndMaximumBatches() public {
         FwaGame.Capital memory c = cfg.capital;
-        c.maxOutstanding = 5;
+        c.maxInFlight = 5;
         _setCapital(c);
         (uint256 fee, uint256 vrf,) = pool.quoteAcquisitionPrice(5);
         uint256 version = pool.inventoryVersion();
@@ -282,23 +300,76 @@ contract AccountingForkTest is ForkBase {
         vm.prank(alice);
         uint256[] memory batch =
             pool.acquireBatch{value: 5 * (fee + vrf)}(alice, 5, fee, 0, 10_000, version, block.timestamp + 1 hours);
-        uint256 single = pull(bob);
-        sys.game.sync(10);
-        assertFalse(pool.localPurchasesEnabled(), "6 unsettled above the limit of 5: closed");
+        assertFalse(sys.poolOwner.canPurchase(bob), "5 unsettled, the limit: refused");
+        (uint256 fee1,, uint256 total1) = pool.quoteAcquisitionPrice(1);
+        vm.deal(bob, 1 ether);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()"));
+        pool.acquire{value: total1}(bob, fee1, 0, 10_000, version, block.timestamp + 1 hours);
         vm.roll(block.number + 3);
         for (uint256 i; i < 5; ++i) {
             deliverWord(batch[i], uint256(keccak256(abi.encode(i))));
         }
-        deliverWord(single, 1);
         pool.processAcquisitions(10);
         sys.game.sync(20);
-        assertEq(sys.game.pullsBooked(), 6, "every request of the batch booked");
+        assertEq(sys.game.pullsBooked(), 5, "every request of the batch booked");
         assertEq(sys.game.userWeight(0, alice), 5 * fee);
-        assertTrue(pool.localPurchasesEnabled(), "reopened once settled");
+        assertTrue(sys.poolOwner.canPurchase(bob), "open again once settled");
+        pull(bob);
     }
 
-    /// @notice Replacements wait for the maintenance window and FWA's inventory cooldown; a request accepted before a
-    ///         relisting still settles against FWA's live pool.
+    /// @notice At the launch limit of 10, two full batches may be in flight; a third is refused before any fee, and
+    ///         the board keeps a full batch of headroom above its floor whatever settles.
+    function test_fullBatchesWithRequestsInFlight() public {
+        assertEq(sys.poolOwner.maxInFlight(), 10);
+        assertEq(sys.poolOwner.maxBatch(), 5);
+        uint256[] memory a = _batch(alice);
+        uint256[] memory b = _batch(bob);
+        assertEq(pool.unsettledAcquisitionCount(), 10);
+        (uint256 fee, uint256 vrf,) = pool.quoteAcquisitionPrice(5);
+        uint256 version = pool.inventoryVersion();
+        vm.deal(alice, 10 ether);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("PurchaseNotAllowed()"));
+        pool.acquireBatch{value: 5 * (fee + vrf)}(alice, 5, fee, 0, 10_000, version, block.timestamp + 1 hours);
+        vm.roll(block.number + 3);
+        for (uint256 i; i < 5; ++i) {
+            deliverWord(a[i], uint256(keccak256(abi.encode("a", i))));
+            deliverWord(b[i], uint256(keccak256(abi.encode("b", i))));
+        }
+        pool.processAcquisitions(20);
+        assertEq(pool.unsettledAcquisitionCount(), 0);
+        // Each cheap prize captured raises FWA's live fee; once the drift passes FWA's 10% positive-slippage guard a
+        // later request in the queue is refunded rather than settled (the player gets the ticket back). On this board
+        // ten in flight settle about 8 and refund the rest (sim/throughput.py measures the rate).
+        uint256 fulfilled;
+        uint256 refunded;
+        for (uint256 i; i < 10; ++i) {
+            IFWAPool.AcquisitionStatus st = statusOf(i < 5 ? a[i] : b[i - 5]);
+            if (st == IFWAPool.AcquisitionStatus.Fulfilled) ++fulfilled;
+            else if (st == IFWAPool.AcquisitionStatus.Refunded) ++refunded;
+        }
+        assertEq(fulfilled + refunded, 10, "every request settled or refunded");
+        assertGe(fulfilled, 5);
+        assertGe(pool.activeListingCount(), 90, "ten captures at most from a full board");
+        sys.game.sync(50);
+        assertEq(sys.game.pullsBooked(), fulfilled);
+        assertEq(sys.game.openCount(), 0, "refunds resolved too");
+        assertEq(sys.game.liveCount(), 100, "replaced");
+        _assertBooks();
+    }
+
+    function _batch(address who) internal returns (uint256[] memory ids) {
+        (uint256 fee, uint256 vrf,) = pool.quoteAcquisitionPrice(5);
+        uint256 version = pool.inventoryVersion();
+        vm.deal(who, who.balance + 5 * (fee + vrf));
+        vm.prank(who);
+        ids = pool.acquireBatch{value: 5 * (fee + vrf)}(who, 5, fee, 0, 10_000, version, block.timestamp + 1 hours);
+    }
+
+    /// @notice Replacements wait for the maintenance interval (at least six FWA cooldowns) and, while the board is
+    ///         well above the gate's line, for requests in flight to settle, so FWA never stages them; then they list
+    ///         and start FWA's cooldown.
     function test_delayedReplacementsAndCooldown() public {
         IFactoryOwner f = IFactoryOwner(FACTORY);
         vm.prank(f.owner());
@@ -307,20 +378,19 @@ contract AccountingForkTest is ForkBase {
         vm.warp(block.timestamp + 60);
         _win(alice, 0.05 ether);
         sys.game.sync(10);
-        assertEq(sys.game.liveCount(), 99, "the replacement waits for the window");
-        uint256 before = pull(bob); // accepted before the relisting
+        assertEq(sys.game.liveCount(), 99, "the replacement waits for the interval");
+        uint256 inflight = pull(bob);
         window();
+        vm.warp(block.timestamp + 60); // six cooldowns (6 min) is the longer wait
         sys.game.sync(10);
-        assertEq(sys.game.liveCount(), 100);
-        assertEq(pool.purchasesResumeAt(), block.timestamp + 60, "the relisting starts FWA's cooldown");
+        assertEq(sys.game.liveCount(), 99, "and for the request in flight");
         vm.roll(block.number + 3);
-        deliverWord(before, 5);
+        deliverWord(inflight, wordFor(inflight, 0.01 ether));
         pool.processAcquisitions(5);
-        IFWAPool.AcquisitionStatus st = statusOf(before);
-        assertTrue(
-            st == IFWAPool.AcquisitionStatus.Fulfilled || st == IFWAPool.AcquisitionStatus.Refunded,
-            "settled or refunded on drift, never stuck"
-        );
+        sys.game.sync(10);
+        assertEq(sys.game.liveCount(), 100, "settled: both rows replaced");
+        assertEq(pool.activeListingCount(), 100, "listed active, not staged");
+        assertEq(pool.purchasesResumeAt(), block.timestamp + 60, "the relisting starts FWA's cooldown");
     }
 
     // ------------------------------------------------------------------ keepers
@@ -461,7 +531,7 @@ contract ReadinessForkTest is ForkBase {
         vm.expectRevert(FwaGame.NotReady.selector);
         sys.game.openGame(); // no market yet
         vm.stopPrank();
-        openMarket(LAUNCH_ETH);
+        openMarket();
         vm.prank(address(sys.timelock));
         vm.expectRevert(FwaGame.NotReady.selector);
         sys.game.openGame(); // the 48-hour market has not run

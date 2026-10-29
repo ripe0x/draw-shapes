@@ -10,6 +10,7 @@ import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {FixedPointMathLib as FPM} from "solady/utils/FixedPointMathLib.sol";
 
 import {FwaGame} from "../src/game/FwaGame.sol";
+import {PoolOwner} from "../src/game/PoolOwner.sol";
 import {PrizeVault} from "../src/game/PrizeVault.sol";
 import {Converter} from "../src/game/Converter.sol";
 import {GenesisFarm} from "../src/token/GenesisFarm.sol";
@@ -24,6 +25,7 @@ import {SwapPolicy} from "../src/policy/SwapPolicy.sol";
 import {BoardPolicy, PricingPolicy} from "../src/policy/GamePolicies.sol";
 import {FwaFeeBuyer} from "../src/periphery/FwaFeeBuyer.sol";
 import {Lens} from "../src/Lens.sol";
+import {IShapePacks} from "../src/interfaces/IDrawShapes.sol";
 
 /// @notice The one deployment routine, shared by `script/Deploy.s.sol` and the fork tests, so the tests
 ///         exercise exactly what is broadcast. Every step is followed by readback checks in `postflight`.
@@ -59,8 +61,9 @@ abstract contract DeploySystem {
         // game capital
         FwaGame.Capital capital;
         uint256 marketLead;
-        // genesis
+        // genesis and launch
         uint256 rateCap; // ENGINE per 1 ETH of eligible ticket ETH in a steady epoch
+        int24 startTick; // the single-sided launch price (ENGINE per ETH = 1.0001^startTick), its highest ever
         // buyback
         uint256 sliceWei;
         uint256 minSpacing;
@@ -68,6 +71,7 @@ abstract contract DeploySystem {
         uint256 maxDeviationBps;
         KeeperFund.Params keeper;
         uint256 keeperSeed; // ETH the deploy wallet seeds KeeperFund with
+        uint256 keeperTopUpTarget; // what the vault keeps KeeperFund at above its floor, from trading fees
         uint256 shutdownDelay;
         uint256 lpMaxImpactBps;
     }
@@ -85,6 +89,7 @@ abstract contract DeploySystem {
         BoardPolicy board;
         PricingPolicy pricing;
         PrizeVault vault;
+        PoolOwner poolOwner;
         FwaGame game;
         Converter converter;
         Buyback buyback;
@@ -112,7 +117,7 @@ abstract contract DeploySystem {
         uint256 nonce = VM.getNonce(deployer);
         address predicted = VM.computeCreateAddress(deployer, nonce + 2);
         s.farm = new GenesisFarm(tl, predicted, GENESIS, BONUS, c.rateCap);
-        s.liquidity = new ProtocolLiquidity(tl, IPoolManager(c.poolManager), predicted, c.lpMaxImpactBps);
+        s.liquidity = new ProtocolLiquidity(tl, IPoolManager(c.poolManager), predicted, c.lpMaxImpactBps, c.startTick);
         {
             address[] memory to = new address[](2);
             uint256[] memory amounts = new uint256[](2);
@@ -128,17 +133,26 @@ abstract contract DeploySystem {
         s.hook = _deployHook(c, s, tl);
         s.buyer = new EngineBuyer(tl, IPoolManager(c.poolManager), address(s.engine), address(s.hook));
 
-        s.board = new BoardPolicy(tl, c.boardKinds, c.boardBackings, c.listBatch);
+        // Pack rows must meet Shape Packs' minimum; without Shape Packs on the chain there are no Pack rows.
+        uint256 minPack = c.packs == address(0) ? type(uint256).max : IShapePacks(c.packs).MIN_PACK_VALUE();
+        s.board = new BoardPolicy(tl, minPack, c.boardKinds, c.boardBackings, c.listBatch);
         s.pricing = new PricingPolicy(tl, c.markupBps, c.conversionBonusBps, c.opsBps);
         s.buyback = new Buyback(
-            tl, address(s.keeperFund), address(s.engine), address(s.buyer), c.sliceWei, c.minSpacing, c.maxImpactBps, c.maxDeviationBps
+            tl,
+            address(s.keeperFund),
+            address(s.engine),
+            address(s.buyer),
+            c.sliceWei,
+            c.minSpacing,
+            c.maxImpactBps,
+            c.maxDeviationBps
         );
+        s.poolOwner = new PoolOwner(tl, c.shapes, c.packs, c.fwaFactory, c.fwaImplementation);
         s.game = new FwaGame(
             FwaGame.Config({
                 governance: tl,
-                shapes: c.shapes,
                 factory: c.fwaFactory,
-                expectedImplementation: c.fwaImplementation,
+                poolOwner: address(s.poolOwner),
                 vault: address(s.vault),
                 farm: address(s.farm),
                 buyback: address(s.buyback),
@@ -158,18 +172,18 @@ abstract contract DeploySystem {
 
         if (c.createPool) {
             uint256 fee = _poolCreationFee(c);
-            if (fee != 0) s.feeBuyer.buyTo{value: c.fwaFeeEth}(address(s.game), fee);
-            s.game.createPool(c.poolSalt);
+            if (fee != 0) s.feeBuyer.buyTo{value: c.fwaFeeEth}(address(s.poolOwner), fee);
+            s.poolOwner.createPool(c.poolSalt);
         }
     }
 
-    function _wire(Config memory, System memory s) internal {
+    function _wire(Config memory c, System memory s) internal {
         {
             address[] memory payers = new address[](3);
             payers[0] = address(s.game);
             payers[1] = address(s.buyback);
             payers[2] = address(s.farm);
-            s.keeperFund.wire(payers, address(s.game));
+            s.keeperFund.wire(payers, address(s.game), address(s.vault));
         }
         s.farm.wire(address(s.game), address(s.converter), address(s.keeperFund));
         {
@@ -185,13 +199,19 @@ abstract contract DeploySystem {
             callers[1] = address(s.buyback);
             s.buyer.wire(callers);
         }
-        s.vault.wire(address(s.game));
+        s.poolOwner.wire(address(s.game));
+        s.vault.wire(address(s.game), address(s.keeperFund), c.keeperTopUpTarget);
         s.buyback.wire(address(s.game));
     }
 
     function _deployHook(Config memory c, System memory s, address tl) internal returns (EngineHook hook) {
         bytes memory args = abi.encode(
-            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.vault), tl, address(s.swapPolicy)
+            IPoolManager(c.poolManager),
+            address(s.engine),
+            address(s.liquidity),
+            address(s.vault),
+            tl,
+            address(s.swapPolicy)
         );
         bytes32 initHash = keccak256(abi.encodePacked(type(EngineHook).creationCode, args));
         uint160 flags = uint160(
@@ -206,7 +226,12 @@ abstract contract DeploySystem {
             if (uint160(predicted) & Hooks.ALL_HOOK_MASK == flags && predicted.code.length == 0) break;
         }
         hook = new EngineHook{salt: salt}(
-            IPoolManager(c.poolManager), address(s.engine), address(s.liquidity), address(s.vault), tl, address(s.swapPolicy)
+            IPoolManager(c.poolManager),
+            address(s.engine),
+            address(s.liquidity),
+            address(s.vault),
+            tl,
+            address(s.swapPolicy)
         );
         _check(address(hook) == predicted, "hook address");
     }
@@ -249,9 +274,19 @@ abstract contract DeploySystem {
         _check(s.farm.genesisBudget() == GENESIS && s.farm.bonusPool() == BONUS, "farm split");
         _check(s.farm.rateCap() == c.rateCap, "rate cap");
         // governance everywhere, nothing left to the deploy wallet
-        address[11] memory governed = [
-            address(s.keeperFund), address(s.farm), address(s.liquidity), address(s.engine), address(s.swapPolicy),
-            address(s.buyer), address(s.board), address(s.pricing), address(s.vault), address(s.game), address(s.buyback)
+        address[12] memory governed = [
+            address(s.keeperFund),
+            address(s.farm),
+            address(s.liquidity),
+            address(s.engine),
+            address(s.swapPolicy),
+            address(s.buyer),
+            address(s.board),
+            address(s.pricing),
+            address(s.vault),
+            address(s.game),
+            address(s.buyback),
+            address(s.poolOwner)
         ];
         for (uint256 i; i < governed.length; ++i) {
             _check(IGovernedView(governed[i]).governance() == tl, "governance");
@@ -260,7 +295,9 @@ abstract contract DeploySystem {
         _check(s.hook.governance() == tl, "hook governance");
         // funding routes: trading fees to the vault (capital), profit to the burn-only buyback, overflow to the game
         _check(s.hook.engine() == address(s.engine) && s.hook.launcher() == address(s.liquidity), "hook refs");
-        _check(s.hook.feeRecipient() == address(s.vault) && address(s.hook.policy()) == address(s.swapPolicy), "fee route");
+        _check(
+            s.hook.feeRecipient() == address(s.vault) && address(s.hook.policy()) == address(s.swapPolicy), "fee route"
+        );
         _check(s.vault.poolManager() == c.poolManager, "vault fee intake");
         _check(s.game.buyback() == address(s.buyback) && s.buyback.isSource(address(s.game)), "profit route");
         _check(s.keeperFund.overflow() == address(s.game), "keeper overflow");
@@ -276,8 +313,26 @@ abstract contract DeploySystem {
         _check(s.farm.isLedger(address(s.game)), "farm ledger");
         _check(s.game.reserveTarget() == c.capital.reserveTarget, "reserve");
         _check(s.game.maintenanceInterval() == c.capital.maintenanceInterval, "maintenance");
-        _check(s.game.minLiveBps() == c.capital.minLiveBps && s.game.maxOutstanding() == c.capital.maxOutstanding, "admission");
-        _check(s.game.maxEdgeBps() == c.capital.maxEdgeBps && s.game.maxCooldown() == c.capital.maxCooldown, "fwa range");
+        _check(
+            s.game.minLiveBps() == c.capital.minLiveBps && s.game.maxInFlight() == c.capital.maxInFlight, "admission"
+        );
+        _check(s.game.bookingEdgeBps() == c.capital.maxEdgeBps, "booking edge");
+        _check(
+            address(s.game.poolOwner()) == address(s.poolOwner) && address(s.poolOwner.game()) == address(s.game),
+            "pool owner refs"
+        );
+        _check(
+            address(s.poolOwner.shapes()) == c.shapes && address(s.poolOwner.packs()) == c.packs, "prize collections"
+        );
+        _check(s.liquidity.startTick() == c.startTick, "start tick");
+        _check(
+            s.vault.keeperFund() == address(s.keeperFund) && s.keeperFund.vault() == address(s.vault), "keeper top-up"
+        );
+        _check(s.vault.keeperTopUpTarget() == c.keeperTopUpTarget, "keeper top-up target");
+        _check(s.keeperFund.tipCap() == c.keeper.tipCap && s.keeperFund.flatFee() == c.keeper.flatFee, "keeper pay");
+        _check(
+            s.game.maxEdgeBps() == c.capital.maxEdgeBps && s.game.maxCooldown() == c.capital.maxCooldown, "fwa range"
+        );
         _check(s.game.marketLead() == c.marketLead, "market lead");
         _check(s.buyback.sliceWei() == c.sliceWei && s.buyback.maxImpactBps() == c.maxImpactBps, "buyback limits");
         _check(s.buyback.maxDeviationBps() == c.maxDeviationBps, "buyback deviation");
@@ -299,11 +354,21 @@ abstract contract DeploySystem {
         if (c.createPool) {
             address pool = address(s.game.pool());
             _check(pool != address(0), "pool");
-            _check(IOwnedView(pool).owner() == address(s.game), "pool owner");
-            _check(IPurchaseView(pool).purchaseOperator() == address(0), "purchase operator");
+            _check(IOwnedView(pool).owner() == address(s.poolOwner), "pool owner");
+            _check(IPurchaseView(pool).purchaseOperator() == address(s.poolOwner), "purchase operator");
+            _check(s.poolOwner.pool() == pool, "pool recorded");
+            _check(s.poolOwner.maxInFlight() == c.capital.maxInFlight, "gate in flight");
+            _check(
+                s.poolOwner.maxEdgeBps() == c.capital.maxEdgeBps && s.poolOwner.maxCooldown() == c.capital.maxCooldown,
+                "gate range"
+            );
+            _check(s.poolOwner.maxBatch() == IFactoryBatch(c.fwaFactory).maxAcquisitionsPerTx(), "gate batch");
         }
         // gate end follows genesis end (max before the game opens)
-        _check(s.farm.genesisEndBlock() == (s.farm.openBlock() == 0 ? type(uint256).max : s.farm.openBlock() + 21 * 7_200), "gate end");
+        _check(
+            s.farm.genesisEndBlock() == (s.farm.openBlock() == 0 ? type(uint256).max : s.farm.openBlock() + 21 * 7_200),
+            "gate end"
+        );
     }
 }
 
@@ -327,4 +392,8 @@ interface IOwnedView {
 
 interface IPurchaseView {
     function purchaseOperator() external view returns (address);
+}
+
+interface IFactoryBatch {
+    function maxAcquisitionsPerTx() external view returns (uint16);
 }

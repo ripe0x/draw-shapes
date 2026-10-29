@@ -5,13 +5,18 @@ import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {IFWAPool} from "../interfaces/IFWA.sol";
-import {IGenesisFarm, IEngineBuyer, IPricingPolicy} from "../interfaces/IDrawShapes.sol";
+import {IGenesisFarm, IEngineBuyer, IPricingPolicy, IShapePacks} from "../interfaces/IDrawShapes.sol";
 
 interface IGameView {
     function pool() external view returns (IFWAPool);
     function buyer() external view returns (IEngineBuyer);
     function pricing() external view returns (IPricingPolicy);
+    function poolOwner() external view returns (IPoolOwnerView);
+}
+
+interface IPoolOwnerView {
     function shapes() external view returns (IShapes);
+    function packs() external view returns (IShapePacks);
 }
 
 interface IBuyerHook {
@@ -27,8 +32,8 @@ interface IFeeView {
 }
 
 /// @title Converter
-/// @notice Prize conversion: the holder of a Shape the game's FWA pool delivered turns it into ENGINE. The Shape is
-///         burned for its backing, that ETH buys ENGINE through EngineBuyer (fee-exempt) for the
+/// @notice Prize conversion: the holder of a Shape or Shape Pack the game's FWA pool delivered turns it into ENGINE.
+///         The Shape is burned (the Pack redeemed) for its backing, that ETH buys ENGINE through EngineBuyer (fee-exempt) for the
 ///         caller, and the conversion bonus is paid from the farm's bonus pool at the executed price.
 /// @dev A module: it holds nothing between calls. The ETH that buys is exactly the burned Shape's backing: there is no
 ///      payable entry point, so no top-up, and EngineBuyer serves only registered callers, so this is no gateway for
@@ -49,7 +54,13 @@ contract Converter is ReentrancyGuard {
     uint256 public totalBonus;
 
     event Converted(
-        address indexed holder, uint256 indexed listingId, address collection, uint256 tokenId, uint256 backing, uint256 engineOut, uint256 bonus
+        address indexed holder,
+        uint256 indexed listingId,
+        address collection,
+        uint256 tokenId,
+        uint256 backing,
+        uint256 engineOut,
+        uint256 bonus
     );
 
     error NotConvertible();
@@ -68,7 +79,9 @@ contract Converter is ReentrancyGuard {
         if (address(pool) == address(0) || converted[listingId]) return (false, address(0), 0);
         IFWAPool.ListingStatus st;
         (collection,,, tokenId,,,, st) = pool.listings(listingId);
-        ok = st == IFWAPool.ListingStatus.Settled && collection == address(game.shapes());
+        IPoolOwnerView po = game.poolOwner();
+        ok = st == IFWAPool.ListingStatus.Settled
+            && (collection == address(po.shapes()) || collection == address(po.packs()));
     }
 
     /// @notice Converts the prize of delivered listing `listingId`, held by the caller, into ENGINE. Reverts if the
@@ -83,7 +96,8 @@ contract Converter is ReentrancyGuard {
         converted[listingId] = true;
         IShapes(collection).transferFrom(msg.sender, address(this), tokenId);
         uint256 before = address(this).balance;
-        IShapes(collection).burn(tokenId);
+        if (collection == address(game.poolOwner().packs())) IShapePacks(collection).redeemTo(tokenId, payable(this));
+        else IShapes(collection).burn(tokenId);
         uint256 value = address(this).balance - before;
         uint256 spent;
         (engineOut, spent) = game.buyer().buy{value: value}(minEngineOut, msg.sender, BPS);

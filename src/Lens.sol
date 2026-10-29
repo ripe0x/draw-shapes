@@ -12,6 +12,10 @@ import {Buyback} from "./treasury/Buyback.sol";
 import {SwapPolicy} from "./policy/SwapPolicy.sol";
 import {ProtocolLiquidity} from "./token/ProtocolLiquidity.sol";
 
+interface IGate {
+    function canPurchase(address) external view returns (bool);
+}
+
 /// @title Lens
 /// @notice Read-only aggregation for the site and the keeper. Holds nothing and changes nothing.
 contract Lens {
@@ -47,6 +51,8 @@ contract Lens {
         uint256 purchasesResumeAt;
         uint256 promoListing;
         uint256 promoEndBlock;
+        bool gateOpen; // the purchase gate's answer now (live FWA state: in-flight, edge, cooldown, board floor)
+        uint256 maxInFlight;
     }
 
     /// @notice The game's books. Every figure is cumulative since launch unless named otherwise.
@@ -93,6 +99,7 @@ contract Lens {
     struct Listing {
         uint256 listingId;
         uint256 row;
+        uint256 kind; // 0 Shape, 1 Shape Pack
         uint256 backing;
         uint256 price;
         uint256 probability; // 1e18 = certain; current FWA weights
@@ -149,6 +156,7 @@ contract Lens {
         v.openRequests = g.openCount();
         v.promoListing = g.promoListing();
         v.promoEndBlock = g.promoEndBlock();
+        v.maxInFlight = g.maxInFlight();
         if (address(p) != address(0)) {
             v.admissible = g.admissible();
             v.acquisitionsEnabled = p.localPurchasesEnabled();
@@ -157,6 +165,7 @@ contract Lens {
             if (p.totalWeight() != 0) (v.quoteFee, v.quoteVrf,) = p.quoteAcquisitionPrice(1);
             v.inventoryVersion = p.inventoryVersion();
             v.purchasesResumeAt = p.purchasesResumeAt();
+            v.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(0));
         }
     }
 
@@ -209,9 +218,16 @@ contract Lens {
         uint256 total = address(p) == address(0) ? 0 : p.totalWeight();
         for (uint256 i; i < n; ++i) {
             uint256 id = g.liveAt(i);
-            (, uint80 backing,, uint16 row,,) = g.items(id);
+            (, uint72 backing,, uint16 row,,, uint8 kind,) = g.items(id);
             (,,,, uint256 weight, uint256 price,, IFWAPool.ListingStatus st) = p.listings(id);
-            out[i] = Listing(id, row, backing, price, st == IFWAPool.ListingStatus.Active && total != 0 ? FPM.fullMulDiv(weight, 1e18, total) : 0);
+            out[i] = Listing(
+                id,
+                row,
+                kind,
+                backing,
+                price,
+                st == IFWAPool.ListingStatus.Active && total != 0 ? FPM.fullMulDiv(weight, 1e18, total) : 0
+            );
         }
     }
 
@@ -222,15 +238,16 @@ contract Lens {
         returns (uint256[] memory backing, uint256[] memory price, uint256[] memory probability)
     {
         uint256 n = g.board().rowCount();
-        uint256 fee = g.shapes().mintFee();
         backing = new uint256[](n);
         price = new uint256[](n);
         probability = new uint256[](n);
         uint256 inv;
         for (uint256 r; r < n; ++r) {
-            (, uint96 b) = g.board().rowAt(r);
+            (uint8 kind, uint96 b) = g.board().rowAt(r);
             backing[r] = b;
-            price[r] = g.pricing().listPrice(0, b, b + fee);
+            uint256 cost = g.poolOwner().costOf(kind, b);
+            price[r] = g.pricing().listPrice(kind, b, cost);
+            if (price[r] > cost * 10_500 / 10_000) price[r] = cost * 10_500 / 10_000;
             inv += 1e36 / price[r];
         }
         for (uint256 r; r < n; ++r) {
@@ -314,8 +331,8 @@ contract Lens {
             uint64 last = p.lastIssuedSequence();
             uint64 seen = g.seenSeq();
             w.syncable = (last >= seen ? last - seen + 1 : 0) + g.openCount();
-            w.admissionChange = !g.retiring() && g.opened()
-                && (!g.paused() && g.admissible()) != p.localPurchasesEnabled();
+            w.admissionChange =
+                !g.retiring() && g.opened() && (!g.paused() && g.admissible()) != p.localPurchasesEnabled();
         }
         uint256 rows = g.board().rowCount();
         w.unlistedRows = rows - _popcount(g.liveRows() & ((rows >= 256 ? 0 : (uint256(1) << rows)) - 1));

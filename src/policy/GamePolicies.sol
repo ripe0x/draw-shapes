@@ -5,9 +5,10 @@ import {Governed} from "../Governed.sol";
 import {IBoardPolicy, IPricingPolicy} from "../interfaces/IDrawShapes.sol";
 
 /// @title BoardPolicy
-/// @notice The board: a list of rows, each a Shape backing. FwaGame keeps one listing per row and replaces a row
-///         when its prize is won. `listBatch` bounds listings per sync. Every row is kind 0 (Shape): the game mints
-///         nothing else (docs/IMPLEMENTOR_DECISIONS.md D3).
+/// @notice The board: a list of rows, each a prize kind (0 Shape, 1 Shape Pack) and its backing. FwaGame keeps one
+///         listing per row and replaces a row when its prize is won. `listBatch` is the number of empty rows that opens
+///         a replacement window (D49). A Pack row must be at least Shape Packs' minimum (`minPackBacking`, 0.03 ETH
+///         on mainnet); its prize is minted with the fewest Shapes adding up to its backing.
 /// @dev A module; FwaGame enforces its own bounds (`MAX_BOARD`, `MAX_LIST_BATCH`).
 contract BoardPolicy is IBoardPolicy, Governed {
     struct Row {
@@ -17,12 +18,18 @@ contract BoardPolicy is IBoardPolicy, Governed {
 
     Row[] internal _rows;
     uint256 public listBatch;
+    uint256 public immutable minPackBacking;
 
     event BoardSet(uint256 rows, uint256 listBatch);
 
-    constructor(address governance_, uint8[] memory kinds, uint96[] memory backings, uint256 listBatch_)
-        Governed(governance_, false)
-    {
+    constructor(
+        address governance_,
+        uint256 minPackBacking_,
+        uint8[] memory kinds,
+        uint96[] memory backings,
+        uint256 listBatch_
+    ) Governed(governance_, false) {
+        minPackBacking = minPackBacking_;
         _setBoard(kinds, backings, listBatch_);
     }
 
@@ -35,10 +42,7 @@ contract BoardPolicy is IBoardPolicy, Governed {
         return (r.kind, r.backing);
     }
 
-    function setBoard(uint8[] calldata kinds, uint96[] calldata backings, uint256 listBatch_)
-        external
-        onlyGovernance
-    {
+    function setBoard(uint8[] calldata kinds, uint96[] calldata backings, uint256 listBatch_) external onlyGovernance {
         _setBoard(kinds, backings, listBatch_);
     }
 
@@ -48,7 +52,9 @@ contract BoardPolicy is IBoardPolicy, Governed {
         }
         delete _rows;
         for (uint256 i; i < kinds.length; ++i) {
-            if (kinds[i] != 0 || backings[i] == 0) revert OutOfBounds();
+            if (kinds[i] > 1 || backings[i] == 0 || (kinds[i] == 1 && backings[i] < minPackBacking)) {
+                revert OutOfBounds();
+            }
             _rows.push(Row(kinds[i], backings[i]));
         }
         listBatch = listBatch_;

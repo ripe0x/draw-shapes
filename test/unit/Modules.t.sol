@@ -55,24 +55,30 @@ contract ModulesTest is Test {
         uint8[] memory k = new uint8[](201);
         uint96[] memory b = new uint96[](201);
         vm.expectRevert(Governed.OutOfBounds.selector);
-        new BoardPolicy(tl, k, b, 20);
+        new BoardPolicy(tl, 0.03 ether, k, b, 3);
         k = new uint8[](2);
         b = new uint96[](2);
         b[0] = 0.01 ether;
-        b[1] = 0.05 ether;
+        b[1] = 0.02 ether;
         vm.expectRevert(Governed.OutOfBounds.selector);
-        new BoardPolicy(tl, k, b, 21);
+        new BoardPolicy(tl, 0.03 ether, k, b, 21);
         k[1] = 1;
         vm.expectRevert(Governed.OutOfBounds.selector);
-        new BoardPolicy(tl, k, b, 20); // Shapes only: no Pack rows
-        k[1] = 0;
-        BoardPolicy p = new BoardPolicy(tl, k, b, 10);
+        new BoardPolicy(tl, 0.03 ether, k, b, 3); // a Pack below Shape Packs' minimum
+        k[1] = 2;
+        b[1] = 0.05 ether;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        new BoardPolicy(tl, 0.03 ether, k, b, 3); // no third kind
+        k[1] = 1;
+        vm.expectRevert(Governed.OutOfBounds.selector);
+        new BoardPolicy(tl, type(uint256).max, k, b, 3); // no Shape Packs on the chain: no Pack rows
+        BoardPolicy p = new BoardPolicy(tl, 0.03 ether, k, b, 3);
         assertEq(p.rowCount(), 2);
         (uint8 kind, uint96 backing) = p.rowAt(1);
-        assertEq(kind, 0);
+        assertEq(kind, 1);
         assertEq(backing, 0.05 ether);
         vm.expectRevert(Governed.NotGovernance.selector);
-        p.setBoard(k, b, 10);
+        p.setBoard(k, b, 3);
     }
 
     function test_pricingBounds() public {
@@ -134,7 +140,7 @@ contract ModulesTest is Test {
         address pm = makeAddr("poolManager");
         PrizeVault v = new PrizeVault(tl, lp, pm, 30 days);
         GameStub g = new GameStub(v);
-        v.wire(address(g));
+        v.wire(address(g), makeAddr("keeperFund"), 0.1 ether);
         // sources are counted apart: trading fees from the PoolManager, anything else as contributions
         vm.deal(pm, 4 ether);
         vm.prank(pm);
