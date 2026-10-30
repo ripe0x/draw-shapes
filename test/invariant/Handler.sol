@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFWAPool} from "../../src/interfaces/IFWA.sol";
@@ -301,7 +302,12 @@ contract Handler is Test {
             got = o;
             ++calls["sell"];
         } catch {
-            _flag("sell reverted");
+            // Sells are never blocked, but past the start price the single-sided pool holds no ETH to pay: v4 then
+            // leaves the price at its limit and further sells revert until someone buys. Only a revert while ETH was
+            // available (the price below the start) is a violation.
+            if (s.liquidity.sqrtPriceX96() < TickMath.getSqrtPriceAtTick(s.liquidity.startTick())) {
+                _flag("sell reverted");
+            }
         }
         vm.stopPrank();
         _checkActors(b, i, got, 0);

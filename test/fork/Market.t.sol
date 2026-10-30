@@ -98,6 +98,23 @@ contract MarketForkTest is ForkBase {
         assertLe(ethOut, poolEthIn, "sellers take out at most what buyers put in");
     }
 
+    /// @notice Past the start there is nothing to sell into: a sell fills up to the start, the next one reverts (v4
+    ///         leaves the price at its limit), and the next buy trades normally again.
+    function test_sellsPastTheStartFillPartiallyThenStopUntilABuy() public {
+        vm.warp(block.timestamp + 2 hours);
+        uint256 got = _buy(0.1 ether);
+        deal(address(sys.engine), trader, got * 3);
+        vm.startPrank(trader);
+        sys.engine.approve(address(swapper), type(uint256).max);
+        (uint256 sold, uint256 ethOut) = swapper.sell(got * 2, false);
+        assertLe(sold, got + 1, "only what the pool can take is sold");
+        assertGt(ethOut, 0);
+        vm.expectRevert();
+        swapper.sell(got, false);
+        vm.stopPrank();
+        assertGt(_buy(0.1 ether), 0, "a buy works again");
+    }
+
     function test_antiSnipeDecaysAndFeeGoesToTheVault() public {
         uint256 t0 = sys.hook.launchedAt();
         assertEq(sys.swapPolicy.snipeFeeBps(), 5_000);

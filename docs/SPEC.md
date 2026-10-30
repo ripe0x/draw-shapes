@@ -251,7 +251,8 @@ added in (`ledgerFrom`), so ended and finalized epochs never change (D53).
 - `ProtocolLiquidity` (D50): `launch()` timelock once, not payable: initialises the pool at the immutable `startTick`
   (a multiple of 200) and adds every ENGINE it holds as one single-sided position over `[TICK_LOWER, startTick)`. Buys
   move the price into the range; no ENGINE ever trades below the launch valuation, and sellers can only take out ETH
-  that was put in. `addLiquidity(minSqrtPriceX96)` by the vault or the timelock adds over the same range (D53), and
+  that was put in. A sell fills only up to the start; past it there is no liquidity, v4 leaves the price at its limit
+  and further sells revert (they could receive nothing) until someone buys. `addLiquidity(minSqrtPriceX96)` by the vault or the timelock adds over the same range (D53), and
   reverts `NothingAdded` when it would add nothing; ETH it cannot place stays here for a later addition; no remove.
 
 ## 10. Launch sequence
