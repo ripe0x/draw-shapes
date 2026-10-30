@@ -1,0 +1,17 @@
+{
+  "name": "draw-shapes-keeper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backup keeper for Draw Shapes + ENGINE: sync, distribute, buyback, GRAIL forward, retireUnearned.",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "once": "node src/index.mjs --once",
+    "check": "node --check src/index.mjs && node --check src/abi.mjs && node --check src/policy.mjs && node --test test/*.test.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "viem": "2.21.54"
+  }
+}

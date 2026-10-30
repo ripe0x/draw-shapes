@@ -488,3 +488,37 @@ interface IPurchaseOperator {
 ## 17. Buyback variant delta
 
 `FWACloneBuyback.sol` (2084 lines, at `the buyback implementation (not vendored)`) is a structurally parallel but economically different implementation: instead of a purely notional owner-assigned price with no real backing, every listing is paired with actual ETH `backing` supplied at `listNFT(address collection, uint256 tokenId)` — note this variant's `listNFT` is `payable` (line 718) and takes no `price` argument (the ETH sent IS the backing/price). On a successful draw the purchaser does not receive the NFT automatically; instead they choose between `keepNFT(listingId)` (take the NFT) or `acceptBuyback(listingId)` (take the ETH backing) — functions entirely absent from the standard clone. It adds a settlement/finalization window (`ownerResolveNFTToPurchaser`, `ownerResolveBuyback`, `finalizeUnsettled`, `recoverStuckNFT`) for cases where the purchaser never chooses, plus an owner-fundable auto-reload mechanism (`fundAutoReload`, `setAutoReloadNFTs`, `withdrawAutoReloadETH`, `_tryAutoReload`/`_createAutoReloadListing`) that can automatically relist a new NFT+backing pair when a buyback is taken, and a `claimBuybackETHTo` pull-claim path. It also carries a factory wiring marker (comment near line 44) to prevent it from being mistaken for the standard implementation. The core VRF/sequencing/staging/segment-tree/slippage machinery (§6-§9, §13-§14 above) is otherwise identical between the two contracts.
+
+## 17. Found during the ENGINE build (2026-10-26, fork block 26,279,000)
+
+- **FWA is transfer-locked.** `FWAToken._afterTokenTransfer` allows mints, burns, owner ↔ anyone, distributor ↔ anyone,
+  and PoolManager ↔ anyone within the transient allowance the FWA hook (`0x2C67…6444`) grants during a swap; any other
+  wallet-to-wallet transfer reverts. A contract that must pay the 50,000 FWA creation fee receives it by buying on FWA's
+  v4 pool (exact input only; the hook rejects exact-output swaps) with the output taken straight to it.
+  `src/periphery/FwaFeeBuyer.sol` does this; the factory then pulls the fee to the dead address (a distributor).
+- **The VRF fee scales with gas price.** `FWACloneVRFService.requestFee() = serviceGasEstimate × tx.gasprice ×
+  (10,000 + serviceMarginBps) / 10,000 + serviceFlatWei` = 1,500,000 × gas price × 1.3 + 0 on the fork. It reads 0 in an
+  `eth_call` without a gas price; a quote for a real purchase must use the transaction's gas price.
+- `inventoryChangeCooldown` is 0 on the mainnet factory at the fork block (5 minutes is the documented default).
+  `selectionTimeoutBlocks` 30, `maxAcquisitionsPerTx` 5, `callbackGasLimit` 900,000, `edgeBps` 500.
+- The Sepolia factory (`0xdF0b…4358`) is an older stack: `createPool(bytes32,uint256,address)` reverts there; its
+  creation fee is 0 and `maxPoolsPerWallet` is unlimited.
+- `0xf215…` on mainnet is "Shape Packs" with `MIN_PACK_VALUE` 0.03 ETH (3 units), not the two-unit Draw Packs variant.
+
+## 18. Found during the sustainability follow-up (2026-10-27, same fork block)
+
+- **Ordered settlement against the live pool.** A request escrows the fee quoted at its transaction; at its ordered turn
+  FWA re-prices against the live pool (after earlier sequences and the request's reserved staged batch) and refunds the
+  request if the live fee is more than `selectionSlippageBps` (10%) above the escrow, or more than the purchaser's
+  `maxNegativeSlippageBps` below it. Removing cheap listings raises the fee, so earlier wins can refund later requests
+  accepted on the same quote (measured in `test/fork/Accounting.t.sol`).
+- **Owner split base.** `requestBasePrice = min(weightedBackingTotal / totalWeight, fee)` at the request; the owner gets
+  `paid − (paid − base)/2` at delivery. Since `acquisitionFee()` rounds `EV × (1 + edge)` down, `paid / (1 + edge)` is never
+  above the base FWA used.
+- **`setBool(ACQUISITIONS_ENABLED)` does not bump `inventoryVersion`** or start the cooldown; the owner can toggle
+  purchases without invalidating anyone's quote. It reverts only after `retirePool`.
+- **Outstanding VRF requests are capped**: `maxOutstandingRequestsPerPool` 10 and `maxOutstandingRequestsGlobal` 100 on
+  the factory (prepared plus coordinator-outstanding); `setVrfRequestLimits` changes them.
+- **Factory bounds**: `MAX_EDGE_BPS` 1,000; `MAX_INVENTORY_CHANGE_COOLDOWN` 7 days.
+- **A failed delivery can stay pending forever**: only the purchaser may call `refundFailedDelivery` after the 7-day
+  window, and `retryNFTDelivery` works only inside it. The prize is out of the draw meanwhile.

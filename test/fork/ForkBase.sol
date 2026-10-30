@@ -3,200 +3,173 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {IShapes} from "shapes/interfaces/IShapes.sol";
-import {ShapePacks} from "draw-packs/ShapePacks.sol";
-import {ShapePackRenderer} from "draw-packs/ShapePackRenderer.sol";
-import {IFWAClone} from "../../src/interfaces/IFWAClone.sol";
-import {IFWACloneFactory} from "../../src/interfaces/IFWACloneFactory.sol";
-import {IPool} from "../../src/interfaces/IPool.sol";
+import {IFWAPool, IFWAFactory} from "../../src/interfaces/IFWA.sol";
+import {LaunchConfig} from "../../script/LaunchConfig.sol";
 
-/// @dev The VRF consumer callback. The FWA VRF service is the registered Chainlink consumer and
-///      forwards each word to the pool that paid for it.
+/// @dev The VRF consumer callback. The FWA VRF service is the registered Chainlink consumer and forwards each
+///      word to the pool that paid for it.
 interface IVrfConsumer {
     function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external;
 }
 
-/// @dev `VRFConsumerBaseV2Plus.s_vrfCoordinator`, the only caller the FWA VRF service accepts a
-///      callback from.
+/// @dev `VRFConsumerBaseV2Plus.s_vrfCoordinator`, the only caller the FWA VRF service accepts a callback from.
 interface IVrfRouted {
     function s_vrfCoordinator() external view returns (address);
 }
 
-/// @notice Mainnet fork base. Forks Ethereum mainnet at `FORK_BLOCK` and exposes the deployed
-///         Shapes collection and FWA factory, plus the factory-owner prank that opens pool
-///         creation and purchases.
-/// @dev `setUpFork()` reads `MAINNET_RPC_URL` (default: Tenderly public gateway) and `FORK_BLOCK`
-///      from the environment. Addresses match `deployments/dependencies.json`, chain 1.
-abstract contract ForkBase is Test {
-    uint256 internal constant FORK_BLOCK = 26_170_000;
+/// @notice Mainnet fork base. Forks Ethereum mainnet at `FORK_BLOCK` (env `FORK_BLOCK`, default below) from
+///         `MAINNET_RPC_URL` (default: the Tenderly public gateway) and deploys the whole system against the real
+///         Shapes, Shape Packs, FWA factory and VRF service, and the real Uniswap v4 PoolManager, with the launch
+///         configuration. Addresses match `deployments/dependencies.json`, chain 1.
+abstract contract ForkBase is Test, LaunchConfig {
+    uint256 internal constant FORK_BLOCK = 26_279_000;
+    /// @dev The launch price: 1.0001^184,200 ≈ 100M ENGINE per ETH (FDV ≈ 10 ETH), as in script/env/mainnet.env.
+    int24 internal constant START_TICK = 184_200;
+    /// @dev Opening capital in the tests: the 15.15 ETH board plus the 12 ETH reserve target, with room to spare.
+    uint256 internal constant OPENING_CAPITAL = 30 ether;
 
-    address internal constant SHAPES_ADDR = 0x6fE9193276bF7aBCbEE44AB7aFd717d637D6FAf0;
-    address internal constant FACTORY_ADDR = 0xF5A3A153164791AB579C3d9ba5DBECf7cDfd300c;
-    address internal constant VRF_SERVICE_ADDR = 0xA4adFC35dB18326eFB3b5D9bf66A8103Ec2D5EE2;
+    address internal constant SHAPES = 0x6fE9193276bF7aBCbEE44AB7aFd717d637D6FAf0;
+    address internal constant SHAPE_PACKS = 0xf21514B090Da7dF4390803497d6ae673801E5cA7;
+    address internal constant FACTORY = 0xF5A3A153164791AB579C3d9ba5DBECf7cDfd300c;
+    address internal constant FWA_IMPL = 0xEaa4d032908A9734a2c7939c0D211c35ad51eb31;
+    address internal constant VRF_SERVICE = 0xA4adFC35dB18326eFB3b5D9bf66A8103Ec2D5EE2;
+    address internal constant FWA_TOKEN = 0xa0Df17B5aC76ABaBA36E1450E2cbCd18A620C845;
+    address internal constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
 
-    IShapes internal shapes = IShapes(SHAPES_ADDR);
-    IFWACloneFactory internal factory = IFWACloneFactory(FACTORY_ADDR);
-    ShapePacks internal drawPacks;
+    address internal gov = makeAddr("governance");
+    IShapes internal shapes = IShapes(SHAPES);
+    IFWAFactory internal factory = IFWAFactory(FACTORY);
+
+    System internal sys;
+    IFWAPool internal pool;
+    Config internal cfg;
 
     function setUpFork() internal {
         string memory rpc = vm.envOr("MAINNET_RPC_URL", string("https://gateway.tenderly.co/public/mainnet"));
         vm.createSelectFork(rpc, vm.envOr("FORK_BLOCK", FORK_BLOCK));
-        vm.chainId(31337);
     }
 
-    /// @dev Pranks the factory owner to enable pool creation (no beta gate, zero fee), purchases
-    ///      and VRF requests.
-    function openFactory() internal {
-        address factoryOwner = factory.owner();
-        vm.startPrank(factoryOwner);
-        factory.setBetaAccess(false);
-        factory.setMaxPoolsPerWallet(10);
-        factory.setPoolCreationConfig(true, 0);
-        factory.setGlobalPurchasesEnabled(true);
-        factory.setVrfRequestsPaused(false);
-        vm.stopPrank();
-
-        assertFalse(factory.betaAccess(), "betaAccess not disabled");
-        assertEq(factory.maxPoolsPerWallet(), 10, "maxPoolsPerWallet mismatch");
-        assertTrue(factory.poolCreationEnabled(), "poolCreationEnabled false");
-        assertEq(factory.poolCreationFee(), 0, "poolCreationFee not 0");
-        assertTrue(factory.globalPurchasesEnabled(), "globalPurchasesEnabled false");
-        assertFalse(factory.vrfRequestsPaused(), "vrfRequestsPaused still true");
+    /// @dev Forks and deploys the launch system from this test contract, creating the FWA pool with the real
+    ///      FWA fee purchase.
+    function deployLaunch() internal {
+        setUpFork();
+        cfg = _launchConfig(gov, SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, POOL_MANAGER, 0.01 ether, START_TICK);
+        cfg.create2Deployer = address(this);
+        cfg.createPool = true;
+        cfg.fwaFeeEth = fwaFeeQuote(FACTORY, POOL_MANAGER, 500);
+        vm.deal(address(this), cfg.fwaFeeEth + 1 ether);
+        sys = _deploySystem(cfg, address(this));
+        pool = sys.game.pool();
+        postflight(cfg, sys, address(this));
     }
 
-    /// @dev Mints `qty` Shapes of `amountWei` backing to `to`, which must be an EOA or implement
-    ///      `onERC721Received`.
-    function mintShapes(address to, uint256 amountWei, uint256 qty) internal returns (uint256 firstId) {
-        uint256 cost = qty * (amountWei + shapes.mintFee());
-        vm.deal(to, to.balance + cost);
-        vm.prank(to);
-        firstId = shapes.mintBatchTo{value: cost}(amountWei, qty, to);
-    }
+    // ------------------------------------------------------------------ launch sequence helpers
 
-    /// @dev Deploys the Draw Packs fork against the deployed Shapes with a two unit minimum pack and
-    ///      stores it in `drawPacks`. The constructors need no further wiring.
-    function deployDrawPacks(address admin) internal {
-        ShapePackRenderer renderer = new ShapePackRenderer(SHAPES_ADDR);
-        drawPacks = new ShapePacks(SHAPES_ADDR, address(renderer), admin, "Draw Packs", "DRAW", 2);
-    }
-
-    // ------------------------------------------------------------------ acquisitions
-
-    function quote(IFWAClone pool) internal view returns (uint256 fee, uint256 vrf, uint256 total) {
-        return pool.quoteAcquisitionPrice();
-    }
-
-    /// @dev Sends exactly `fee + vrf` with `maxAcquisitionFee = fee`, `minWeightedValue = 0`,
-    ///      `maxNegativeSlippageBps = 10_000` and the live inventory version.
-    function acquireAs(address caller, address purchaser, IFWAClone pool, uint256 deadline)
-        internal
-        returns (uint256 requestId)
-    {
-        (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice();
-        uint256 version = pool.inventoryVersion();
-        vm.deal(caller, caller.balance + total);
-        vm.prank(caller);
-        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, version, deadline);
-    }
-
-    /// @dev `maxNegativeSlippageBps` and `expectedInventoryVersion` that `pullWithShapes` passes to the
-    ///      FWA pool: its own `selectionSlippageBps` and the live `inventoryVersion`. Read before a
-    ///      `vm.prank` or `vm.expectRevert`, which apply to the next call.
-    function poolArgs(IFWAClone fwa) internal view returns (uint256 slippageBps, uint256 version) {
-        return (fwa.selectionSlippageBps(), fwa.inventoryVersion());
-    }
-
-    /// @dev `acquireBatch` of `count` through `pool_` as `who`, paying exactly the quoted total with
-    ///      `maxAcquisitionFee` equal to the quoted fee and the pool-chosen arguments of `poolArgs`.
-    ///      Returns the request ids.
-    function acquirePooled(address pool_, IFWAClone fwa, address who, uint256 count)
-        internal
-        returns (uint256[] memory ids)
-    {
-        (uint256 fee,, uint256 total) = fwa.quoteAcquisitionPrice(count);
-        (uint256 slip, uint256 version) = poolArgs(fwa);
-        vm.deal(who, who.balance + total);
-        uint64 last = fwa.lastIssuedSequence();
-        vm.prank(who);
-        IPool(pool_).acquireBatch{value: total}(who, count, fee, 0, slip, version, vm.getBlockTimestamp() + 1 hours);
-        ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = fwa.requestIdAtSequence(last + 1 + uint64(i));
+    /// @dev Governance funds the vault with `eth`, the vault funds the game, and `sync` fills the board.
+    function fundAndFill(uint256 eth) internal {
+        vm.deal(address(sys.vault), address(sys.vault).balance + eth);
+        sys.vault.fund();
+        for (uint256 i; i < 20 && sys.game.liveCount() < sys.board.rowCount(); ++i) {
+            sys.game.sync(50);
         }
     }
 
-    /// @dev Delivers `word` the way a live fulfillment arrives: the coordinator calls the FWA VRF
-    ///      service, which forwards the word to the pool. `processAcquisitions` is then cranked
-    ///      until `requestId` reaches a terminal status.
-    function fulfill(IFWAClone pool, uint256 requestId, uint256 word) internal {
+    /// @dev Opens the ENGINE market: the 80% float as one single-sided position below `START_TICK`, no ETH.
+    function openMarket() internal {
+        vm.prank(address(sys.timelock));
+        sys.liquidity.launch();
+    }
+
+    /// @dev Opens the game, first letting the 48-hour public market run if it has not yet.
+    function openGame() internal {
+        uint256 ready = uint256(sys.hook.launchedAt()) + cfg.marketLead;
+        if (block.timestamp < ready) vm.warp(ready);
+        vm.prank(address(sys.timelock));
+        sys.game.openGame();
+    }
+
+    /// @dev Spends the open maintenance window with one settled pull and a sync, so the next replacement waits for a
+    ///      full maintenance interval.
+    function consumeWindow() internal {
+        pullAndSettle(makeAddr("windowPlayer"), 424242);
+        sys.game.sync(10);
+    }
+
+    /// @dev Lets the next sync change inventory (past the maintenance interval).
+    function window() internal {
+        vm.warp(block.timestamp + sys.game.maintenanceInterval());
+    }
+
+    /// @dev Pulls `n` times as `who`, each settled with a word chosen by `seed`, syncing as it goes.
+    function playMany(address who, uint256 n, uint256 seed) internal {
+        for (uint256 i; i < n; ++i) {
+            pullAndSettle(who, uint256(keccak256(abi.encode(seed, i))));
+            if (i % 10 == 9) {
+                window();
+                syncAll();
+            }
+        }
+        window();
+        syncAll();
+    }
+
+    // ------------------------------------------------------------------ pulls
+
+    /// @dev One acquisition through the real FWA pool with `purchaser` paying the quoted total.
+    function pull(address purchaser) internal returns (uint256 requestId) {
+        (uint256 fee,, uint256 total) = pool.quoteAcquisitionPrice(1);
+        uint256 version = pool.inventoryVersion();
+        vm.deal(purchaser, purchaser.balance + total);
+        vm.prank(purchaser);
+        requestId = pool.acquire{value: total}(purchaser, fee, 0, 10_000, version, block.timestamp + 1 hours);
+    }
+
+    /// @dev Delivers `word` the way a live fulfillment arrives: the coordinator calls the FWA VRF service, which
+    ///      forwards it to the pool.
+    function deliverWord(uint256 requestId, uint256 word) internal {
         uint256[] memory words = new uint256[](1);
         words[0] = word;
-        address service = pool.vrfService();
-        vm.prank(IVrfRouted(service).s_vrfCoordinator());
-        IVrfConsumer(service).rawFulfillRandomWords(requestId, words);
+        vm.prank(IVrfRouted(VRF_SERVICE).s_vrfCoordinator());
+        IVrfConsumer(VRF_SERVICE).rawFulfillRandomWords(requestId, words);
+    }
 
-        for (uint256 i; i < 100; ++i) {
-            (,,,, IFWAClone.AcquisitionStatus status) = pool.acquisitions(requestId);
-            if (_isTerminal(status)) return;
-            vm.roll(block.number + 1);
-            pool.processAcquisitions(50);
+    /// @dev Pull, wait the confirmations, deliver a word, and let FWA settle.
+    function pullAndSettle(address purchaser, uint256 word) internal returns (uint256 requestId) {
+        requestId = pull(purchaser);
+        vm.roll(block.number + 3);
+        deliverWord(requestId, word);
+        pool.processAcquisitions(10);
+    }
+
+    /// @dev A word that makes the head request capture a live listing whose backing is `wantBacking`. FWA picks
+    ///      `word % totalWeight` along the slot order of its segment tree, so the prefix weight of the wanted
+    ///      slot selects it. Valid for the next request to settle, with no staged activation pending.
+    function wordFor(uint256, uint256 wantBacking) internal view returns (uint256 prefix) {
+        for (uint256 slot = 1; slot < 1000; ++slot) {
+            uint256 id = pool.slotToListing(slot);
+            if (id == 0) continue;
+            (,,,, uint256 weight,,, IFWAPool.ListingStatus st) = pool.listings(id);
+            if (st != IFWAPool.ListingStatus.Active) continue;
+            (, uint72 backing,,,,,,) = sys.game.items(id);
+            if (backing == wantBacking || wantBacking == 0) return prefix;
+            prefix += weight;
         }
-        revert("fulfill: request did not settle");
+        revert("wordFor: none");
     }
 
-    function _isTerminal(IFWAClone.AcquisitionStatus status) internal pure returns (bool) {
-        return status == IFWAClone.AcquisitionStatus.Fulfilled || status == IFWAClone.AcquisitionStatus.Refunded
-            || status == IFWAClone.AcquisitionStatus.Expired || status == IFWAClone.AcquisitionStatus.DeliveryPending
-            || status == IFWAClone.AcquisitionStatus.DeliveryRefunded;
-    }
-
-    /// @dev Rolls past the request's word deadline with no callback delivered, then cranks it to Expired.
-    function expire(IFWAClone pool, uint256 requestId) internal {
-        vm.roll(block.number + pool.selectionTimeoutBlocks() + 2);
-        pool.processAcquisitions(50);
-        (,,,, IFWAClone.AcquisitionStatus status) = pool.acquisitions(requestId);
-        assertEq(uint8(status), uint8(IFWAClone.AcquisitionStatus.Expired), "request did not expire");
-    }
-
-    function settleAll(IFWAClone pool) internal {
-        uint256 iterations;
-        while (pool.unsettledAcquisitionCount() != 0 && iterations < 200) {
-            pool.processAcquisitions(50);
-            vm.roll(block.number + 1);
-            ++iterations;
-        }
-    }
-
-    /// @dev Advances `block.timestamp` past the pool's inventory-change cooldown.
-    function warpPastCooldown(IFWAClone pool) internal {
-        vm.warp(pool.purchasesResumeAt() + 1);
-    }
-
-    // ------------------------------------------------------------------ selection targeting
-
-    /// @dev Sum of weights of every Active listing whose slot is below `targetSlot`.
-    function _cumulativeWeightBeforeSlot(IFWAClone pool, uint256 targetSlot) internal view returns (uint256 cum) {
-        uint256 n = pool.nextListingId();
-        for (uint256 id = 1; id < n; ++id) {
-            (,,,, uint256 weight,, uint256 slot, IFWAClone.ListingStatus status) = pool.listings(id);
-            if (status == IFWAClone.ListingStatus.Active && slot != 0 && slot < targetSlot) cum += weight;
+    /// @dev Sync until there is nothing left to do.
+    function syncAll() internal {
+        for (uint256 i; i < 30; ++i) {
+            try sys.game.sync(100) {}
+                catch {
+                return;
+            }
         }
     }
 
-    /// @dev Lowest random word that selects `listingId`.
-    function wordFor(IFWAClone pool, uint256 listingId) internal view returns (uint256 word) {
-        (,,,, uint256 weight,, uint256 slot, IFWAClone.ListingStatus status) = pool.listings(listingId);
-        require(status == IFWAClone.ListingStatus.Active, "wordFor: listing not active");
-        require(weight != 0, "wordFor: zero weight");
-        word = _cumulativeWeightBeforeSlot(pool, slot);
+    function statusOf(uint256 requestId) internal view returns (IFWAPool.AcquisitionStatus st) {
+        (,,,, st) = pool.acquisitions(requestId);
     }
 
-    /// @dev A word that selects some other active listing instead of `avoidListingId`.
-    function wordAvoiding(IFWAClone pool, uint256 avoidListingId) internal view returns (uint256 word) {
-        (,,,, uint256 weight,, uint256 slot,) = pool.listings(avoidListingId);
-        uint256 total = pool.totalWeight();
-        uint256 cum = _cumulativeWeightBeforeSlot(pool, slot);
-        if (cum != 0) return 0;
-        require(cum + weight < total, "wordAvoiding: no other active listing");
-        word = cum + weight;
-    }
+    receive() external payable {}
 }

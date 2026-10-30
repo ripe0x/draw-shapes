@@ -6,13 +6,15 @@ on:
     branches: [main]
 
 env:
-  FORK_BLOCK: "26170000"
-  MAINNET_RPC_URL: https://gateway.tenderly.co/public/mainnet
+  FORK_BLOCK: "26279000"
+  # Fork suites need an archive endpoint for the pinned block. Set the MAINNET_RPC_URL repository secret to a
+  # private archive RPC; the public Tenderly gateway is the fallback and is rate limited.
+  MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL || 'https://gateway.tenderly.co/public/mainnet' }}
 
 jobs:
   forge:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,35 +22,58 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      # The fork tests read mainnet state at the pinned block. The RPC cache keyed on the block makes every run after
-      # the first serve from disk.
+      # The RPC cache keyed on the pinned block makes every run after the first serve from disk.
       - uses: actions/cache@v4
         with:
           path: ~/.foundry/cache/rpc
           key: foundry-rpc-${{ env.FORK_BLOCK }}
-      # Test-only contracts (PoolHarness) exceed EIP-170 by design; size-check the deployed set only.
-      - run: forge build --sizes --skip test
+      # Hard fail if any deployed contract exceeds EIP-170 (24,576 bytes); test helpers are excluded.
+      - run: forge build --sizes --skip test --skip script
       - run: forge test --match-path "test/unit/*.t.sol"
-      - run: forge test --match-path "test/fork/*.t.sol"
-      - run: forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
-      - run: forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
+      - run: forge test --match-path "test/fork/*.t.sol" --no-match-path test/fork/Gas.t.sol --threads 2
+      # The custody invariant stays in CI forever (BUILD_PROMPT rule 7).
+      - run: forge test --match-path test/invariant/Custody.t.sol --threads 1
+      - run: forge test --match-path test/scenario/GenesisRehearsal.t.sol --threads 1
+      - run: forge test --match-path test/fork/Gas.t.sol --isolate
 
-  web:
+  keeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: keeper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run check
+
+  site:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: web
+        working-directory: site
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm build
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 sim/sustainability.py > /dev/null
+      - run: python3 sim/launch.py > /dev/null
+      - run: python3 sim/throughput.py > /dev/null
+      - run: python3 sim/boards.py > /dev/null

@@ -429,3 +429,80 @@ No entry is open. A "Superseded by" line under an entry names the entry or SPEC 
    is not repaid to NAV: the mint line in each list price funds only the replacement of a drawn card. Rejected:
    a temporary surcharge on the mint line that players repay, and a shallower board. The deposit page states the
    cost. Place: none in code; docs and web copy.
+
+## 2026-10-26: the ENGINE build (BUILD_PROMPT section 3)
+
+The depositor-pool design above is superseded in full by the ENGINE design. Entries 1 to 43 stay as history.
+These are the decisions the build brief made, with the date and the owner's reasons as the brief gives them.
+Where the amendment of 2026-10-26 (commit ecdc9eb) refined a decision, the refinement is noted. Implementation
+choices the brief left open are in `docs/IMPLEMENTOR_DECISIONS.md`.
+
+44. **Chain and venue** (decided 2026-10-26). Ethereum mainnet, FWA V2 custom pool, created and permanently owned by
+    our contract (FWA ownership cannot be transferred). Reason: FWA provides the engine (listings, Chainlink VRF,
+    settlement, delivery, its own site); we provide the house and the token.
+45. **Prizes** (decided 2026-10-26). Shapes and Draw Packs. Draw Packs only if `0xf215…` is the two-unit variant;
+    it is not (three-unit minimum), so the build is Shapes-only until the owner decides (IMPLEMENTOR D3).
+46. **Pool model** (decided 2026-10-26). Protocol-owned house, no depositors; all vault assets go to the active game.
+    Reason: simplicity; the previous depositor design was over-engineered.
+47. **Pricing** (decided 2026-10-26). Listing price = backing + mint fees + markup (launch 3 %, cap 5 %) earmarked for
+    keeper gas; FWA charges EV × 1.05 and pays EV × 1.025; no settlement fee of ours; `purchaseOperator` unset so FWA's
+    site can sell our pulls.
+48. **Token** (decided 2026-10-26). ENGINE, 18 decimals, 1B minted once; our own contracts (not artcoins) with
+    `contractURI`/`tokenURI` and a pluggable renderer; no bonus weights.
+49. **Supply split** (decided 2026-10-26). 10 % launch liquidity, 10 % genesis farm, 1 % conversion bonus pool, 79 %
+    seasons reserve (only schedulable as a season or burnable). Amendment: seasons start ≥ 7 days after scheduling,
+    release ≤ the genesis average per epoch, never overlap; final epochs' claims never change. Unused genesis and
+    bonus burned at genesis end.
+50. **Market** (decided 2026-10-26). One v4 ETH/ENGINE pool on our hook, LP fee 0, full-range protocol-owned position,
+    no remove; hook fee 3 % of the ETH side to the treasury (cap 5 %); opens 48 h before the game.
+51. **Gate** (decided 2026-10-26). From game open to genesis end public buys revert; sells always work; buys only via
+    prize conversion and buybacks. Amendment: the gate starts at `openBlock` (the 48 h pre-market is open both ways);
+    `EngineBuyer` is the buy path; ENGINE remains an ordinary ERC-20 (OTC and other venues are possible; disclosed).
+52. **Genesis** (decided 2026-10-26). 21 daily epochs of 7,200 blocks from the game-open block; emission tapers 1.5× →
+    0.5×; pots split pro rata by delivered pulls; an epoch is claimable once every pull accepted in it is terminal;
+    claims never expire; shorten one way, ≥ 7 epochs, 2 epochs' notice, cut epochs burned. Reason: the $FWA genesis
+    lessons (smaller farm, taper, buybacks from day one, conversion as the in-window buy path, sells never closed).
+53. **Prize conversion** (decided 2026-10-26). A delivered Shape converts into ENGINE (burn, fee-exempt buy, 2 % bonus
+    from the bonus pool), during and after genesis. Amendment: eligibility follows the token; the bonus never exceeds
+    the sell fee.
+54. **Buybacks** (decided 2026-10-26). From day one; the treasury splits revenue by a governance table. Launch Burn 45 %
+    / Reward 45 % / GRAIL 10 %; amendment: one Buyback sink (90 %) buying once per slice and splitting by
+    `burnShareBps` 50 %, GRAIL 10 % (economically the same split).
+55. **Keeper gas** (decided 2026-10-26). Paid from the markup, pull-based, never from trading fees; our keeper is a
+    backup; bots are welcome. Amendment: tips per unit of progress; KeeperFund seeded at deploy with a maintenance
+    floor only retirement may spend.
+56. **GRAILs** (decided 2026-10-26). 0.5 → 1 → 5 ETH Shapes listed below backing with a probability cap and decay,
+    funded by the GrailFund sink; policy in a module, bounds in the contract. Amendment: not part of the launch
+    proposition; decay applied at maintenance windows; the owner may seed the first one.
+57. **Visuals** (decided 2026-10-26). The mainnet Shapes renderer as-is for NFTs; ENGINE gets a simple on-chain SVG
+    renderer the owner may replace.
+58. **Governance** (decided 2026-10-26). OpenZeppelin TimelockController, `minDelay = 0` at launch (the owner raises it
+    later), proposer and executor the owner's governance address; every setter timelock-only. Amendment: custody is
+    stated as a trust model (no withdraw; governance picks destinations; the delay is the notice).
+59. **Site and terms** (decided 2026-10-26). Next.js site with a Terms page and clickwrap on first connect; no country
+    blocking; operator name and contact from env.
+60. **Later, not now** (decided 2026-10-26). Pulls paid in ENGINE through our site; a second season from the reserve;
+    a "buy and stake FWA" sink; the collection-coin machine. Nothing designed beyond the module seams.
+
+61. **Sustainability follow-up** (owner's instruction on PR #9, 2026-10-27). Supersedes, where they conflict: 49
+    (split: a fresh deployment uses 80 % liquidity / 19 % genesis / 1 % bonus, no seasons reserve), 52 (genesis: weight by
+    eligible ticket ETH, 14 steady epochs then a 7-step taper on both an allocation cap and a rate cap, fixed end, no
+    shorten), 54 (buybacks: 100 % of realised, distributable game profit buys and burns ENGINE; no recurring player
+    reward; trading fees are game capital), 55 (keeper gas: a 3 % operating allocation of expected replacement cost), 56
+    (GRAILs: only as pre-funded, bounded promotions, no per-pull decay). The ordinary board is the 100-item form of
+    6 × 0.01 / 9 × 0.05 / 5 × 0.5 at 5 % markup. Implementation choices: IMPLEMENTOR_DECISIONS D31–D43.
+
+62. **Collection-games review** (owner's instruction on PR #9, 2026-10-29). Adopted: a zero-ETH single-sided launch
+    (supersedes `LAUNCH_ETH`); Shape Packs (mainnet `0xf21514B090Da7dF4390803497d6ae673801E5cA7`) as a prize kind; a
+    purchase gate on live FWA state (10 in flight, a full batch of 5 assumed); step-by-step recovery in `sync`; booking
+    at the highest edge ever accepted with a true-up and per-listing markup and allocation; keeper pay as gas plus an
+    hourly flat fee, seed 0.05 ETH, vault top-ups from trading fees capped at 1 ETH for good; restock only with nothing
+    in flight unless the board is short, trigger 3 rows, 5-minute interval, six cooldowns; exposure capped at inventory
+    cost. Plan answers: split FwaGame in two (yes); quantify farm selling into the single-sided pool and recommend, but
+    do not change the split (yes); keep the 30 / 45 / 25 Shapes board and present Pack boards (yes); propose the opening
+    valuation from the launch model (ok). Implementation choices: IMPLEMENTOR_DECISIONS D44–D52.
+
+Open for the owner (see the final report): `START_TICK` (recommended 184,200, ≈ 10 ETH FDV; 5 ETH FDV is the
+alternative that favours opening buyers), what to do about farm selling during genesis (D52: keep, a smaller farm, a
+time-weighted rate cap, or a lower start), whether to adopt Pack board A or B, opening capital (recommended about
+28 ETH: the 15.15 ETH board and a 12 ETH reserve), the 80 / 19 / 1 split (D40), and when to raise the timelock delay.

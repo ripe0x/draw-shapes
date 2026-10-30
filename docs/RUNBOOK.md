@@ -1,113 +1,120 @@
 # Runbook
 
-Operator steps for a local run and for a live launch. Deploy mechanics are in `docs/DEPLOY.md`.
-Parameters and lifecycle are in `docs/SPEC.md` (sections 5, 6, 10, 12, 13).
+Operating Draw Shapes + ENGINE after deployment. Governance actions go through the TimelockController
+(`schedule` then `execute`; delay 0 at launch). `script/rehearse-anvil.sh` shows each launch action as a timelock
+call on a local fork.
 
-## Local run
+## Launch sequence
 
-```
-script/local.sh start    # fork, deploy, FWA pool, fund wallets, deposit, warp, open() until Live
-ONCE=1 script/local.sh keeper   # one keeper pass; drop ONCE=1 to loop every INTERVAL seconds (default 15)
-script/local.sh stop
-```
+| step | who | action |
+|---|---|---|
+| 0 | owner | `script/deploy.sh mainnet` with `START_TICK` set to the chosen start price (docs/DEPLOY.md; recommended 184,200 ≈ 10 ETH FDV). Record `deployments/1.json`. |
+| 1 | governance | `ProtocolLiquidity.launch()`, with no ETH: the whole 80% float becomes one single-sided position below the start price, which is the lowest valuation ENGINE can ever trade at. The public market opens; the first 60 minutes carry the anti-snipe fee; buys and sells are open (sells only return ETH buyers have paid in). Trading fees go to the PrizeVault. |
+| 2 | — | 48 hours of public market (`openGame` refuses earlier). |
+| 3 | anyone | Send the opening capital (about 28 ETH) to PrizeVault; call `PrizeVault.fund()`; call `FwaGame.sync(50)` until `liveCount()` is 100 (five calls; each lists 20). Each sync also tops KeeperFund up from trading fees (within 1 ETH over the vault's life). |
+| 4 | governance | `FwaGame.openGame()` (needs the full board and 12 ETH cash). FWA purchases open, genesis starts (`openBlock`), public buys on the protocol pool close; sells, conversions and profit-funded buybacks continue. |
+| 5 | keepers | `FwaGame.sync` as requests and empty rows accumulate, `Buyback.process` (hourly, when there is profit), `PrizeVault.fund` when trading fees have arrived, `GenesisFarm.finalize` as epochs become final. Players claim each epoch once final; claims never expire. |
+| 6 | — | 21 epochs of 7,200 blocks (~21 days). |
+| 7 | nobody needed | At `genesisEndBlock` public buys reopen by themselves at the ordinary fee. Afterwards, anyone may call `GenesisFarm.retireBonus()` to burn the unused conversion bonus. There are no rewards after genesis. |
 
-Set `LOCAL_EXTRA_WALLETS="0xYourWallet"` before `start` so your own wallet is funded on the fork; a real address
-carries only its mainnet balance otherwise, and the wallet refuses a pull it cannot pay for.
+## Keeper operations
 
-`start` forks mainnet on port 8545 (`FORK_RPC` overrides the upstream), deploys through
-`script/deploy.sh anvil`, sets the FWA `inventoryChangeCooldown` to 0, deposits `LOCAL_OPENING_ETH`
-(default 50) from the admin, warps past `openingDeadlineAt` and calls `open()` until the pool is
-Live. It prints the pool, lens and FWA pool addresses, `Lens.quote(1)`, `nav()`, `settleDue()` and
-`rotateDue()`. The record is `deployments/31337-8545.json`. Anvil accounts 1, 2 and 3 are the
-keeper and two test wallets, each funded with `LOCAL_WALLET_ETH` (default 1000).
+- Jobs and tips: docs/SPEC.md section 11. Bots are welcome; the hosted keeper (`keeper/`) is a backup that acts when
+  work has waited 6 hours, when the basefee is below 1 gwei, or at once when the purchase gate is refusing purchases
+  with rows waiting (`Lens.work(...).gateOpen` false). Keepers are paid the gas they used at the gas price they paid
+  (up to 5 gwei, at most 0.05 ETH a call) plus a 0.0003 ETH flat fee at most once an hour per job; calls without work
+  revert and pay nothing.
+- Safety does not depend on keepers: the purchase gate reads FWA directly and stops purchases while a batch of 5
+  could take the board below its floor, whether or not anyone syncs. Keepers decide only how long the game stays
+  paused for a restock.
+- Cadence that the operating allocation pays for: one `sync` per about 10 pulls (docs/ECONOMICS.md section 4).
+  Replacements list once 3 rows wait or 5 minutes after the last change, and only when no request is in flight
+  unless the board is near the gate's line.
+- Keeper fund: `KeeperFund.available(false)` is what tips can use; below the 0.05 ETH floor only retirement steps are
+  paid. It is refilled by the game's operating allocation and topped up from trading fees by every sync (floor + 0.1
+  ETH, at most 1 ETH over the vault's life); above 0.5 ETH the excess returns, first to the vault (its top-ups), then
+  to the game. Send ETH to KeeperFund if gas spikes for long.
+- Watch: `Lens.work(addrs)` (requests waiting, unlisted rows, admission change, gate state, buyback readiness and
+  price check, finalizable epochs), `Lens.accounts(game)` (profit, distributed, protected cash, replacements owed),
+  `Lens.game(addrs).acquisitionsEnabled`, `admissible` and `gateOpen`; `StepFailed` events from FwaGame (a module or
+  external call reverting inside `sync`).
+- A delivery that fails (`DeliveryPending`) does not stop anything: its row is replaced at the next restock; the purchaser
+  can `retryNFTDelivery` or, after 7 days, `refundFailedDelivery`, after which the game recovers and burns the prize. If
+  nobody acts, the epoch becomes final after the grace period without weight for that pull.
 
-### Local VRF
+## Conditions that pause distributions or new purchases
 
-Nothing fulfils VRF on anvil, so a pull stays Pending. `script/local.sh fulfill` impersonates the
-FWA VRF service's `s_vrfCoordinator`, sends `rawFulfillRandomWords` to the service with a random
-word for each Pending acquisition from `nextSequenceToProcess()` to `lastIssuedSequence()`, then
-calls `processAcquisitions(20)` and logs the request id and resulting status. `LOCAL_VRF=1
-script/local.sh keeper` runs the same step at the start of every pass, before `settle`. Use it on
-anvil only.
+| condition | effect | what to do |
+|---|---|---|
+| profit since launch minus distributed ≤ 0 (losses carried) | no distribution | nothing: ordinary play earns it back |
+| cash ≤ replacements owed + operating allocation owed + reserve target + unsettled requests × largest prize | no distribution | nothing |
+| fewer than 80% of rows + 5 + the unsettled requests listed | the purchase gate refuses purchases (here and on FWA's site); settlement continues | nothing if cash covers the replacements (the next `sync` restocks); otherwise add capital (send ETH to the vault, `fund`) or wait for proceeds |
+| board below 80% listed (cash cannot refill it) | admission closes FWA's purchase switch too | as above |
+| 10 unsettled FWA requests | the gate refuses until they settle | nothing |
+| FWA edge above 5% or inventory cooldown above 5 minutes | new purchases close (gate and admission) | decide whether to accept FWA's new setting (`setCapital` raises `maxEdgeBps` / `maxCooldown`; proceeds are then booked at the higher edge for good, and trued up to what FWA pays) |
+| `StepFailed("maintenance")` or `("admission")` | that step skipped; booking, payment and tips continue | replace the failing module (`setModule`) |
+| governance `setPaused(true)` | new purchases close | `setPaused(false)` |
+| retirement started | purchases end, no distribution | `retireStep` until retired |
 
-Warping 1000 seconds (`evm_increaseTime`, `evm_mine`) makes `rotateDue()` nonzero and shows the
-keeper rotate path.
+## Promotions
 
-## What to watch
+1. Governance: `PrizeVault.fundPromotion(amount)` (from vault capital) or anyone sends to `FwaGame.fundPromotion()`.
+2. Governance: `FwaGame.startPromotion(backing, priceBps, endBlock)`. The prize's full cost is reserved; it is listed
+   once and never repriced; at most 30 days; price ≥ 50% of backing and win probability ≤ 10% when it starts (the live
+   chance can rise above 10% as ordinary prizes are won, until replacements list).
+3. It ends at a win or at `endBlock` (the next maintenance withdraws and burns an unwon prize). Report:
+   `Lens.accounts` (`promoFunded`, `promoSpent`, `promoProceeds`, `promoTurnover`).
+4. Governance: `FwaGame.releasePromotion(amount)` returns what is left to the vault as capital.
 
-Lens (read-only, one call each):
+## What governance can change, and within what bounds
 
-- `quote(count)`: fee, vrf, total and whether pulls are open.
-- `nav()`, `sharePrice()`, `position(account)`.
-- `board()`: per row backing, list price, count, listed count, target.
-- `grail()`: GRAIL fund, cycle, parameters and every GRAIL item.
-- `claims()`: unpaid withdrawal queue, `cash`, claims bucket.
-- `reopenStatus()`: each guard `acquireBatch` applies, with its numbers.
-- `settleDue()` and `rotateDue()`: reason codes the keeper acts on (0 means none).
-- Pool `maintenance()`: keeper refund bucket. Refunds stop at zero.
+| contract | setter | bound |
+|---|---|---|
+| FwaGame | `setModule(board/pricing/buyer)` | module must have code |
+| FwaGame | `setCapital(Capital)` | reserve ∈ [2 × max board backing, 1,000 ETH]; interval ≤ 1 day; fill 50 … 100% (a board needs at least the floor + 5 rows for the gate to admit anything); in flight 1 … 20; edge ≤ 1,000 bps (the highest ever set becomes the booking edge); cooldown ≤ 1 day |
+| FwaGame | `setPaused`, `startPromotion`, `releasePromotion` | promotion: one at a time, pre-funded in full, ≤ 30 days, price ≥ 50% of backing, probability ≤ 10% |
+| BoardPolicy | `setBoard(kinds, backings, listBatch)` | ≤ 200 rows of Shapes (kind 0) or Shape Packs (kind 1, backing ≥ Shape Packs' 0.03 ETH minimum); `listBatch` (the restock trigger) 1 … 20; rows change as they are next vacated |
+| PricingPolicy | `set(markupBps, conversionBonusBps, opsBps)` | markup and bonus ≤ 500; ops ≤ markup (FwaGame clamps markup and ops to 500; Converter caps bonus at the sell fee) |
+| SwapPolicy | `setFee`, `setSnipe` | fee ≤ 500; snipe ≤ 9,000 bps over ≤ 3 h; exemptions fixed at wiring; the hook caps at 500 (9,500 in the first 3 h) and never blocks sells |
+| EngineHook | `setPolicy` | — |
+| Buyback | `setParams(slice, spacing, impact, deviation)`, `setBuyer`, `setSource` | slice ≤ 10 ETH; spacing ≤ 1 day; impact and deviation 1 … 2,000 |
+| KeeperFund | `setParams`, `setPayer`, `setOverflow` | see SPEC section 8 |
+| GenesisFarm | `addLedger`, `setBonusPayer`, `setKeeperFund` | the schedule, caps and end block are fixed |
+| EngineBuyer | `setCaller` | — |
+| ProtocolLiquidity | `setAdder`, `setMaxImpact`, `addLiquidity` | impact 1 … 2,000 |
+| PrizeVault | `setActiveGame`, `retireGame`, `setShutdownDelay`, `fundPromotion`, `setKeeperTopUpTarget` | a new game only after the last repaid in full; delay 1 … 365 days; top-up target ≤ 0.5 ETH, lifetime top-ups ≤ 1 ETH (fixed) |
+| EngineToken | `setRenderer` | must have code |
 
-Reserve. `cash` holds `reserveBps` of NAV (launch 1,000, 10 percent) so withdrawals pay at once, replacement mints
-run at settle before the capture's proceeds are harvested, and deposited Shapes can be held. Every point of reserve
-is capital off the board. Once the keeper cadence and the withdrawal pattern are seen, lower it with
-`setReserve(bps)`; the previous design ran at zero.
+Governance can direct all game capital through `setActiveGame` and the buyback's profit sources; the timelock delay is
+the notice. Raise the delay (`TimelockController.updateDelay`, itself a timelock call) before outside money is material.
 
-Keeper log, one line per transaction:
+## Retire a game
 
-```
-<time> settle(20) reason=1 status=0x1 gas=412345 refundWei=2100000000000000 https://evm.now/tx/<hash>?chainId=1
-```
+1. Governance: `PrizeVault.retireGame()`. FwaGame retires its FWA pool (no new purchases; settlement continues).
+2. Anyone: `FwaGame.retireStep(50)` repeatedly. It waits for FWA to settle everything outstanding (pending words
+   expire after 30 blocks), then withdraws 20 prizes per call (Shapes burned, Packs redeemed), then repays everything to the vault and
+   clears the vault's active game. Works while the FWA factory is withdraw-only.
 
-`refundWei` is read from the `Settled` or `Rotated` event. A `rotate` that leaves inventory
-unchanged keeps `rotateDue()` nonzero, so the keeper waits one `rotateInterval` before the next
-attempt. A `skipped: simulation reverts` line means the call would revert and no gas was spent.
+## A new game
 
-## Live launch
+Deploy a new PoolOwner and FwaGame (same constructor `Config`, pointing at the new PoolOwner), `PoolOwner.wire(newGame)`,
+buy its FWA fee with `FwaFeeBuyer.buyTo(newPoolOwner, fee)` and call `PoolOwner.createPool()` (the salt is fixed in
+its constructor). The new game's farm ledger counts from the epoch `addLedger` is called in. Governance: `GenesisFarm.addLedger(newGame)`, `KeeperFund.setPayer(newGame, true)`,
+`KeeperFund.setOverflow(newGame)`, `Buyback.setSource(newGame, true)`, `PrizeVault.setActiveGame(newGame)`, and deploy
+a Converter for it (`GenesisFarm.setBonusPayer`, `EngineBuyer.setCaller`). Anyone: `PrizeVault.fund()`, `sync` to fill the board.
+Governance: `openGame()` (the farm clock does not restart). Rehearsed in `test/scenario/GenesisRehearsal.t.sol`.
 
-Replace `$POOL`, `$RPC`, `$FEE` and amounts. The signer flags are the same for every line:
+## Shutdown
 
-```
-SIGN="--account $KEYSTORE_ACCOUNT --password-file $KEYSTORE_PASSWORD_FILE"
-```
+With no game active and the last game repaid, after `shutdownDelay` (30 days), anyone may call
+`PrizeVault.shutdown()`: the vault's ETH goes into the protocol-owned ENGINE liquidity, with the half-swap capped at
+5 % price impact. Positions end at the start price, so near it little ETH fits; the rest stays in ProtocolLiquidity,
+and governance can add it later (`addLiquidity`) once the price has moved below the start.
 
-1. Create the FWA pool. `$FEE` is the factory creation fee; the pool must hold it in the FWA token.
-   The opening deadline starts here.
-   `cast send --rpc-url $RPC $SIGN $POOL 'createFwaPool(uint256)' $FEE`
-2. Deposit the opening cohort. Opening NAV is cash, so shares mint 1:1.
-   `cast send --rpc-url $RPC $SIGN $POOL 'deposit()' --value $AMOUNT`
-3. After `openingDeadlineAt`, call `open()` until `lifecycle()` returns 1 (Live). Each call lists at
-   most 20 items and anyone may call it. The pool is Live once a call lists fewer than 20 items or
-   `listedCount` is at least `minItems`. `settleDue()` then returns Deep and `settle` finishes the board up to
-   `boardItems()`.
-   `cast send --rpc-url $RPC $SIGN $POOL 'open()'`
-4. Founder window premium. Right after the pool is Live, move 100 bps from the feed to the premium.
-   The sum stays 700, so list prices and tickets are unchanged. `admission()` on Lens shows
-   `depositsOpenAt`; revert the split in the same block or later.
-   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16)' 300 100 300`
-   At `depositsOpenAt`:
-   `cast send --rpc-url $RPC $SIGN $POOL 'setFeeSplit(uint16,uint16,uint16)' 200 100 400`
-5. Start the keeper once the pool is Live.
-   `WALLET_MODE=keystore KEYSTORE_ACCOUNT=$KEYSTORE_ACCOUNT KEYSTORE_PASSWORD_FILE=$KEYSTORE_PASSWORD_FILE RPC_URL=$RPC POOL=$POOL INTERVAL=15 script/keeper.sh`
-6. Refill the keeper bucket from Shapes mint fee revenue when the basefee is high.
-   `cast send --rpc-url $RPC $SIGN $POOL 'fundMaintenance()' --value $AMOUNT`
+## Incidents
 
-## Pause and exit
-
-Pause pulls and deposits (first flag pulls, second flag deposits). Settlement of issued pulls,
-`settle` and `rotate` continue.
-
-```
-cast send --rpc-url $RPC $SIGN $POOL 'setPaused(bool,bool)' true true
-cast send --rpc-url $RPC $SIGN $POOL 'setPaused(bool,bool)' false false
-```
-
-Exit. `$DEST` is the pool itself for retirement or a successor pool for migration.
-
-```
-cast send --rpc-url $RPC $SIGN $POOL 'startExit(address)' $DEST
-cast send --rpc-url $RPC $SIGN $POOL 'exportStep(uint256)' 20   # anyone; repeat until lifecycle() is 3 (Exported)
-cast send --rpc-url $RPC $SIGN $POOL 'payClaims()'              # anyone; pays queued claims in order from cash
-cast send --rpc-url $RPC $SIGN $POOL 'withdraw(uint256)' $SHARES   # holders, retirement only
-```
-
-After a migration, each holder is minted successor shares with `migrateHolder(address)` on the
-successor pool.
+- FWA pauses purchases or sets withdraw-only: nothing to do; settlement and retirement still work.
+- A module misbehaves: governance replaces it (`setModule`, `setPolicy`, `setBuyer`).
+- KeeperFund empty: top it up; jobs still run (they pay what they can and never revert for lack of tip).
+- A run of large wins: losses are carried and distributions stop until profit and cash recover; rows wait for cash if
+  the reserve is exhausted. No action needed; capital may be added through the vault (it never counts as profit).

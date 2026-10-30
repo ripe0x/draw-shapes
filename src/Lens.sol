@@ -1,417 +1,369 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IShapes} from "shapes/interfaces/IShapes.sol";
-import {Denominations} from "shapes/lib/Denominations.sol";
-import {Pool} from "./Pool.sol";
-import {PricingLib} from "./lib/PricingLib.sol";
-import {IFWAClone} from "./interfaces/IFWAClone.sol";
-import {IPool, IPoolTypes} from "./interfaces/IPool.sol";
+import {FixedPointMathLib as FPM} from "solady/utils/FixedPointMathLib.sol";
+import {IFWAPool} from "./interfaces/IFWA.sol";
+import {FwaGame} from "./game/FwaGame.sol";
+import {PrizeVault} from "./game/PrizeVault.sol";
+import {Converter} from "./game/Converter.sol";
+import {GenesisFarm} from "./token/GenesisFarm.sol";
+import {KeeperFund} from "./treasury/KeeperFund.sol";
+import {Buyback} from "./treasury/Buyback.sol";
+import {SwapPolicy} from "./policy/SwapPolicy.sol";
+import {ProtocolLiquidity} from "./token/ProtocolLiquidity.sol";
+
+interface IGate {
+    function canPurchase(address) external view returns (bool);
+}
 
 /// @title Lens
-/// @notice Read-only views over one `Pool`. Every value comes from the pool's public getters and
-///         from the FWA pool the pool created. A new `Lens` can replace this one without a pool
-///         change.
+/// @notice Read-only aggregation for the site and the keeper. Holds nothing and changes nothing.
 contract Lens {
-    uint256 internal constant BPS = 10_000;
-    uint256 internal constant WAD = 1e18;
-
-    /// @dev First failing pull guard, in the order `Pool.acquireBatch` applies them.
-    enum Reason {
-        None,
-        NotLive,
-        Exiting,
-        PullsPaused,
-        InvalidCount,
-        CoolingDown,
-        Insolvent,
-        BoardTooThin
+    struct Addresses {
+        FwaGame game;
+        GenesisFarm farm;
+        KeeperFund keeperFund;
+        Buyback buyback;
+        SwapPolicy swapPolicy;
+        ProtocolLiquidity liquidity;
+        PrizeVault vault;
+        Converter converter;
     }
 
-    struct Quote {
-        uint256 fee;
-        uint256 vrf;
-        uint256 total;
-        bool purchasable;
-        Reason reason;
-    }
-
-    struct Position {
-        uint256 shares;
-        uint256 valueWei;
-        bool migrated;
-    }
-
-    struct Row {
-        uint8[] rungs;
-        uint16 shareBps;
-        uint256 backingWei;
-        uint256 listingPrice;
-        uint256 count;
-        uint256 listed;
-        uint256 target;
-    }
-
-    /// @dev A GRAIL item with its share of the FWA selection weight in bps, zero while it is unlisted.
-    struct GrailItemView {
-        address collection;
-        bool done;
-        uint256 tokenId;
-        uint256 backing;
-        uint256 notional;
-        uint256 listingId;
-        uint256 listedAtPull;
-        uint256 weightBps;
-    }
-
-    struct GrailView {
-        uint256 fund;
-        uint256 receivable;
-        uint256 targetWei;
-        uint256 nextTargetWei;
-        uint256 cycleId;
-        uint256 listBps;
-        uint256 decayWeiPerPull;
-        uint256 pieceFloorWei;
-        uint256 floorWei;
-        uint256 pulls;
-        uint256 cycleStartedAt;
-        uint256 stepUpSeconds;
-        uint256 stepDownSeconds;
-        GrailItemView[] items;
-    }
-
-    struct QueuedClaim {
-        address to;
-        uint256 amount;
-        uint256 requestedAt;
-    }
-
-    struct Claims {
-        QueuedClaim[] queue;
-        uint256 head;
-        uint256 unpaidTotal;
-        uint256 claimsBucket;
-        uint256 cash;
-    }
-
-    /// @dev Each reopen guard with the numbers it compares.
-    struct Reopen {
-        bool live;
-        bool pullsOpen;
-        bool cooldownPassed;
-        uint256 purchasesResumeAt;
-        bool solvent;
-        uint256 balance;
-        uint256 required;
-        bool boardDeep;
-        uint256 listedCount;
+    struct GameView {
+        address pool;
+        bool acquisitionsEnabled;
+        bool admissible;
+        bool opened;
+        bool paused;
+        bool retiring;
+        bool retired;
+        uint256 liveListings;
+        uint256 boardRows;
+        uint256 liveRows;
+        uint256 seenSeq;
+        uint256 openRequests;
+        uint256 lastIssuedSeq;
         uint256 unsettled;
-        uint256 concurrency;
+        uint256 quoteFee; // per pull, FWA fee (what weighs in genesis)
+        uint256 quoteVrf; // per pull, charged separately by FWA's VRF service (at the caller's gas price)
+        uint256 inventoryVersion;
+        uint256 purchasesResumeAt;
+        uint256 promoListing;
+        uint256 promoEndBlock;
+        bool gateOpen; // the purchase gate's answer now (live FWA state: in-flight, edge, cooldown, board floor)
+        uint256 maxInFlight;
     }
 
-    /// @dev Deposit admission state. `contributionBps` is the entry fee a deposit pays now.
-    ///      `open` holds when the pool is Opening, or Live with `depositsOpenAt` passed, deposits
-    ///      are not paused and ordinary NAV is below `navCap`.
-    struct Admission {
-        uint256 navCap;
-        uint256 navCapFloor;
-        uint256 dailyVolume;
-        uint256 headroom;
-        uint256 depositsOpenAt;
-        uint256 contributionBps;
-        bool open;
+    /// @notice The game's books. Every figure is cumulative since launch unless named otherwise.
+    struct AccountsView {
+        uint256 capitalIn; // vault funding into the game (opening capital, trading fees, contributions)
+        uint256 cash;
+        uint256 inventoryBacking;
+        uint256 inventoryCost;
+        uint256 replacementsOwed;
+        uint256 opsOwed;
+        uint256 exposure;
+        uint256 protectedCash;
+        uint256 distributable;
+        uint256 turnover; // ordinary gameplay: ticket ETH of delivered pulls
+        uint256 promoTurnover; // the part of turnover seen while a promotion was live
+        uint256 pullsBooked;
+        uint256 revenue;
+        uint256 prizeExpense;
+        uint256 opsAccrued;
+        uint256 opsReturned;
+        int256 profit; // realised; negative while losses are carried
+        uint256 distributed;
+        uint256 promoBudget;
+        uint256 promoFunded;
+        uint256 promoSpent;
+        uint256 promoProceeds;
+        uint256 promoReleased;
     }
 
-    struct Parameters {
-        address shapes;
-        address drawPacks;
-        address fwaFactory;
-        address fwaPool;
-        address admin;
-        address oldPool;
-        address exitDest;
-        IPoolTypes.Lifecycle lifecycle;
-        bool pullsPaused;
-        bool depositsPaused;
-        IPoolTypes.FeeSplit feeSplit;
-        uint256 floorBps;
-        uint256 capBps;
-        uint256 paybackDays;
-        uint256 navCapFloor;
-        uint256 turnoverBps;
-        uint256 founderWindowSeconds;
-        uint256 rotateInterval;
-        uint256 openingDeadline;
-        uint256 openingDeadlineAt;
-        uint256 minItems;
-        uint256 boardItems;
-        uint256 grailProbCapBps;
-        uint256 batchMin;
-        uint256 batchMaxAge;
-        uint256 surpriseBps;
-        uint256 restoreK;
-        uint256 bandBps;
-        uint256 reserveBps;
-        uint256 tipWei;
-        bool listWhilePaused;
-        uint256 maxBatch;
-        uint256 concurrency;
-        uint256 lastRotateAt;
-        uint256 lastRefundAt;
+    struct FundingView {
+        uint256 tradingFees; // ENGINE trading fees received by the vault (capital)
+        uint256 contributions; // other ETH sent to the vault (capital)
+        uint256 vaultBalance;
+        uint256 promotionsFunded;
+        uint256 profitReceived; // profit the buyback received
+        uint256 buybackSpent; // ETH spent on profit-funded buys
+        uint256 engineBurned; // ENGINE burned by the buyback
+        uint256 conversions;
+        uint256 conversionEthIn; // player conversion purchases, reported apart from buybacks
+        uint256 conversionEngineOut;
+        uint256 conversionBonus;
     }
 
-    Pool public immutable pool;
-
-    constructor(Pool pool_) {
-        pool = pool_;
+    struct Listing {
+        uint256 listingId;
+        uint256 row;
+        uint256 kind; // 0 Shape, 1 Shape Pack
+        uint256 backing;
+        uint256 price;
+        uint256 probability; // 1e18 = certain; current FWA weights
     }
 
-    /// @dev The pool through its full ABI, which includes the functions `PoolAdmin` serves through
-    ///      the `fallback` of `Pool`.
-    function _ip() internal view returns (IPool) {
-        return IPool(address(pool));
+    struct EpochView {
+        uint256 epoch;
+        uint256 allocationCap;
+        uint256 rateCap; // ENGINE per 1 ETH of eligible ticket ETH
+        uint256 weight;
+        uint256 pot;
+        uint256 userWeight;
+        uint256 reward;
+        bool isFinal;
+        bool finalized;
+        bool claimed;
     }
 
-    // ------------------------------------------------------------------ quote
+    struct WorkView {
+        uint256 syncable; // requests waiting to be seen plus open requests
+        uint256 unlistedRows;
+        uint256 syncAge;
+        bool admissionChange;
+        bool buybackReady;
+        uint256 buybackSlice;
+        bool buybackPriceOk;
+        uint256[] finalizable;
+        bool bonusRetireReady;
+        uint256 keeperFundAvailable;
+        bool gateOpen; // the purchase gate admits a purchase now (false while the board waits for a restock)
+    }
 
-    /// @notice FWA price of `count` acquisitions and whether `Pool.acquireBatch` would accept them now.
-    ///         `reason` names the first failing guard. The price is zero before the FWA pool exists.
-    function quote(uint256 count) external view returns (Quote memory q) {
-        IFWAClone fwa = pool.fwaPool();
-        if (address(fwa) != address(0)) {
-            try fwa.quoteAcquisitionPrice(count) returns (uint256 fee, uint256 vrf, uint256 total) {
-                (q.fee, q.vrf, q.total) = (fee, vrf, total);
-            } catch {}
+    struct MarketView {
+        bool gated;
+        uint256 genesisEndBlock;
+        uint256 currentEpoch;
+        uint256 feeBps;
+        uint256 snipeFeeBps;
+        uint160 sqrtPriceX96;
+        uint256 enginePerEth; // 18 decimals, spot
+    }
+
+    function game(Addresses calldata a) public view returns (GameView memory v) {
+        FwaGame g = a.game;
+        IFWAPool p = g.pool();
+        v.pool = address(p);
+        v.opened = g.opened();
+        v.paused = g.paused();
+        v.retiring = g.retiring();
+        v.retired = g.retired();
+        v.liveListings = g.liveCount();
+        v.boardRows = g.board().rowCount();
+        v.liveRows = _popcount(g.liveRows());
+        v.seenSeq = g.seenSeq();
+        v.openRequests = g.openCount();
+        v.promoListing = g.promoListing();
+        v.promoEndBlock = g.promoEndBlock();
+        v.maxInFlight = g.maxInFlight();
+        if (address(p) != address(0)) {
+            v.admissible = g.admissible();
+            v.acquisitionsEnabled = p.localPurchasesEnabled();
+            v.lastIssuedSeq = p.lastIssuedSequence();
+            v.unsettled = p.unsettledAcquisitionCount();
+            if (p.totalWeight() != 0) (v.quoteFee, v.quoteVrf,) = p.quoteAcquisitionPrice(1);
+            v.inventoryVersion = p.inventoryVersion();
+            v.purchasesResumeAt = p.purchasesResumeAt();
+            v.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(this));
         }
-        q.reason = _reason(count);
-        q.purchasable = q.reason == Reason.None;
     }
 
-    function _reason(uint256 count) internal view returns (Reason) {
-        IPoolTypes.Lifecycle state = pool.lifecycle();
-        if (state >= IPoolTypes.Lifecycle.Exiting) return Reason.Exiting;
-        if (state != IPoolTypes.Lifecycle.Live) return Reason.NotLive;
-        if (pool.pullsPaused()) return Reason.PullsPaused;
-        if (count == 0 || count > _ip().maxBatch()) return Reason.InvalidCount;
-        Reopen memory r = _reopen();
-        if (!r.cooldownPassed) return Reason.CoolingDown;
-        if (!r.solvent) return Reason.Insolvent;
-        if (!r.boardDeep) return Reason.BoardTooThin;
-        return Reason.None;
+    function accounts(FwaGame g) public view returns (AccountsView memory v) {
+        v.capitalIn = g.capitalIn();
+        v.cash = g.cash();
+        v.inventoryBacking = g.inventoryBacking();
+        v.inventoryCost = g.inventoryCost();
+        v.replacementsOwed = g.replacementsOwed();
+        v.opsOwed = g.opsOwed();
+        v.exposure = g.exposure();
+        v.protectedCash = g.protectedCash();
+        v.distributable = g.distributable();
+        v.turnover = g.turnover();
+        v.promoTurnover = g.promoTurnover();
+        v.pullsBooked = g.pullsBooked();
+        v.revenue = g.revenue();
+        v.prizeExpense = g.prizeExpense();
+        v.opsAccrued = g.opsAccrued();
+        v.opsReturned = g.opsReturned();
+        v.profit = g.profit();
+        v.distributed = g.distributed();
+        v.promoBudget = g.promoBudget();
+        v.promoFunded = g.promoFunded();
+        v.promoSpent = g.promoSpent();
+        v.promoProceeds = g.promoProceeds();
+        v.promoReleased = g.promoReleased();
     }
 
-    // ------------------------------------------------------------------ shares
-
-    /// @notice Ordinary NAV in wei.
-    function nav() external view returns (uint256) {
-        return pool.nav();
+    function funding(Addresses calldata a) external view returns (FundingView memory v) {
+        v.tradingFees = a.vault.tradingFees();
+        v.contributions = a.vault.contributions();
+        v.vaultBalance = address(a.vault).balance;
+        v.promotionsFunded = a.vault.promotionsFunded();
+        v.profitReceived = a.buyback.profitReceived();
+        v.buybackSpent = a.buyback.totalSpent();
+        v.engineBurned = a.buyback.totalBurned();
+        v.conversions = a.converter.conversions();
+        v.conversionEthIn = a.converter.totalEthIn();
+        v.conversionEngineOut = a.converter.totalEngineOut();
+        v.conversionBonus = a.converter.totalBonus();
     }
 
-    /// @notice NAV of one share scaled by 1e18. Equal to 1e18 while no shares exist.
-    function sharePrice() public view returns (uint256) {
-        uint256 supply = pool.totalShares();
-        return supply == 0 ? WAD : pool.nav() * WAD / supply;
-    }
-
-    /// @notice Shares of `account`, their value at NAV and whether the account was converted by
-    ///         `migrateHolder`.
-    function position(address account) external view returns (Position memory p) {
-        p.shares = pool.sharesOf(account);
-        uint256 supply = pool.totalShares();
-        p.valueWei = supply == 0 ? 0 : p.shares * pool.nav() / supply;
-        p.migrated = _ip().migrated(account);
-    }
-
-    // ------------------------------------------------------------------ board
-
-    /// @notice One entry per mix row: rungs, share, backing, live list price, item counts and the
-    ///         target depth of `Pool.settle` and `Pool.open`.
-    function board() external view returns (Row[] memory rows) {
-        uint256 n = _ip().mixLength();
-        rows = new Row[](n);
-        (uint16 premium, uint16 maintenance, uint16 feed) = pool.feeSplit();
-        uint256 fee = IShapes(pool.shapes()).mintFee();
-        uint256 items = _ip().boardItems();
+    /// @notice The current inventory: every live listing with its price and its probability under FWA's current
+    ///         weights (inverse to price).
+    function inventory(FwaGame g) external view returns (Listing[] memory out) {
+        IFWAPool p = g.pool();
+        uint256 n = g.liveCount();
+        out = new Listing[](n);
+        uint256 total = address(p) == address(0) ? 0 : p.totalWeight();
         for (uint256 i; i < n; ++i) {
-            Row memory r = rows[i];
-            (r.rungs, r.shareBps) = _ip().mixRow(i);
-            for (uint256 j; j < r.rungs.length; ++j) {
-                r.backingWei += Denominations.amountAt(r.rungs[j]);
+            uint256 id = g.liveAt(i);
+            (, uint72 backing,, uint16 row,,, uint8 kind,) = g.items(id);
+            (,,,, uint256 weight, uint256 price,, IFWAPool.ListingStatus st) = p.listings(id);
+            out[i] = Listing(
+                id,
+                row,
+                kind,
+                backing,
+                price,
+                st == IFWAPool.ListingStatus.Active && total != 0 ? FPM.fullMulDiv(weight, 1e18, total) : 0
+            );
+        }
+    }
+
+    /// @notice The modelled target board: each row's backing, listing price and probability with every row listed.
+    function targetBoard(FwaGame g)
+        external
+        view
+        returns (uint256[] memory backing, uint256[] memory price, uint256[] memory probability)
+    {
+        uint256 n = g.board().rowCount();
+        backing = new uint256[](n);
+        price = new uint256[](n);
+        probability = new uint256[](n);
+        uint256 inv;
+        for (uint256 r; r < n; ++r) {
+            (uint8 kind, uint96 b) = g.board().rowAt(r);
+            backing[r] = b;
+            uint256 cost = g.poolOwner().costOf(kind, b);
+            price[r] = g.pricing().listPrice(kind, b, cost);
+            if (price[r] > cost * 10_500 / 10_000) price[r] = cost * 10_500 / 10_000;
+            inv += 1e36 / price[r];
+        }
+        for (uint256 r; r < n; ++r) {
+            probability[r] = FPM.fullMulDiv(1e36 / price[r], 1e18, inv);
+        }
+    }
+
+    /// @notice Genesis state for `user` over `[from, to)`.
+    function epochs(GenesisFarm farm, address user, uint256 from, uint256 to)
+        external
+        view
+        returns (EpochView[] memory out)
+    {
+        out = new EpochView[](to - from);
+        for (uint256 e = from; e < to; ++e) {
+            EpochView memory v = out[e - from];
+            v.epoch = e;
+            v.allocationCap = farm.allocationCap(e);
+            v.rateCap = farm.rateCapOf(e);
+            v.weight = farm.epochWeight(e);
+            v.pot = farm.potOf(e);
+            v.userWeight = farm.userWeight(e, user);
+            v.reward = farm.rewardOf(e, user);
+            v.isFinal = farm.isFinal(e);
+            v.finalized = farm.isFinalized(e);
+            v.claimed = farm.claimed(e, user);
+        }
+    }
+
+    /// @notice Unclaimed final rewards of `user` over `[from, to)` and the epochs to pass to `claim`.
+    function claimable(GenesisFarm farm, address user, uint256 from, uint256 to)
+        external
+        view
+        returns (uint256 total, uint256[] memory epochList)
+    {
+        uint256[] memory tmp = new uint256[](to - from);
+        uint256 n;
+        for (uint256 e = from; e < to; ++e) {
+            if (farm.claimed(e, user) || !farm.isFinal(e)) continue;
+            uint256 r = farm.rewardOf(e, user);
+            if (r == 0) continue;
+            total += r;
+            tmp[n++] = e;
+        }
+        epochList = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            epochList[i] = tmp[i];
+        }
+    }
+
+    function market(Addresses calldata a) public view returns (MarketView memory v) {
+        v.gated = a.swapPolicy.gated();
+        v.genesisEndBlock = a.farm.genesisEndBlock();
+        v.currentEpoch = a.farm.currentEpoch();
+        v.feeBps = a.swapPolicy.feeBps();
+        v.snipeFeeBps = a.swapPolicy.snipeFeeBps();
+        if (a.liquidity.launched()) {
+            v.sqrtPriceX96 = a.liquidity.sqrtPriceX96();
+            v.enginePerEth = FPM.fullMulDiv(uint256(v.sqrtPriceX96) * uint256(v.sqrtPriceX96), 1e18, 1 << 192);
+        }
+    }
+
+    /// @notice Spot estimate of a conversion of a Shape of `backing`: ENGINE out (before price impact) and the bonus at
+    ///         the current bonus rate.
+    function conversionQuote(Addresses calldata a, uint256 backing)
+        external
+        view
+        returns (uint256 engineOut, uint256 bonus, bool bonusCovered)
+    {
+        MarketView memory m = market(a);
+        engineOut = backing * m.enginePerEth / 1e18;
+        bonus = engineOut * a.converter.bonusBps() / 10_000;
+        bonusCovered = a.farm.bonusPool() >= bonus;
+    }
+
+    /// @notice Keeper work available now, with ages in seconds.
+    function work(Addresses calldata a) external view returns (WorkView memory w) {
+        FwaGame g = a.game;
+        IFWAPool p = g.pool();
+        if (address(p) != address(0)) {
+            uint64 last = p.lastIssuedSequence();
+            uint64 seen = g.seenSeq();
+            w.syncable = (last >= seen ? last - seen + 1 : 0) + g.openCount();
+            w.admissionChange =
+                !g.retiring() && g.opened() && (!g.paused() && g.admissible()) != p.localPurchasesEnabled();
+            w.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(this));
+        }
+        uint256 rows = g.board().rowCount();
+        w.unlistedRows = rows - _popcount(g.liveRows() & ((rows >= 256 ? 0 : (uint256(1) << rows)) - 1));
+        w.syncAge = block.timestamp - g.lastSyncAt();
+        w.buybackSlice = a.buyback.nextSlice();
+        w.buybackReady = w.buybackSlice != 0 && block.timestamp >= a.buyback.lastRunAt() + a.buyback.minSpacing();
+        if (a.liquidity.launched()) w.buybackPriceOk = a.buyback.priceOk();
+        GenesisFarm f = a.farm;
+        if (f.openBlock() != 0) {
+            uint256 cur = f.currentEpoch();
+            uint256 end = cur < 21 ? cur : 21;
+            uint256[] memory tmp = new uint256[](end);
+            uint256 n;
+            for (uint256 e; e < end; ++e) {
+                if (!f.isFinalized(e) && f.isFinal(e)) tmp[n++] = e;
             }
-            r.listingPrice = PricingLib.listingPrice(
-                r.backingWei, premium, maintenance, feed, PricingLib.mintLineBps(fee * r.rungs.length, r.backingWei)
-            );
-            r.count = _ip().rowCount(i);
-            r.listed = _ip().listedRowCount(i);
-            r.target = PricingLib.rowDepth(items, r.shareBps);
+            w.finalizable = new uint256[](n);
+            for (uint256 i; i < n; ++i) {
+                w.finalizable[i] = tmp[i];
+            }
+            w.bonusRetireReady = !f.bonusRetired() && block.number >= f.genesisEndBlock();
         }
+        w.keeperFundAvailable = a.keeperFund.available(false);
     }
 
-    // ------------------------------------------------------------------ GRAIL
-
-    /// @notice The GRAIL fund, parameters and cycle, and every GRAIL item with its share of the FWA
-    ///         selection weight. The share is zero while the item is unlisted.
-    function grail() external view returns (GrailView memory g) {
-        IPoolTypes.Grail memory s = _ip().grail();
-        (g.fund, g.receivable, g.targetWei, g.nextTargetWei, g.cycleId) =
-            (s.fund, s.receivable, s.targetWei, s.nextTargetWei, s.cycleId);
-        (g.listBps, g.decayWeiPerPull, g.pieceFloorWei, g.floorWei) =
-            (s.listBps, s.decayWeiPerPull, s.pieceFloorWei, s.floorWei);
-        (g.pulls, g.cycleStartedAt, g.stepUpSeconds, g.stepDownSeconds) =
-            (s.pulls, s.cycleStartedAt, s.stepUpSeconds, s.stepDownSeconds);
-        IPoolTypes.GrailItem[] memory items = _ip().grailItems();
-        g.items = new GrailItemView[](items.length);
-        uint256 total = address(pool.fwaPool()) == address(0) ? 0 : pool.fwaPool().totalWeight();
-        for (uint256 i; i < items.length; ++i) {
-            IPoolTypes.GrailItem memory it = items[i];
-            uint256 weightBps = it.listingId != 0 && total != 0 ? PricingLib.weightOf(it.notional) * BPS / total : 0;
-            g.items[i] = GrailItemView(
-                it.collection, it.done, it.tokenId, it.backing, it.notional, it.listingId, it.listedAtPull, weightBps
-            );
+    function _popcount(uint256 x) internal pure returns (uint256 c) {
+        while (x != 0) {
+            x &= x - 1;
+            ++c;
         }
-    }
-
-    // ------------------------------------------------------------------ claims
-
-    /// @notice Unpaid withdrawal claims in payment order, from `claimHead` to the end of the queue.
-    function claims() external view returns (Claims memory c) {
-        c.head = pool.claimHead();
-        c.claimsBucket = pool.claims();
-        c.cash = pool.cash();
-        QueuedClaim[] memory buffer = new QueuedClaim[](_queueLength() - c.head);
-        for (uint256 i; i < buffer.length; ++i) {
-            (address to, uint64 requestedAt, uint256 amount) = _ip().claimQueue(c.head + i);
-            buffer[i] = QueuedClaim(to, amount, requestedAt);
-            c.unpaidTotal += amount;
-        }
-        c.queue = buffer;
-    }
-
-    /// @dev Length of `claimQueue`, found by doubling and bisection because the pool exposes no
-    ///      length getter. An out of range read reverts.
-    function _queueLength() internal view returns (uint256) {
-        uint256 head = pool.claimHead();
-        if (!_has(head)) return head;
-        uint256 lo = head;
-        uint256 step = 1;
-        while (_has(lo + step)) {
-            lo += step;
-            step *= 2;
-        }
-        uint256 hi = lo + step;
-        while (hi - lo > 1) {
-            uint256 mid = (lo + hi) / 2;
-            if (_has(mid)) lo = mid;
-            else hi = mid;
-        }
-        return lo + 1;
-    }
-
-    function _has(uint256 index) internal view returns (bool) {
-        try _ip().claimQueue(index) returns (address, uint64, uint256) {
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    // ------------------------------------------------------------------ reopen guards
-
-    /// @notice Each guard `Pool.acquireBatch` applies, with the values it compares.
-    function reopenStatus() external view returns (Reopen memory) {
-        return _reopen();
-    }
-
-    function _reopen() internal view returns (Reopen memory r) {
-        r.live = pool.lifecycle() == IPoolTypes.Lifecycle.Live;
-        r.pullsOpen = !pool.pullsPaused();
-        r.listedCount = pool.listedCount();
-        r.concurrency = _ip().concurrency();
-        r.balance = address(pool).balance;
-        r.required = pool.cash() + pool.maintenance();
-        IFWAClone fwa = pool.fwaPool();
-        r.required += _ip().grail().fund;
-        r.solvent = r.balance >= r.required;
-        if (address(fwa) == address(0)) return r;
-        r.purchasesResumeAt = fwa.purchasesResumeAt();
-        r.cooldownPassed = block.timestamp >= r.purchasesResumeAt;
-        r.unsettled = fwa.unsettledAcquisitionCount();
-        r.boardDeep = r.listedCount >= r.unsettled + r.concurrency;
-    }
-
-    // ------------------------------------------------------------------ admission
-
-    /// @notice The deposit cap, the volume it follows, the room left under it and the entry fee a
-    ///         deposit pays now.
-    function admission() external view returns (Admission memory a) {
-        uint256 currentNav = pool.nav();
-        a.navCap = pool.navCap();
-        a.navCapFloor = pool.navCapFloor();
-        a.dailyVolume = pool.dailyVolume();
-        a.headroom = a.navCap > currentNav ? a.navCap - currentNav : 0;
-        a.depositsOpenAt = pool.depositsOpenAt();
-        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
-        (uint16 premiumBps,,) = pool.feeSplit();
-        a.contributionBps = PricingLib.entryFeeBps(premiumBps, a.dailyVolume, currentNav, floorBps, capBps, paybackDays);
-        IPoolTypes.Lifecycle state = pool.lifecycle();
-        a.open = (state == IPoolTypes.Lifecycle.Opening
-                || (state == IPoolTypes.Lifecycle.Live && block.timestamp >= a.depositsOpenAt))
-            && !pool.depositsPaused() && a.headroom != 0;
-    }
-
-    // ------------------------------------------------------------------ rotation
-
-    /// @notice First reason `Pool.rotate` is due, or `None`. `None` includes the case where
-    ///         `rotateInterval` has not passed since `lastRotateAt`.
-    function rotateDue() external view returns (IPoolTypes.RotateTrigger) {
-        return pool.rotateDue();
-    }
-
-    /// @notice First reason `Pool.settle` lists replacements, or `None`.
-    function settleDue() external view returns (IPoolTypes.SettleTrigger) {
-        return pool.settleDue();
-    }
-
-    // ------------------------------------------------------------------ parameters
-
-    /// @notice Constructor parameters and admin-set values of the pool, with its runtime state.
-    function parameters() external view returns (Parameters memory p) {
-        p.shapes = pool.shapes();
-        p.drawPacks = pool.drawPacks();
-        p.fwaFactory = pool.fwaFactory();
-        p.fwaPool = address(pool.fwaPool());
-        p.admin = pool.admin();
-        p.oldPool = pool.oldPool();
-        p.exitDest = pool.exitDest();
-        p.lifecycle = pool.lifecycle();
-        p.pullsPaused = pool.pullsPaused();
-        p.depositsPaused = pool.depositsPaused();
-        (p.feeSplit.premiumBps, p.feeSplit.maintenanceBps, p.feeSplit.feedBps) = pool.feeSplit();
-        (uint32 floorBps, uint32 capBps, uint32 paybackDays) = pool.entryFee();
-        p.floorBps = floorBps;
-        p.capBps = capBps;
-        p.paybackDays = paybackDays;
-        p.navCapFloor = pool.navCapFloor();
-        p.turnoverBps = pool.turnoverBps();
-        p.founderWindowSeconds = pool.founderWindowSeconds();
-        p.rotateInterval = pool.rotateInterval();
-        p.openingDeadline = _ip().openingDeadline();
-        p.openingDeadlineAt = _ip().openingDeadlineAt();
-        p.minItems = pool.minItems();
-        p.boardItems = _ip().boardItems();
-        p.grailProbCapBps = _ip().grailProbCapBps();
-        p.batchMin = _ip().batchMin();
-        p.batchMaxAge = _ip().batchMaxAge();
-        p.surpriseBps = _ip().surpriseBps();
-        p.restoreK = _ip().restoreK();
-        p.bandBps = _ip().bandBps();
-        p.reserveBps = _ip().reserveBps();
-        p.tipWei = _ip().tipWei();
-        p.listWhilePaused = _ip().listWhilePaused();
-        p.maxBatch = _ip().maxBatch();
-        p.concurrency = _ip().concurrency();
-        p.lastRotateAt = pool.lastRotateAt();
-        p.lastRefundAt = _ip().lastRefundAt();
     }
 }

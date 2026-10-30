@@ -1,419 +1,296 @@
-# Draw Shapes v1 specification
-
-Date: 2026-10-13. Status: owner decisions are in `docs/V1_PROMISES.md` (1 to 9). This document is the build input. It
-states what the contracts do and what must stay true.
-
-## 1. Purpose
-
-Depositors fund a pool with ETH. The pool mints Shapes and Draw Packs and lists them on one FWA V2 custom pool. Players
-pay FWA's ticket; FWA selects and delivers one listing per acquisition. The pool replaces each captured listing with a
-row sampled from the mix (section 9). Each settled ticket pays depositors a premium, funds upkeep, and feeds the GRAIL
-fund (section 11). Depositors exit at NAV in ETH.
-
-## 2. Actors
-
-| Actor | Can |
-| --- | --- |
-| Depositor | `deposit`, `withdraw`, read position. |
-| Player | `acquire`, `acquireBatch`, `pullWithShapes`, `redeemAndDeposit`, claim FWA refunds at the FWA pool. |
-| Anyone | `settle`, `rotate`, `payClaims`, `exportStep`, `migrateHolder` on a successor. |
-| Admin | One address, transferable. `createFwaPool`, pause flags, parameter setters, `adminCall`, `startExit`, `transferGrailEstate`, `sweep`. |
-
-Shares are nontransferable. There is one admin role.
-
-## 3. Contracts and dependencies
-
-| Contract | Role |
-| --- | --- |
-| `Pool.sol` | Shares, buckets, board, acquisitions, GRAIL fund, upkeep, rotation, claim payment. Immutable. Owns the FWA pool. Its `fallback` delegates `listBatch`, `openBoard`, `queueMissing`, `grailStep`, `grailReprice`, `grailReady`, `setGrail`, `setGrailStep`, `setGrailTarget`, `grail`, `grailItems`, `boardItems`, `chooseRow` and the read-only getters of parameters, rows, queues, held Shapes and migration state to `listingModule` and every other selector to `adminModule`. |
-| `PoolAdmin.sol` | Admin and exit surface: `createFwaPool`, setters, `sweep`, `adminCall`, `startExit`, `exportStep`, `transferGrailEstate`, successor import (including `importGrail`) and `canImport`. Runs by delegatecall from `Pool` on the `PoolStorage` layout. A direct call reverts `NotDelegated`. |
-| `PoolListing.sol` | Listing engine and GRAIL engine: fills queued replacements and held items (mint, held Shape, `createPack`) and lists them with `listNFTs`; mints GRAIL pieces, merges, forms the opening five, decays prices (section 11). Entrypoints `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, the view `grailReady()`, the setters `setGrail`, `setGrailStep` and `setGrailTarget`, and the views `grail()`, `grailItems()`, `boardItems()`, `chooseRow`, `rowCount`, `mixLength`, `listedRowCount`, `mixRow`, `heldCount`, `heldShapes`, `claimQueue`, `replacementQueue`, `oldestQueuedAt`, the parameter getters (`batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`, `reserveBps`, `listWhilePaused`, `openingDeadline`, `openingDeadlineAt`, `maxBatch`, `concurrency`, `grailProbCapBps`), `lastRefundAt`, `maintenanceReceivable`, `margin`, `mintLineOwed` and the export and import records (`exportedShares`, `exportedNav`, `importedShares`, `importedFromShares`, `migrated`, `registered`). Runs by delegatecall from `Pool`. A direct call reverts `NotDelegated`. A call to `Pool` from any sender but `Pool` itself reverts `NotSelf`. |
-| `PoolBooks.sol`, `PoolStorage.sol` | Shared bases: settlement, harvest, margin split, row choice; storage layout, item registry, parameter validation. `interfaces/IPool.sol` holds the combined ABI, types, errors and events. |
-| `Lens.sol` | Read-only views and quotes. Replaceable by deploying a new one. |
-| Draw Packs | Fork of `shape-packs` with `MIN_PACK_VALUE = 2 * unit()`, deployed as its own collection. Used through `IShapePacks`. |
-| Shapes | Mainnet `0x6fe9193276bf7abcbee44ab7afd717d637d6faf0`. `mintBatchTo`, `redeem`, `mintFee`. |
-| FWA V2 clone | Created by the pool through the factory. `listNFT`, `listNFTs`, `updatePrice`, `withdrawListingTo`, `processAcquisitions`, `withdrawOwnerProceeds`, `acquire`, `acquireBatch`, `setPurchaseOperator`, `retirePool`. |
-
-`Pool`, `PoolAdmin` and `PoolListing` compile with via_ir and share one storage layout. The two modules are the only
-delegatecall targets. `open`, `settle` and `rotate` reach `PoolListing` by calling `Pool` itself, inside their
-`nonReentrant` frame, so the module entrypoints carry no guard. Pure math is in internal libraries (`PricingLib`).
-Runtime sizes: `Pool` 21,697 B, `PoolAdmin` 21,073 B, `PoolListing` 21,235 B, `Lens` 16,447 B (limit 24,576 B).
-
-## 4. Buckets and invariants
-
-Every wei the pool holds is in exactly one bucket.
-
-| Bucket | Holds |
-| --- | --- |
-| `cash` | Spendable ordinary ETH. |
-| `backing` | Sum of backing of ordinary Shapes and Draw Packs held or listed. |
-| `receivable` | FWA `ownerProceeds` booked and awaiting harvest. |
-| `maintenanceReceivable`, `grail.receivable` | Booked shares of `ownerProceeds`. Harvest credits them to `maintenance` and `grail.fund`. |
-| `claims` | Unpaid withdrawal claims, FIFO. |
-| `maintenance` | Upkeep refunds. |
-| `grail.fund` | ETH for GRAIL piece mints. The GRAIL items (`grailItems`) hold the backing. |
-
-Ordinary NAV = `cash + backing + receivable - claims`, or zero when `claims` exceed the assets. The GRAIL fund and the
-GRAIL items are outside ordinary NAV. A replacement mint fee leaves NAV at the replacement mint.
-
-Invariants, enforced by the invariant suite:
-
-- I1 `address(this).balance >= cash + maintenance + grail.fund`. A queued claim is the part cash did not cover.
-- I2 `backing` equals the sum of `valueOf` or denomination over every ordinary token the pool owns or has listed. Held
-  Shapes are indexed once under the ladder index of their value.
-- I3 Shares redeem at ordinary NAV per share; a withdrawal never pays more than that at request time.
-- I4 Claims are paid in request order.
-- I5 The GRAIL fund pays only for piece mints and their mint fees.
-- I6 `maintenance` pays only `settle` and `rotate` refunds and is never negative.
-- I7 `maintenance` is credited from netted positive margin (section 9). `grail.fund` is credited from netted
-  positive margin, the entry contribution, `fundGrail`, GRAIL capture proceeds and `importGrail`. Ordinary NAV changes at a settled capture by `proceeds - value` less the replacement mint fee.
-
-## 5. Parameters
-
-Constructor: Shapes, Draw Packs, FWA factory, admin, `oldPool` (zero unless the pool succeeds another), mix table, fee
-split, GRAIL parameters (`targetWei`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `stepUpSeconds`, `stepDownSeconds`), `navCapFloor`, `turnoverBps`, entry fee, `founderWindowSeconds`, `rotateInterval`, `openingDeadline` (seconds, started by
-`createFwaPool`), `minItems`, `grailProbCapBps`, `batchMin`, `batchMaxAge`, `surpriseBps`, `restoreK`, `bandBps`,
-`reserveBps`, `tipWei` and the `PoolAdmin` and `PoolListing` addresses.
-
-Setters (admin, immediate effect, each emits `ParamSet(selector)`):
-
-| Setter | Bound |
-| --- | --- |
-| `setFeeSplit(premiumBps, maintenanceBps, feedBps)` | Sum at most 1,000. |
-| `setEntryFee(floorBps, capBps, paybackDays)` | `floorBps` at most `capBps`. `capBps` at most 10,000. `paybackDays` at least 1. |
-| `setNavCapFloor(wei)`, `setPaused(pulls, deposits)`, `setMinItems(n)` | Any wei amount. Flags. Any. |
-| `setTurnover(bps)` | 1 to 10,000. |
-| `setFounderWindow(seconds)` | Any. Applies to the next `open()` only. |
-| `setMix(rows)` | Each row: array of rungs, weight share. Rows of two or more rungs are packs. A row that holds items keeps its rungs. The table may grow. A row with items or queued replacements cannot be dropped (`RowInUse`). |
-| `setGrail(decayWeiPerPull, pieceFloorWei, floorWei, listBps)` | `listBps` 1 to 10,000. `pieceFloorWei` above zero and at most one piece (1 ETH). `floorWei` above zero and at most `5 ETH * listBps / 10_000`. Amounts in ETH follow the mainnet ladder; a testnet ladder scales them with its unit. |
-| `setGrailTarget(wei)` | One of 5, 10, 25, 50, 100 ETH. Writes `nextTargetWei`. |
-| `setGrailStep(up, down)` | `up` below `down`. A completed cycle steps `nextTargetWei` one rung up when it took less than `up` seconds and one rung down when it took more than `down` seconds. |
-| `setGrailProbCap(bps)`, `setReserve(bps)`, `setListWhilePaused(on)` | 1 to 10,000. At most 10,000. Flag. |
-| `setBatch(batchMin, batchMaxAge)`, `setReplacement(surpriseBps, restoreK, bandBps)` | Both above zero. At most 10,000, 100 and 100,000. |
-| `setTip(tipWei)` | At most 0.01 ether. |
-| `setMaxBatch(n)`, `setConcurrency(n)`, `setRotateInterval(seconds)`, `setAdmin(address)` | At most FWA's live values (`n` above zero for `setMaxBatch`). At least FWA's `inventoryChangeCooldown`. Nonzero. |
-
-Launch values: premium 200, maintenance 100, feed 400; entry fee floor 1,000,
-cap 2,500, payback 20 days; `turnoverBps` 1,250; `navCapFloor` 69 ETH; `founderWindowSeconds` 2,592,000 (30 days);
-opening deadline 24 h. The owner set these:
-- `minItems` 100: the board stays above FWA's 10 outstanding requests. `navCapFloor` 69 ETH: bounds the opening and
-  every day until booked volume lifts `navCap()` above it.
-- Mix 0.01 Shape 38 percent, 0.02 pack 28, 0.03 pack 19, 0.05 Shape 10, 0.1 Shape 4, 0.5 Shape 1: the 0.1 and 0.5
-  rows restore the large pieces of the launch profile at a small share.
-- `rotateInterval` 900 s, `batchMin` 20, `batchMaxAge` 3,600 s, `reserveBps` 1,000 (10 percent of NAV stays in `cash`,
-the rest is listed on the board).
-- `tipWei` 0.0002 ether: the fixed part of every `settle` and `rotate` refund.
-- `surpriseBps` 200, `restoreK` 8, `bandBps` 3,000: a captured 0.1 row returns within about eight captures.
-
-`grailProbCapBps` and the GRAIL parameters are set in `script/env/<env>.env`: target 25 ETH, `listBps` 7,500,
-`decayWeiPerPull` 0.001 ETH, `pieceFloorWei` 1 ETH, `floorWei` 1 ETH, `stepUpSeconds` 14 days (1,209,600),
-`stepDownSeconds` 60 days (5,184,000).
-
-## 6. Lifecycle
-
-`Opening -> Live -> (Paused) -> Exiting -> Exported`.
-
-- Opening: deposits open from deployment at NAV, which is pure cash, so every opening depositor receives shares 1:1.
-  Pulls closed. Admin calls `createFwaPool(expectedFee)`, which starts the opening deadline. After the deadline anyone
-  calls `open()`, which enables FWA acquisitions and lists at most 20 items per call. The first call after which at
-  least `minItems` are listed, or which lists fewer than 20, sets Live. Once Live, the `Deep` settle trigger (section 9)
-  lists the rest of the board up to `boardItems()`.
-- Live: all paths open subject to pause flags and reopen guards.
-- Paused: admin flags. Settlement of issued pulls, deposits, `settle` and `rotate` continue unless a flag closes them.
-- Exiting: `startExit(dest)` by admin. It disables FWA acquisitions and closes pulls, deposits, rotation and GRAIL
-  growth. `exportStep()` by anyone until done.
-- Exported: snapshot recorded. Holders `withdraw` against cash when `dest` is the pool itself; otherwise the successor
-  mints their shares.
-
-## 7. Depositor paths
-
-Share pricing follows the books. `deposit`, `withdraw` and `redeemAndDeposit` first sync: process and book
-up to 20 FWA acquisitions, require the booking walk to reach FWA's processing queue (`BooksBehind` otherwise), then
-harvest. FWA processes acquisitions permissionlessly, and their outcomes are public before they are booked.
-
-`deposit()` payable. Reverts when deposits are paused, when the pool is Live before `depositsOpenAt`
-(`DepositsClosed`), when ordinary NAV is at or above `navCap()` (`NavCapReached`), when the pool is Exiting, when NAV is
-zero while shares exist (`NavZero`), and on a successor while its import is open. Three rules decide admission and
-price, and all three read one volume measure.
-
-- Volume. Every acquisition that `_walk` books as a capture adds its FWA `paid` value to the fee total of the current
-  UTC day, in one of eight day slots (`day % 8`). Refunded, expired, written-off and unbooked requests add nothing.
-  `dailyVolume()` is the mean of those totals over the complete days after the Live day and before today, at most
-  seven. The Live day and today are partial days, and zero complete days give zero.
-- Cap. `navCap() = max(navCapFloor, dailyVolume() * 10_000 / turnoverBps)`. Deposits are admitted while `nav() <
-  navCap()`. `turnoverBps` is the target daily volume over NAV. Design and sizing: `docs/VOLUME_CAP.md`.
-- Entry fee. The contribution is `msg.value * contributionBps / 10_000`, where `contributionBps = clamp(paybackDays *
-  dailyYieldBps, floorBps, capBps)` and `dailyYieldBps = premiumBps * dailyVolume() / nav()`, zero when NAV is zero.
-  The product `paybackDays * premiumBps * dailyVolume()` is divided by `nav()` once. The contribution goes to
-  `grail.fund` in full. Shares minted = `(msg.value - contribution) * totalShares / nav`, or 1:1 when
-  `totalShares == 0`, whatever NAV is: residual NAV while the share supply is zero goes to the next depositor.
-- Founder window. `open()` sets `depositsOpenAt = block.timestamp + founderWindowSeconds` at the transition to Live.
-  Deposits made while Opening are admitted at once. Successor import is outside the cap and the window.
-
-`Lens.admission()` returns `navCap`, `navCapFloor`, `dailyVolume`, `headroom`, `depositsOpenAt`, `contributionBps` and
-whether a deposit would be admitted now.
-
-`withdraw(shares)`. Burns shares. Claim = `shares * nav / totalShares`. Pays `min(claim, cash)` now and enqueues the
-remainder. It reverts once an exit to a successor has started (holders use `migrateHolder`) and on a successor while its
-import is open (`ImportInProgress`).
-
-Claim payment. `payClaims()` (anyone, any lifecycle state) pays queued claims from `cash` in FIFO order, at most 20
-entries per call. In `rotate()` (reason Claim) the claims step pays from `cash`, then, once the head claim is at least
-`rotateInterval` old, redeems up to 25 items: held items first, then listed items of the row most over its share, while
-FWA's `unsettledAcquisitionCount` is zero. The re-mint cost of each redeemed row, one mint fee per rung, is deducted from
-the claim and stays in `cash`. A claim remainder at or below that cost leaves listings alone.
-
-`redeemAndDeposit(tokenId)`. A Shape whose backing equals a single rung mix row stays in the pool as a held item at its
-`backingOf` while spendable cash (section 9) covers its value. The entry contribution then comes from `cash`, and shares
-are priced on NAV before the Shape arrives. Any other Shape is redeemed at Shapes and its proceeds are deposited.
-
-## 8. Player paths
-
-`acquire(purchaser, maxAcquisitionFee, minWeightedValue, maxNegativeSlippageBps, expectedInventoryVersion, deadline)`
-payable returns one request id. `acquireBatch(purchaser, count, maxAcquisitionFee, minWeightedValue,
-maxNegativeSlippageBps, expectedInventoryVersion, deadline)` payable returns the request ids. `purchaser` must equal the
-caller (`PurchaserMismatch`). `count` is at most `maxBatch` and FWA's live limit. The reopen guards require FWA's
-`purchasesResumeAt` passed, I1 holding with the incoming value, and listed ordinary items at least `concurrency` above
-the unsettled acquisitions. The pool forwards the caller's slippage, minimum weighted value, inventory version and
-deadline to FWA `acquireBatch`, refunds overpayment to the caller, records each request's base price (section 9) and
-runs the upkeep slice (section 10). `quoteAcquisitionPrice(count)` returns FWA's fee, VRF fee and total.
-
-`pullWithShapes(tokenIds, count, maxFee, deadline)` payable. Calls the batch path with the pool defaults: minimum
-weighted value 0 and FWA's `selectionSlippageBps` and `inventoryVersion`. A Shape whose backing equals a single rung mix
-row stays in the pool as a held item at its `backingOf` while the running total of kept value fits the spendable cash
-(section 9). `cash` pays FWA for the value those Shapes cover, `msg.value` pays the rest, and NAV is unchanged. Any
-other Shape is redeemed at Shapes and its proceeds join `msg.value`. Excess returns to the caller.
-
-Purchase operator. `createFwaPool` sets the pool as the FWA `purchaseOperator`, so FWA accepts a purchase while the pool's
-`canPurchase(wallet)` is true, which holds inside the pool's forwarding call for that purchaser. Every purchase passes
-the reopen guards and the upkeep slice. The operator is fixed from creation.
-
-Refunds for slippage, timeout and failed delivery are FWA credits that the purchaser claims at the FWA pool. Listing
-price for an ordinary token = `backing * (10_000 + premiumBps + maintenanceBps + feedBps + mintLineBps) / 10_000`, where
-`mintLineBps` is the replacement mint fee for that row expressed in bps of its backing. FWA adds its own edge on top.
-
-## 9. Board, replacement, rotation
-
-The mix table is an array of rows: rungs (one for a Shape, two or more for a Draw Pack) and a weight share. The board
-depth is `boardItems() = max(minItems, (nav - nav * reserveBps / 10_000) / meanRowCost)`, where `meanRowCost` is the
-share-weighted backing plus replacement mint fee of the mix rows. Capital above the reserve goes on the board. The target
-depth of a row is `ceil(boardItems() * shareBps / 10_000)`. A row's count is its listed, held and queued items. A row
-above its target is not replaced after a capture until it is below it again; nothing is delisted when NAV falls.
-
-Settlement. FWA pays the pool owner per acquisition `paid - (paid - base) / 2`, where `paid` is the escrowed fee and
-`base = min(fee, weightedBackingTotal / totalWeight)` at request time (the harmonic mean of list prices). Proceeds are
-the same for every capture in a batch.
-
-1. `acquire` and `acquireBatch` record `base` per request id. A purchase the pool did not record (the operator cleared through `adminCall`) books zero proceeds at capture.
-2. `settle(maxCount)` (at most 20 per call) calls `processAcquisitions(maxCount)`, then walks FWA's sequence numbers
-   from `nextSequenceToBook` to FWA's processing queue. Each sequence adds one to `grail.pulls`, the pull counter the GRAIL
-   decay reads. Per status:
-   - Fulfilled ordinary item: `backing -= value`, `receivable += proceeds`, `margin += proceeds - value`, `mintLineOwed
-     += mintFee * rungs`, the replacement row (below) is queued, margin split.
-   - Fulfilled GRAIL item (any entry of `grailItems`, a Shape or a Draw Pack): `grail.receivable += proceeds` and the
-     item leaves `grailItems`. DeliveryRefunded: an ordinary token returns to held items and a GRAIL item stays in
-     `grailItems` unlisted until the GrailStep lists it again. Any other status books nothing, and the walk advances past it.
-   - DeliveryPending: written off at once. The item leaves `backing`, its value is charged to `margin`, and no proceeds
-     or replacement are booked. Owner proceeds of a delivery that completes later arrive as surplus (step 4). After a
-     purchaser refund the admin recovers the token with `adminCall(recoverRefundedNFT)` and `sweep`.
-3. Margin split. Positive `margin` first repays `mintLineOwed`. The rest divides pro rata by `premiumBps :
-   maintenanceBps : feedBps`. The premium share stays in ordinary NAV. The maintenance and feed shares leave it as receivables of
-   `maintenance` and `grail.fund`. Negative `margin` carries forward until later captures
-   repay it. After Exported the split is skipped, so later proceeds stay in ordinary NAV.
-4. Surplus. When a settle reaches FWA's processing queue, `ownerProceeds()` above the booked receivables (the proceeds
-   of purchases the pool did not record, which the operator cleared through `adminCall`) is booked as `receivable` and `margin` and split.
-5. Harvest (`withdrawOwnerProceeds`) runs when the walk is level with FWA's queue. An amount received below the booked
-   receivables emits `HarvestShortfall(received, expected)` and writes `receivable` down by the gap.
-
-Replacement row, chosen when a captured ordinary item is booked and appended to the replacement queue with
-`ReplacementChosen(requestId, capturedRow, chosenRow, surprise)`. `oldestQueuedAt` is set when the queue becomes
-nonempty and cleared when it empties. `randomWord` is FWA's word for the request, public once FWA fulfils it.
-1. `h = keccak256(abi.encode(randomWord, requestId))`.
-2. Deficit draw: row weight `shareBps * (10_000 + restoreK * deficit * 10_000 / target) / 10_000`, `deficit =
-   max(target - count, 0)`. The row is `uint256(h) % sum(weights)`, counted through the weights in row order.
-3. Surprise: when `(uint256(h) >> 64) % 10_000 < surpriseBps`, the draw moves to a single rung row of at least five
-   times the drawn row's backing that is below its target depth. The three of lowest backing take the weights 60, 30 and 10, cut to the candidate
-   count, and `(uint256(h) >> 128) % 100` scaled to the weight sum picks one. Without a candidate the draw stands.
-4. Band: a chosen row with `count >= max(target + 1, ceil(target * (10_000 + bandBps) / 10_000))` becomes the row of
-   largest deficit (lowest index on a tie). When no row is below target the step 2 row stands.
-
-Filling. `settle`, `rotate` and `open` fill queue entries in order and list them with `listNFTs` (`PoolListing`). A Shape row takes a
-held Shape of its rung, else mints one. A pack row lists a held pack of equal backing, else calls `createPack(shapeIds,
-mintCounts)` with one held Shape per rung that has one and a mint count for the others. A mint needs spendable cash,
-`cash - claims - nav * reserveBps / 10_000`, of at least its cost. An entry that cash cannot fund stays queued.
-
-`settle(maxCount)` (anyone) books, harvests and calls `activateListings` when FWA holds no unsettled acquisition. When
-`settleDue()` is nonzero and the factory's `inventoryChangeCooldown` is 0 or `listWhilePaused` is on, it lists at most
-`MAX_LIST_PER_SETTLE` (25) items, then applies the GRAIL decay (section 11) while FWA holds no unsettled acquisition
-and the walk is level. `settleDue()` returns the first of these, and `None` outside Live or when no
-held item exists and cash cannot fund the queue head: Batch, `batchMin` replacements queued; Age, the oldest queued
-replacement is `batchMaxAge` old; Thin, listed items minus unsettled acquisitions are fewer than `concurrency + 5`; Deep,
-the board count (listed, held and queued ordinary items) is below `boardItems()` by at least `batchMin`. On Deep, `settle` queues each row's missing items against
-its target depth before listing, up to 25 entries in total per call, existing queue entries included. A reprice rides on a due settle and never makes one due.
-
-`rotate()`. Anyone. Reverts `RotateTooSoon` until `rotateInterval` has passed since `lastRotateAt`, and `RotateNotDue`
-unless a reason holds. `lastRotateAt` moves when the call changed inventory. Reasons, in evaluation order:
-1. Claim: the head queued claim is at least `rotateInterval` old.
-2. GrailStep: FWA holds no unsettled acquisition, and the fund covers a piece and its mint fee with the caps allowing it, or a merge recipe's inputs are listed, or a GRAIL item is unlisted (section 11).
-3. Held: `settle` may not list (cooldown above zero and `listWhilePaused` off), and a held item exists or spendable cash
-   covers the queue head.
-
-`rotateDue()` returns the first reason that holds, and `None` before the spacing ends, outside Live and when no reason
-holds. A reason can hold while its work is blocked, such as Claim while FWA holds unsettled acquisitions; that call
-leaves `lastRotateAt`, the FWA pause and `maintenance` as they were. Steps, each bounded: (1) settle and harvest; (2) pay
-claims, then liquidate for the head claim when due; (3) when `settle` may not list, list up to 20 queued replacements
-and held items; (4) `activateListings` when FWA holds no unsettled acquisition and the walk is level; (5) GRAIL step: mint and merge
-(section 11); (6) refund the caller. `open()` queues each row's
-missing items against its target depth and runs step 3.
-
-## 10. Upkeep and refund
-
-Per-pull slice, inside `acquire` and `acquireBatch`: process and settle up to 3 acquisitions, harvest, pay queued claims
-from `cash`. Listing runs in `settle` and `rotate`, because every FWA listing restarts the purchase pause of the
-factory's `inventoryChangeCooldown`. FWA rejects `withdrawListing` and `updatePrice` while any acquisition is
-unsettled, so under continuous pull flow liquidation, GRAIL mints, merges and repricing wait for a gap that a pause opens.
-
-Refunds come from `maintenance`: `refund = min(maintenance, (gasUsed + 30,000) * block.basefee + tipWei)`, with `tipWei`
-a parameter (section 5, `setTip`). `settle` pays when `settleDue()` was nonzero and the call listed an item or repriced a
-GRAIL item, and emits `Settled(reason, listed, refund)`. `rotate` pays when the call changed inventory (listed, withdrew, minted or merged a
-GRAIL item) and `rotateInterval` has passed since `lastRefundAt`: one refund per interval.
-
-`fundMaintenance()` payable adds the sent ETH to `maintenance`. Anyone may call it. The launch plan is `maintenanceBps`
-100 plus operator top-ups from Shapes mint fee revenue: at 1 gwei the mint fee per Shape is about six times the mint
-and list gas per item, at 6 gwei about equal, so the bucket is refilled from that revenue when the basefee is high.
-`fundGrail()` payable adds the sent ETH to `grail.fund`. Anyone may call it.
-
-## 11. GRAIL
-
-One fund, one ladder, many listed pieces. The GRAIL is built on the board from 1 ETH Shapes that players
-can draw while it forms.
-
-Storage. `grail`: `fund` (ETH), `receivable`, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`,
-`decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `pulls`, `cycleStartedAt`, `stepUpSeconds`, `stepDownSeconds`. `grailItems`: entries of `collection` (Shapes or Draw Packs),
-`tokenId`, `backing`, `notional`, `listingId`, `listedAtPull`, `done` (true for a completed GRAIL; a done item is
-never a recipe input). At most `MAX_BUILDING_ITEMS` (16) items that are not done and at most `MAX_DONE_ITEMS` (32)
-done items exist at once. A piece is an item with backing of 1 ETH. At most `MAX_PIECES` (6) pieces exist at once.
-`grail.pulls` counts booked sequences; an item's pulls since listing are `grail.pulls - listedAtPull`.
-
-Ladder. `targetWei` is one of 5, 10, 25, 50, 100 ETH. `setGrailTarget(wei)` writes `nextTargetWei`;
-a cycle reads it at start. Launch target 25 ETH. Step rule: when a cycle completes, `elapsed` is the time since
-that cycle started. `elapsed < stepUpSeconds` sets `nextTargetWei` one rung up (at most 100 ETH);
-`elapsed > stepDownSeconds` sets it one rung down (at least 5 ETH); otherwise it is unchanged. A later
-`setGrailTarget` overrides it. `setGrailStep(stepUpSeconds, stepDownSeconds)` with `stepUpSeconds <
-stepDownSeconds`; launch 14 days and 60 days. `grail.cycleStartedAt` records the cycle start.
-
-Funding. The whole entry contribution (section 7), the feed share of every settled ticket (section 9),
-`fundGrail()` from any sender, and the proceeds of a captured GRAIL item (through `receivable`). The fund
-is outside ordinary NAV (section 4).
-
-A GRAIL step that reverts is skipped by `rotate` (`GrailStepSkipped`) and the rest of `rotate` runs.
-
-Mint (trigger GrailStep, inside `rotate`). While `fund >= 1 ETH + mintFee`, pieces < 6, building items < 16, FWA
-holds no unsettled acquisition, and at most `MAX_GRAIL_MINTS_PER_ROTATE` (3) per call: mint one 1 ETH
-Shape, list it at `notional = backing`, `fund -= 1 ETH + mintFee`.
-
-Merge (same trigger, after mint). Recipes by target, inputs taken from `grailItems`:
-- 5 ETH from five pieces.
-- 10 ETH from two 5 ETH items.
-- 25 ETH from two 10 ETH items and one 5 ETH item.
-- 50 ETH from two 25 ETH items.
-- 100 ETH from two 50 ETH items.
-A recipe runs when its inputs are listed and FWA holds no unsettled acquisition, at most
-`MAX_GRAIL_MERGES_PER_ROTATE` (2) per call, largest recipe first. It withdraws the inputs'
-listings, composes at Shapes when the output backing is a native rung (5, 10, 50, 100), else creates a
-Draw Pack of the inputs (25), and lists the output at `backing * listBps / 10_000`. The output joins
-`grailItems`. When the output backing equals `targetWei` the cycle is complete:
-`cycleId += 1`, the step rule runs, `targetWei = nextTargetWei`, `cycleStartedAt = block.timestamp`, and minting
-continues from the fund. The completed GRAIL stays
-listed until captured.
-
-Opening. Inside `open()` before the board lists: if `fund >= 5 * (1 ETH + mintFee)`, mint five pieces,
-compose one 5 ETH Shape, list it at `notional = backing`. It is the first item of cycle 1.
-
-Decay, inside `settle` after the listing step and under the same listing condition, per listed item:
-`next = max(floor, notional - decayWeiPerPull * (grail.pulls - listedAtPull))`, with `floor = pieceFloorWei` for a piece
-and `floorWei` otherwise. The reprice runs when the listing is Active and `next` is at least 1 percent
-below `notional`, and the listed GRAIL weight at `next` stays within `grailProbCapBps`. It calls
-`updatePrice` and sets `listedAtPull = grail.pulls`. There is no lift: when the cap binds, the item keeps its price.
-
-Capture. A fulfilled GRAIL item leaves `grailItems`; `receivable += proceeds`; harvest credits the fund.
-A captured intermediate does not stop the cycle; the recipe waits for new inputs.
-
-Launch values: target 25 ETH, `listBps` 7,500, decay 0.001 ETH per pull, piece floor 1 ETH, floor 1 ETH. A piece
-lists at face and never decays; a merged item decays to 1 ETH and stays.
-
-## 12. Admin
-
-`PoolAdmin` implements `createFwaPool`, the setters (section 5, including `setTip`; `setGrail` and `setGrailTarget`
-live in `PoolListing` with `grail()` and `grailItems()`), `startExit`, `exportStep`,
-`transferGrailEstate(to)` (Exiting or Exported), `sweep`, `adminCall`, the import functions and `canImport`.
-`PoolListing` implements `listBatch(max)`, `openBoard()`, `grailStep()` and `grailReprice()`, which only `Pool` calls on itself,
-and the read-only getters of the replacement, batch and reserve parameters, row counts, mix rows, held Shapes by
-denomination, queue and claim entries and the GRAIL fund and items. `chooseRow(requestId, capturedRow)` returns the
-replacement row for a fulfilled request.
-
-`sweep(token, id, to)` sends out an ERC-721 token held outside the books (`Accounted` for an ordinary item or a GRAIL
-item). `adminCall(target, data, value)` is payable and requires `msg.value == value`, so the admin funds the call. After
-the call it checks I1 and I2 and reverts `InvariantBroken` when either fails. The admin is trusted: on the old pool,
-`adminCall` can reach the successor's import functions, and a forged `finalizeImport` argument misprices a migration.
-
-## 13. Exit: retirement and migration
-
-`startExit(dest)`: admin, from Opening (once the FWA pool exists) or Live. Disables FWA acquisitions and closes pulls,
-deposits, rotation and GRAIL mints and merges. `dest` is the pool itself for retirement or a successor for migration. A successor
-has code, names this pool as `oldPool`, is Opening or Live, and uses the same Shapes and Draw Packs collections.
-
-`exportStep(maxItems)`: anyone, repeatable. Settles, requires FWA `unsettledAcquisitionCount == 0` and a caught-up walk
-(`FwaBusy`), then harvests. Moves, in order and bounded: ordinary listings via `withdrawListingTo`, held ordinary
-tokens, then the GRAIL estate (migration only, counted as one item). On retirement every ordinary item is redeemed into `cash`. On migration an
-item moves to `dest` while `cash >= claims` and `dest.canImport(token)` is true, and is redeemed into `cash` otherwise.
-The final call folds `maintenance` into `cash`, records `exportedShares = totalShares` and `exportedNav` (items already
-moved included), sets Exported, calls FWA `retirePool`, and on migration sends `cash - claims` through `importCash` and
-calls `finalizeImport(exportedShares)`.
-
-Retirement: holders `withdraw` against `cash`; `payClaims()` pays queued claims FIFO. `transferGrailEstate(to)` withdraws
-every GRAIL listing and sends the items and the fund to `to`. FWA refund credits stay at the old FWA pool.
-
-Successor import, by `oldPool` only. `deposit`, `redeemAndDeposit` and `withdraw` revert `ImportInProgress` from the
-first import until `finalizeImport`:
-
-- `importItem(collection, tokenId)` registers the token as a held item of the first mix row with equal backing and the
-  same kind (Shape or pack), and reverts `NoMatchingRow` otherwise (`canImport` is the view).
-- `importGrail(collection, tokenId, done)` payable credits `msg.value` to `grail.fund` and, when `collection` is nonzero,
-  registers the token as a GRAIL item with the `done` flag kept. The item is unlisted on arrival, priced at its backing
-  for a piece and at `listBps` of its backing otherwise, and listed by the next `rotate`. When the cap of the item's kind is full (16 building, 32 done), the arriving token is
-  redeemed into the fund. `exportStep` makes one call per item, the first
-  one carrying the fund; with no items it makes one call with a zero `collection`. The successor keeps its own cycle.
-- `importCash()` credits `cash`. `finalizeImport(fromShares)` mints `importedShares = importedNav * totalShares /
-  preImportNav`, or `importedNav` when the share supply or `preImportNav` is zero, and stores `importedFromShares =
-  fromShares`. Imported NAV bypasses `navCap()` and the founder window.
-
-`migrateHolder(addr)` by anyone mints `oldPool.sharesOf(addr) * importedShares / importedFromShares` once per address.
-Rounding leaves a few wei of `importedShares` unassigned, so NAV per share stays conservative. The next `rotate` lists
-imported tokens.
-
-## 14. Lens
-
-Views only: `quote(count)`, `nav()`, `sharePrice()`, `position(addr)`, `board()`, `grail()`, `claims()`,
-`reopenStatus()`, `rotateDue()`, `settleDue()`, `parameters()`. `grail()` returns the fund, receivable, `targetWei`, `nextTargetWei`, `cycleId`, `listBps`, `decayWeiPerPull`, `pieceFloorWei`, `floorWei`, `pulls`, `cycleStartedAt`, `stepUpSeconds`, `stepDownSeconds` and every GRAIL item (collection, `done`, tokenId, backing, notional, listingId, `listedAtPull`, selection weight in bps). `parameters()` lists the constructor values and
-the setter values, including the batch, replacement, reserve, `tipWei` and `listWhilePaused` fields. `reopenStatus()` lists the reopen guards: the purchase cooldown,
-solvency and board depth. `quote(count)` returns the FWA quote and `purchasable` with a reason.
-
-## 15. Out of scope for v1
-
-Controller replacement, FWA pool migration machinery, GRAIL successor handoff, zero-share beneficiary, late GRAIL
-recovery claims, in-kind exits, withdrawal cohorts and windows, pending deposit escrow and cancellation, launch seed,
-named purchaser, controller reserve subsidy, builder revenue, operator fee line, pullWithShapes bonus, typed board scan,
-RTP ceiling, maintenance sweep into the GRAIL, demand gates, pack code in this repo, indexer, activity and profile pages, runtime
-keeper package.
-
-## 16. Acceptance
-
-All suites run against the real Shapes, Draw Packs and FWA contracts on a mainnet fork at a pinned block.
-
-- Unit tests per external function.
-- Invariant suite over I1 to I7 with deposit, withdraw, acquire, `pullWithShapes`, `redeemAndDeposit`, settle,
-  `rotateIfDue` (`rotate` once `rotateDue` returns a reason), `payClaims`, startExit, exportStep as actions.
-- Scenario suite: open a pool, deposit, build, pull single and batch, settle, capture a pack, capture a GRAIL, withdraw
-  with liquidation, retire, migrate to a second pool and `migrateHolder`.
-- Gas receipts of `acquireBatch(5)`, `settle` and `rotate` in `evidence/`. Sepolia rehearsal, then mainnet.
+# Draw Shapes + ENGINE: specification (as built)
+
+This is the system as implemented in `src/`, from `docs/BUILD_PROMPT.md` and the sustainability follow-up to PR #9
+(funding routes, ordinary prize mix, accounting, capital, clean genesis end). Decisions are in
+`docs/IMPLEMENTOR_DECISIONS.md` (cited as D<n>; D31 onward cover the follow-up). Economics, sims and gas:
+`docs/ECONOMICS.md`. Operations: `docs/DEPLOY.md`, `docs/RUNBOOK.md`. No independent audit has been done.
+
+## 1. What it is
+
+A real-money NFT gacha on Ethereum mainnet. Players pay ETH for a VRF draw from a board of Shapes (ETH-backed NFTs,
+burnable for their backing) and, if governance chooses, Shape Packs (bundles of Shapes, redeemable for their backing)
+on an FWA V2 custom pool that our PoolOwner contract owns. The house is a protocol-owned prize
+inventory that replenishes itself from gameplay. ENGINE is the token. During a 21-epoch genesis every delivered pull
+earns ENGINE in proportion to its ticket ETH. After genesis there are no rewards.
+
+Money has three separate routes (D31):
+
+| source | goes to | is it profit? |
+|---|---|---|
+| ENGINE trading fees (3% hook fee) | PrizeVault, then the game as capital | no |
+| opening capital, contributions, returned capital | PrizeVault, then the game as capital | no |
+| owner proceeds of pulls | the game: revenue | revenue, against the prizes' cost |
+| realised, distributable game profit | Buyback: buys ENGINE and burns all of it | yes, only this |
+| explicit promotion budgets | the game's promotion budget, accounted apart | no |
+
+The founder's only income is the Shapes mint fee (0.001 ETH per Shape minted, including each Shape inside a Pack), paid
+by the game to the Shapes contract.
+There is no other founder allocation or revenue skim.
+
+## 2. Custody and governance (D21)
+
+Governance is an OpenZeppelin `TimelockController` with `minDelay = 0` at launch; proposer and executor are the owner's
+governance address; there is no admin. Every setter is timelock-only. Every contract that holds ETH, NFTs or ENGINE has
+no withdraw function and no upgrade path. Code-enforced outflows:
+
+| holder | ETH / tokens may go only to |
+|---|---|
+| PrizeVault | the active game as capital (`fund`) or promotion budget (`fundPromotion`), KeeperFund (`topUpKeeper`, ≤ 1 ETH over its life), ProtocolLiquidity (`shutdown`) |
+| FwaGame | the vault (`repay`, `releasePromotion`), PoolOwner (exactly the cost of the prizes it mints), KeeperFund (operating allocation), Buyback (distributable profit) |
+| PoolOwner | Shapes and Shape Packs (exactly the mint cost the game sent), FwaGame (every other wei: redemptions, burns, owner proceeds); prizes only to FWA (listing) or burned / redeemed |
+| Buyback | EngineBuyer (one bounded purchase per call); every ENGINE bought is burned in the same call |
+| KeeperFund | keepers (tips), the vault (its top-ups back, first), the game (overflow above target, `returnOps`) |
+| GenesisFarm | claimants (`claim`), the Converter's caller (`payBonus`), burns of unearned allocation |
+| ProtocolLiquidity | the pool position only (no remove) |
+| EngineHook | holds nothing; fees go from the PoolManager to the PrizeVault |
+
+Governance chooses the active game, the buyback's profit sources, promotion budgets and every module, so governance
+can direct all capital; the timelock delay is the only notice, and it is 0 at launch. The site's Terms say this.
+
+## 3. Contracts
+
+Holders (no upgrade path): `PrizeVault`, `PoolOwner`, `FwaGame`, `GenesisFarm`, `Buyback`, `KeeperFund`, `EngineToken`,
+`ProtocolLiquidity`, `EngineHook`. Modules (replaceable by the timelock; hold nothing between calls): `BoardPolicy`,
+`PricingPolicy`, `SwapPolicy`, `EngineBuyer`, `Converter`, `EngineRenderer`. Read-only: `Lens`. Deploy helper:
+`FwaFeeBuyer`. Shared base: `Governed` (immutable `governance`, one-shot `wire` by the deployer).
+
+Removed in the follow-up: `Treasury` (its sink table could send revenue anywhere), `GrailFund`, `GrailPolicy` (per-pull
+GRAIL decay) and `EmissionSchedule` (the schedule is now frozen in the farm).
+
+Runtime sizes (legacy codegen, optimizer 200): see `docs/ECONOMICS.md` section 9; FwaGame is the largest at 24,286
+bytes, 290 under 24,576, after moving pool ownership, minting and the purchase gate into PoolOwner (D44).
+
+## 4. PrizeVault (capital)
+
+- `receive()`: counts ETH from the PoolManager as `tradingFees` (the hook's fee arrives that way, mid-swap) and anything
+  else as `contributions`. Neither is ever profit.
+- `wire(game, keeperFund, keeperTopUpTarget)` (deployer, once) and `setActiveGame(game)` (timelock): only when no game
+  is active.
+- `topUpKeeper()` anyone (the game calls it in every sync): refills KeeperFund to its maintenance floor plus
+  `keeperTopUpTarget` (0.1 ETH; ≤ 0.5) from the vault's balance, at most `KEEPER_TOP_UP_LIMIT` (1 ETH) over the vault's
+  life (D48). What KeeperFund sends back is counted as `keeperReturned`, not as a contribution.
+- `fund()` anyone: sends the whole balance to the active game (`receiveFunding`, counted as `capitalIn`) unless it is
+  retiring. All trading fees reach the game this way, even above its capital needs.
+- `fundPromotion(amount)` timelock: sends `amount` to the active game's promotion budget (`promotionsFunded`).
+- `retireGame()` timelock; `repay(final_)` from the active game; `shutdown(minSqrtPriceX96)` anyone, after the last game
+  returned and `shutdownDelay` (30 days at launch) passed: whole balance into `ProtocolLiquidity.addLiquidity` with no
+  caller-chosen price limit (`shutdown()`, D53).
+
+## 5. PoolOwner and FwaGame
+
+`PoolOwner` (D44) creates and owns the FWA pool and holds the prizes; `FwaGame` keeps the books and drives it.
+
+PoolOwner (constructor: governance, Shapes, Shape Packs or zero, factory, expected FWA implementation; `wire(game)`):
+
+- `createPool()` anyone, once, with the salt fixed at construction (a front-run creates the intended pool, D53): pays the
+  FWA creation fee from FWA it holds (D4), stores the pool, reads FWA's
+  `maxAcquisitionsPerTx` (5) as `maxBatch`, becomes the pool's purchase operator, approves it for Shapes and Shape Packs,
+  burns leftover FWA and reports the pool to the game (`poolCreated`), which pushes the gate settings. The pool's owner
+  is PoolOwner forever.
+- `canPurchase(address)` (FWA's purchase operator hook; FWA calls it for every purchase, its own site included, with a
+  100,000-gas stipend and refuses on a revert or `false`), D45, D53: false when the purchaser is Shapes, Shape Packs or
+  zero (FWA could never deliver the prize, and only the purchaser could refund it), when FWA's unsettled requests ≥
+  `maxInFlight` (10), when FWA's `edgeBps > maxEdgeBps` or `inventoryChangeCooldown > maxCooldown`, or when
+  `activeListingCount < unsettled + maxBatch + minListed + (1 while a promotion is listed)`,
+  `minListed = ceil(minLiveBps × rows)`. Reads only live FWA
+  state and settings the game pushes (`setGate`, game only), so it holds whether or not anyone syncs.
+- Game only: `mintAndList(mints)` payable (mints each prize with exactly its cost: a Shape by `mintTo`, a Pack by
+  `createPackTo` with the fewest Shapes, and lists them in one `listNFTs`; reverts unless the ETH sent equals the sum),
+  `withdrawAndBurn(ids)`, `recoverAndBurn(id)` (Shapes burned, Packs redeemed; all ETH to the game), `collectProceeds`,
+  `setAcquisitions`, `retirePool`. `costOf(kind, backing)`: a Shape's backing + mint fee, or a Pack's backing + one mint
+  fee per Shape inside; 0 for a Pack below Shape Packs' minimum or without Shape Packs.
+
+FwaGame: constructor takes a `Config` (governance, factory, PoolOwner, vault, farm, buyback, KeeperFund, board, pricing,
+buyer, `Capital`, `marketLead`).
+
+### 5.1 Opening and admission
+- `openGame()` timelock: requires the ENGINE market to have been open at least `marketLead` (48 h at launch, read from
+  the hook's `launchedAt`), every board row listed, and `cash() ≥ reserveTarget`. Sets `opened`, starts the farm clock
+  (`openBlock`; genesis ends at `openBlock + 21 × 7,200`), and admits purchases.
+- Admission (D36, D45): FWA's own `ACQUISITIONS_ENABLED` switch is on exactly when `opened && !paused && !retiring &&
+  admissible()`, where `admissible()` = FWA `edgeBps ≤ maxEdgeBps` and `inventoryChangeCooldown ≤ maxCooldown` and live
+  board rows ≥ `minLiveBps` of the board; `sync` applies it. The purchase gate above refuses earlier and without a sync
+  (in-flight requests and a full batch counted). Both bind direct FWA purchases, not only the site. Settlement,
+  delivery, refunds and withdrawals continue while purchases are closed. `setPaused(bool)` timelock.
+
+### 5.2 The walk (D6, D24)
+
+`sync(maxCount)` anyone, tipped: cranks FWA `processAcquisitions`; resolves open requests that became terminal; sees new
+sequences; collects owner proceeds through PoolOwner and trues the books up to them; pays the operating allocation and
+distributable profit; when maintenance is due lists replacements and ends an expired promotion; applies admission;
+tops KeeperFund up from the vault. Each step runs in its own `try` and a failing one emits `StepFailed` (D46); booking
+reads no module. Reverts `NoWork` with no progress.
+
+- Cursor `seenSeq` over every issued sequence; at first sight `epochAccepted[epoch]++` with
+  `epoch = (requestBlock − openBlock) / 7,200`. Terminal statuses `Fulfilled`, `Expired`, `Refunded`, `TimedOut`,
+  `DeliveryRefunded` resolve (`epochResolved++`).
+- `Fulfilled` adds the request's ticket ETH (its escrowed FWA fee, not the VRF fee) to the purchaser's weight
+  (`epochWeight`, `userWeight`) and books the capture. Refunded, expired and undelivered requests add nothing.
+- `DeliveryPending`: FWA has taken the prize out of the draw, so the game vacates its row at once (replaced at the next
+  restock) and keeps the prize carried at cost. After `DELIVERY_GRACE_BLOCKS` (57,600) it counts resolved without weight
+  so the epoch can become final, and stays open for its economics. `DeliveryRefunded`: the prize is recovered and burned
+  or redeemed (backing back to cash, mint fees written off); if recovery fails the request stays open and is retried.
+- `isEpochFinal(e)`: the epoch has ended, every request issued in it has been seen, `accepted == resolved`.
+
+### 5.3 Accounting (D32, D33)
+
+Inventory is capital carried at cost (backing + mint fee). Per captured board prize:
+
+- revenue += owner proceeds `paid − (paid − base)/2`, `base = paid / (1 + bookingEdgeBps)`, where `bookingEdgeBps` is
+  the highest FWA edge governance has ever accepted (D47), so a booked result never exceeds FWA's own split whatever the
+  configuration later does; once no request is outstanding and FWA holds no proceeds for the game, the difference to
+  what FWA actually paid (`proceedsCollected − proceedsBooked`) is added to revenue (`TrueUp`), or to the promotion
+  budget when a promotional capture was booked since the last true-up (D53);
+- prize expense += the prize's carried cost, once (the replacement purchase is a capital movement, not an expense);
+- operating allocation += the listing's `opsBps` (3%, fixed at listing) of the expected replacement cost
+  `base / (1 + markup)`, the listing's markup also fixed at listing.
+
+Burning a held prize (retirement, a refunded delivery, an ended promotion) writes off its mint fee. KeeperFund's
+overflow above its target comes back (`returnOps`) and reduces the net operating expense.
+
+- `profit() = revenue + opsReturned − prizeExpense − opsAccrued` (signed, cumulative: losses carry forward; capital never
+  enters it). `distributed` is what has gone to the buyback.
+- `protectedCash() = replacementsOwed + opsOwed + reserveTarget + exposure`, with `exposure = min(FWA unsettled requests ×
+  the largest prize cost minted, inventory cost)` (D49).
+- `distributable() = min(profit − distributed, cash − protectedCash)`, zero while retiring or when either is not
+  positive. `_pay` (each sync and retirement step) first pays the operating allocation to KeeperFund once replacements
+  are covered (during retirement, from any cash), then sends `distributable()` to the buyback.
+- `cash() = balance − promoBudget`. Every counter is public; `Lens.accounts` returns them together.
+
+### 5.4 Inventory (D9, D35, D49, D51)
+
+One listing per board row (bitmap `liveRows`, ≤ 200 rows); a row is a Shape (kind 0) or a Shape Pack (kind 1, backing ≥
+Shape Packs' 0.03 ETH minimum). Maintenance is due only when no request is in flight (FWA would stage new listings),
+unless the board is within `maxInFlight + 5` rows of the gate's floor; and then when `listBatch` (3) rows wait, or
+`maintenanceInterval` (5 min, and at least six FWA inventory cooldowns) has passed since the last inventory change, or
+a promotion has ended. Each restock pays PoolOwner to mint prizes for up to 20 empty rows while cash covers them and
+list them in one call. Price = `PricingPolicy.listPrice`, clamped to `[cost, cost × 1.05]`; markup and operating
+allocation are fixed per listing. A board change applies to a row when it is next vacated.
+
+### 5.5 Promotions (D37)
+
+`fundPromotion()` payable (the vault, or anyone) adds to `promoBudget`. `startPromotion(backing, priceBps, endBlock)`
+timelock: one at a time, the prize's full cost reserved from the budget (its maximum obligation), listed once at
+`priceBps` of cost and never repriced (no per-pull decay), price ≥ 50% of backing and win probability ≤ 10%, end at a win
+or `endBlock` (≤ 30 days out). The 10% probability cap is checked when the promotion starts; as ordinary prizes are won
+its live chance can rise above it until replacements list (D53). An unwon prize is withdrawn and burned at the next window after its end. Its proceeds and
+cost stay in the budget (`promoProceeds`, `promoSpent`); turnover seen while it is live is `promoTurnover`.
+`releasePromotion(amount)` timelock returns unspent budget to the vault as capital.
+
+### 5.6 Retirement and governance
+
+- `retire()` (vault only) retires the FWA pool; `retireStep(maxCount)` anyone, tipped (may spend the keeper floor):
+  advance; once nothing is unsettled and every sequence is seen, withdraw up to 20 Active or Staged listings per call
+  (Shapes burned, Packs redeemed); then repay everything to the vault. A prize stuck in delivery quarantine does not block it (D30). Works
+  while the factory is withdraw-only.
+- `setModule("board"|"pricing"|"buyer", addr)`; `setCapital(Capital)` with `reserveTarget ∈ [2 × max board backing,
+  1,000 ETH]`, `maintenanceInterval ≤ 1 day`, `minLiveBps ∈ [5,000, 10,000]`, `maxInFlight ∈ [1, 20]`,
+  `maxEdgeBps ≤ 1,000` (raises `bookingEdgeBps` when above it), `maxCooldown ≤ 1 day`; each change is pushed to the gate.
+
+## 6. Converter (module, D10, D38)
+
+`convert(listingId, minEngineOut, allowNoBonus)`: listing of the game's pool, status `Settled`, collection Shapes or Shape
+Packs, not converted before (one time per listing; eligibility follows the token). Pulls the prize from the caller,
+burns the Shape or redeems the Pack, and buys ENGINE through `EngineBuyer` for the caller with exactly the ETH it
+returned: `convert` is not payable and measures
+the burn's ETH, so nothing can top it up. Adds `bonusBps()` of the output from the farm's bonus pool while it lasts;
+an empty pool never stops a conversion (`allowNoBonus`). `bonusBps() = min(conversionBonusBps, 500, sell fee)`.
+Counters `conversions`, `totalEthIn` (player conversion purchases), `totalEngineOut`, `totalBonus`.
+
+## 7. GenesisFarm (D34)
+
+- Holds the 190M genesis allocation and the 10M bonus pool. Clock: `openBlock` (set once by a ledger's `start()`),
+  `EPOCH_BLOCKS` 7,200, `GENESIS_EPOCHS` 21, `genesisEndBlock() = openBlock + 151,200`: fixed, no shorten or extend.
+- Schedule (frozen): `stepWeight(e)` = 8 for the 14 steady epochs, then 7, 6, …, 1 (87.5% … 12.5%), summing to 140.
+  `allocationCap(e) = F × w(e)/140` (F/17.5 when steady; the last epoch takes the rounding, so the caps sum to F).
+  `rateCapOf(e) = rateCap × w(e)/8` ENGINE per ETH of eligible ticket ETH; `rateCap` is fixed at deploy from the launch
+  price (10% of ticket ETH at the launch price).
+- `potOf(e) = min(allocationCap(e), epochWeight(e) × rateCapOf(e) / 1e18)`; rewards pro rata by `userWeight`, rounded
+  down (dust stays in the farm). Zero participation: pot 0. Epochs ≥ 21: cap 0, so requests at or after the end block
+  earn nothing, while a request accepted before it keeps its epoch however late it settles.
+- `finalize(epochs[])` anyone, tipped: for each final epoch fixes the pot and burns `allocationCap − pot`, which nobody
+  can earn any more. `claim(epochs[])` finalizes as needed and pays; claims never expire; an epoch held open by a stuck
+  delivery does not block any other epoch. `reserved()` = unfinalized caps + unclaimed fixed pots.
+- `payBonus(to, amount)` from the registered Converter: pays up to what the pool holds. `retireBonus()` anyone, after
+  genesis end: burns what is left; conversion continues without a bonus.
+- Ledgers: up to 4 games (`addLedger`, never removed); weight and finality are summed/required across them.
+
+Ledgers: the first game is wired; governance may add others (`addLedger`), each counting only from the epoch it was
+added in (`ledgerFrom`), so ended and finalized epochs never change (D53).
+
+## 8. Buyback and KeeperFund
+
+- `Buyback` (D39): receives profit only from registered sources (plain ETH from the game, counted as `profitReceived`), and
+  the buyer's change; anything else reverts. `process(minOut)` anyone, tipped: at most once per `minSpacing` (1 h), one
+  purchase of `min(balance, sliceWei)` (slice 0.05 ETH, a maximum), refused when the price has moved more than
+  `maxDeviationBps` (2%) against the buyer since the block opened (the hook records the opening price), capped at
+  `maxImpactBps` (3%) price impact; every ENGINE bought is burned. A keeper's `minOut` can only tighten these limits.
+  Works through the genesis transition (EngineBuyer is exempt from the gate).
+- `KeeperFund` (D16, D48): funded by the game's operating allocation and topped up by the vault (`topUp`, vault only,
+  counted as `capitalHeld`); overflow above `keeperTargetWei` goes back to the vault first (up to `capitalHeld`), then to
+  the game (`returnOps`). `tip(keeper, gasUsed, work, retirement)` from registered payers (game, buyback, farm): nothing
+  for no work; otherwise `min(tipCap, (gasUsed + gasOverhead) × min(tx.gasprice, maxGasPrice)) + flatFee`, the flat fee
+  at most once per `feeInterval` per payer. Pays what it can and never reverts for lack of balance, so settlement never
+  depends on it; keeps `maintenanceFloor` for retirement. Bounds: tip cap ≤ 0.05 ETH, gas price cap ≤ 100 gwei,
+  overhead ≤ 200,000, flat fee ≤ 0.005 ETH, interval ≤ 1 day.
+
+## 9. Token, market, liquidity
+
+- `EngineToken` "ENGINE", 18 decimals, 1,000,000,000 minted once: 800M to ProtocolLiquidity, 200M to the farm (190M
+  genesis + 10M bonus), D40. `burn`, ERC-2612 permit, renderer-backed `contractURI()`/`tokenURI()`.
+- `EngineHook` (v4): `beforeInitialize` only from ProtocolLiquidity, once. Every swap asks `SwapPolicy.check(sender,
+  isBuy)`; buys may be refused, sells never (D17). Fee placement: exact-in buy in `beforeSwap`, exact-out buy and
+  exact-in sell in `afterSwap`, exact-out sells revert. Fee from the PoolManager straight to the PrizeVault. Cap 500 bps,
+  or 9,500 bps within 3 h of initialisation. `blockOpenPrice()`: the price before the first swap of the current block.
+- `SwapPolicy`: fee 300 (≤ 500); gate: from `openBlock` until `genesisEndBlock`, buys from non-exempt senders refused;
+  it lifts by itself at the end block, at the ordinary fee, with no transaction from anyone. Exempt = EngineBuyer and
+  ProtocolLiquidity, fixed at wiring with no setter: the hook's `sender` is whoever called `PoolManager.swap`, so a shared
+  router can never be exempted (D38). Anti-snipe extra buy fee 5,000 bps decaying over 60 min.
+- `EngineBuyer.buy(minOut, to, maxImpactBps)`: registered callers only (Converter, Buyback); exact-ETH-in with a price
+  limit; unspent ETH back to the caller.
+- `ProtocolLiquidity` (D50): `launch()` timelock once, not payable: initialises the pool at the immutable `startTick`
+  (a multiple of 200) and adds every ENGINE it holds as one single-sided position over `[TICK_LOWER, startTick)`. Buys
+  move the price into the range; no ENGINE ever trades below the launch valuation, and sellers can only take out ETH
+  that was put in. A sell fills only up to the start; past it there is no liquidity, v4 leaves the price at its limit
+  and further sells revert (they could receive nothing) until someone buys. `addLiquidity(minSqrtPriceX96)` by the vault or the timelock adds over the same range (D53), and
+  reverts `NothingAdded` when it would add nothing; ETH it cannot place stays here for a later addition; no remove.
+
+## 10. Launch sequence
+
+1. Deploy (`script/deploy.sh`), postflight. 2. `ProtocolLiquidity.launch()`, no ETH: the public market runs for 48 h,
+buys and sells. 3. Fund the vault with the opening capital; `fund()`; `sync` until the board is listed.
+4. `openGame()`: genesis starts, public buys through the protocol pool close, sells keep working, conversions and
+profit-funded buys continue. 5. At `genesisEndBlock` public buys reopen automatically: no owner transaction, keeper,
+reward cleanup, delivery or claim is needed. The game keeps running on its own capital and results.
+
+## 11. Keeper jobs and Lens
+
+Tipped: `FwaGame.sync`, `FwaGame.retireStep`, `Buyback.process`, `GenesisFarm.finalize`. Tip = gas used at the gas
+price paid (capped) plus an hourly flat fee (section 8); no progress, no tip (calls revert `NoWork`). The hosted keeper
+(`keeper/`) acts when work has waited 6 h, when the basefee is below 1 gwei, or at once when the purchase gate is closed
+with rows waiting.
+
+`Lens`: `game`, `accounts` (the books), `funding` (trading fees, promotions, profit received, ETH spent on buybacks,
+ENGINE burned, conversion purchases), `inventory` (live listings with current probabilities), `targetBoard` (modelled
+full board), `market`, `epochs`, `claimable`, `conversionQuote`, `work` (including the gate's answer).
+
+## 12. Launch values
+
+`script/LaunchConfig.sol`, explained in `docs/ECONOMICS.md`: board 30 × 0.01 / 45 × 0.05 / 25 × 0.5 ETH Shapes (15.15 ETH
+at cost), restock trigger 3 rows, markup 500, operating allocation 300, conversion bonus 200, hook fee 300, anti-snipe
+5,000 over 60 min, reserve target 12 ETH, maintenance 5 min, admission fill 80%, in-flight limit 10, max edge 500, max
+cooldown 5 min, market lead 48 h, start tick from the environment (184,200 recommended, ≈ 10 ETH FDV), rate cap 10% of
+ticket ETH at the start price, slice 0.05 ETH, spacing 1 h, impact 300, deviation 200, keeper tip cap 0.05 ETH, gas
+price cap 5 gwei, overhead 70,000, flat fee 0.0003 ETH hourly, keeper target 0.5 ETH and floor 0.05 ETH, seed 0.05 ETH,
+vault top-up target 0.1 ETH (≤ 1 ETH lifetime), shutdown delay 30 days, liquidity impact cap 500.
+
+## 13. Acceptance (what the test suite covers)
+
+`forge test` on a pinned mainnet fork (block 26,279,000) with the real Shapes, FWA factory, VRF service, FWA token and
+hook, and the v4 PoolManager: unit suites (`test/unit`), fork suites (`test/fork`: game, accounting and admission,
+market including the single-sided launch, smoke, gas receipts, and resilience: keeper outage, reverting modules,
+booking under configuration changes, Shape Packs end to end, keeper top-ups), the invariant suite
+(`test/invariant/Custody.t.sol`: custody, books, ledger, farm bounds, buyback spends profit only, modules and PoolOwner
+hold nothing, escrow, keeper top-ups, booking never ahead of FWA, gate headroom) and the genesis rehearsal
+(`test/scenario`). The follow-up's
+cases are listed in `docs/FINAL_REPORT.md`.

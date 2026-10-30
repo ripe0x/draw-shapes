@@ -1,15 +1,22 @@
-# Draw Shapes
+# Draw Shapes + ENGINE
 
-A pooled prize vault on Shapes and one FWA V2 custom pool. Specification: `docs/SPEC.md`.
+A real-money NFT gacha on Ethereum mainnet: players pay ETH for a VRF draw from a board of Shapes (and, if governance
+chooses, Shape Packs) on an FWA V2 custom pool the protocol owns, and earn ENGINE during a 21-day genesis. ENGINE trading fees fund the game as capital; only
+realised game profit it can spare buys ENGINE and burns it. Specification: `docs/SPEC.md`. No independent audit has
+been done.
 
-Agent guidance: [AGENTS.md](AGENTS.md), alongside your global working agreements.
+Agent guidance: [AGENTS.md](AGENTS.md).
 
 ```
-src/            Pool.sol, Lens.sol, interfaces
-test/unit       mock based unit tests
-test/fork       pinned mainnet fork suite (real Shapes, Draw Packs, FWA V2)
-script/         Deploy.s.sol, deploy.sh, env/<env>.env
-deployments/    dependencies.json, <chainId>.json records
-docs/           SPEC.md, V1_PROMISES.md, external/ dependency dossiers
+src/            holders, modules, Lens
+script/         DeploySystem.sol (shared deploy + postflight), Deploy.s.sol, deploy.sh, env/, rehearse-anvil.sh
+test/           unit, fork (pinned mainnet), invariant (custody), scenario (genesis rehearsal)
+sim/            sustainability.py (board, drift, accounting, capital, genesis), launch.py (single-sided launch),
+                throughput.py (purchase gate), boards.py (Shapes vs Pack boards), and their results
+site/           Next.js player site
+keeper/         backup keeper (Node, viem)
+docs/           SPEC, ECONOMICS, DEPLOY, RUNBOOK, SECURITY, decisions, receipts
 external/       vendored FWA V2 sources, read only
 ```
+
+Tests: `MAINNET_RPC_URL=<archive rpc> forge test --threads 2`.
