@@ -222,7 +222,7 @@ contract GenesisRehearsal is ForkBase {
         }
         vm.warp(block.timestamp + 31 days);
         uint128 liq = sys.liquidity.totalLiquidity();
-        sys.vault.shutdown(0);
+        sys.vault.shutdown();
         assertGt(sys.liquidity.totalLiquidity(), liq);
         assertEq(address(sys.vault).balance, 0);
     }
@@ -244,7 +244,7 @@ contract GenesisRehearsal is ForkBase {
     }
 
     function _secondGame() internal returns (FwaGame g2) {
-        PoolOwner po2 = new PoolOwner(address(sys.timelock), SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL);
+        PoolOwner po2 = new PoolOwner(address(sys.timelock), SHAPES, SHAPE_PACKS, FACTORY, FWA_IMPL, keccak256("draw-shapes.fwa-pool.v2"));
         g2 = new FwaGame(
             FwaGame.Config({
                 governance: address(sys.timelock),
@@ -265,7 +265,7 @@ contract GenesisRehearsal is ForkBase {
         vm.deal(address(this), eth);
         po2.wire(address(g2));
         sys.feeBuyer.buyTo{value: eth}(address(po2), factory.poolCreationFee());
-        po2.createPool(keccak256("draw-shapes.fwa-pool.v2"));
+        po2.createPool();
         vm.startPrank(address(sys.timelock));
         sys.farm.addLedger(address(g2));
         sys.keeperFund.setPayer(address(g2), true);

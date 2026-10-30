@@ -18,6 +18,7 @@ interface ILedger {
 
 interface IFwaGame is ILedger {
     function poolCreated(address pool) external;
+    function promoListing() external view returns (uint256);
     function receiveFunding() external payable;
     function fundPromotion() external payable;
     function returnOps() external payable;

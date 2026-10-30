@@ -403,3 +403,37 @@ same opening exits at 1.3×. The split is unchanged (the owner did not approve a
 smaller farm (for example 10% with the rest to the float); valuing the rate cap at a time-weighted pool price (a
 contract change); a lower start FDV. Needs owner review.
 
+## Independent audit of 5494c33 (D53 onward)
+
+**D53. Audit findings and fixes.** A fresh-discovery audit of commit 5494c33 (prompt in `docs/AUDIT_PROMPT.md`)
+reported nine findings with fork reproductions. All were verified against the code and fixed or documented; each has a
+regression test in `test/fork/AuditFixes.t.sol` or `test/unit/Farm.t.sol`:
+
+1. *Undeliverable purchaser.* A purchase naming Shapes or Shape Packs as purchaser left the prize in FWA's delivery
+   quarantine for good: each collection refuses its own tokens, and only the purchaser may take FWA's refund that
+   lets the owner recover the prize. `PoolOwner.canPurchase` now refuses those purchasers (and zero), before any fee.
+2. *Promotion counted as a board prize by the gate.* The gate compared FWA's active listings, which include a live
+   promotion, with the board floor, so a batch could leave 79 board prizes. It now adds the promotion to the floor.
+3. *Promotional proceeds in ordinary profit through the true-up.* The true-up credited every difference to ordinary
+   revenue. When a promotional capture was booked since the last true-up, the whole difference now goes to the
+   promotion budget (ordinary revenue can only be understated, by at most that window's booking-edge margin).
+4. *Price ceiling after an addition.* `addLiquidity` added full range, so sellers could trade ENGINE below its launch
+   valuation against the added position. Every position now ends at `startTick`. Consequence: near the start the
+   range absorbs little ETH, so most of a shutdown's ETH stays in ProtocolLiquidity (protocol-owned, for later
+   additions) instead of entering the pool; the ceiling was preferred. Past the start there is no liquidity: v4 may
+   report a price beyond it after a sell, but nothing trades there.
+5. *Finalized epochs diluted by a late ledger.* `GenesisFarm` now records the epoch each ledger is added in and counts
+   it only from then, so governance cannot change an ended or finalized epoch.
+6. *Pool creation front-run between deploy transactions.* The salt is fixed in PoolOwner's constructor and
+   `createPool()` takes none, so anyone calling it first creates the intended pool; the deploy routine skips a pool that
+   exists, and postflight checks the salt and FWA's predicted address.
+7. *Shutdown with a caller-chosen price limit.* `PrizeVault.shutdown()` takes no limit (only the impact cap bounds the
+   half-swap), and an addition that would add nothing reverts `NothingAdded`.
+8. *FwaFeeBuyer paid prior ETH to the next caller.* It refunds only the caller's unspent ETH.
+9. *Promotion odds cap checked only at the start.* Documented as such: as ordinary prizes are won the promotion's live
+   chance can rise above 10% until replacements list. The prize is fully funded, so no capital is exposed; enforcing
+   the cap continuously would need room FwaGame does not have (24,286 bytes, 290 under the limit).
+
+The audit also found the gate invariant copied finding 2; it now subtracts a live promotion and checks the refused
+purchasers. Governance's breadth with a zero-delay timelock remains a documented trust assumption (docs/SECURITY.md).
+

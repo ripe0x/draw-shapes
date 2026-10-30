@@ -46,7 +46,7 @@ contract GameForkTest is ForkBase {
         vm.expectRevert();
         IOwnable(address(pool)).transferOwnership(alice);
         vm.expectRevert(PoolOwner.PoolExists.selector);
-        sys.poolOwner.createPool(bytes32(uint256(1)));
+        sys.poolOwner.createPool();
         // no FWA left behind
         assertEq(IERC20Like(FWA_TOKEN).balanceOf(address(sys.poolOwner)), 0);
     }

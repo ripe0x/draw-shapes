@@ -170,7 +170,7 @@ contract ModulesTest is Test {
         assertEq(v.activeGame(), address(0));
         assertEq(address(v).balance, 5 ether);
         vm.expectRevert(PrizeVault.NotReady.selector);
-        v.shutdown(0);
+        v.shutdown();
         vm.prank(tl);
         vm.expectRevert(Governed.OutOfBounds.selector);
         v.setShutdownDelay(1 hours);

@@ -25,6 +25,8 @@ contract PoolOwner is IPoolOwner, ReentrancyGuard, Governed {
     IShapePacks public immutable packs;
     IFWAFactory public immutable factory;
     address public immutable expectedImplementation;
+    /// @notice The FWA pool's CREATE2 salt, fixed at construction so a front-run `createPool` creates the intended pool.
+    bytes32 public immutable poolSalt;
     IFwaGame public game;
     address public pool;
 
@@ -44,14 +46,20 @@ contract PoolOwner is IPoolOwner, ReentrancyGuard, Governed {
     error PoolExists();
     error BadPayment();
 
-    constructor(address governance_, address shapes_, address packs_, address factory_, address implementation_)
-        Governed(governance_, true)
-    {
+    constructor(
+        address governance_,
+        address shapes_,
+        address packs_,
+        address factory_,
+        address implementation_,
+        bytes32 poolSalt_
+    ) Governed(governance_, true) {
         if (shapes_ == address(0) || factory_ == address(0)) revert ZeroAddress();
         shapes = IShapes(shapes_);
         packs = IShapePacks(packs_);
         factory = IFWAFactory(factory_);
         expectedImplementation = implementation_;
+        poolSalt = poolSalt_;
     }
 
     /// @notice One-shot wiring by the deployer: the game this contract serves.
@@ -74,13 +82,14 @@ contract PoolOwner is IPoolOwner, ReentrancyGuard, Governed {
     // ------------------------------------------------------------------ pool
 
     /// @notice Creates the FWA pool, paying the factory's FWA creation fee from FWA this contract holds (D4), becomes
-    ///         its purchase operator and approves it for Shapes and Packs. Once; anyone. Leftover FWA is burned.
-    function createPool(bytes32 salt) external nonReentrant returns (address created) {
+    ///         its purchase operator and approves it for Shapes and Packs. Once; anyone, always with `poolSalt`, so
+    ///         calling it before the deployer does creates exactly the intended pool. Leftover FWA is burned.
+    function createPool() external nonReentrant returns (address created) {
         if (pool != address(0)) revert PoolExists();
         address fwa = factory.fwaToken();
         uint256 fee = factory.poolCreationFee();
         SafeTransferLib.safeApprove(fwa, address(factory), fee);
-        created = factory.createPool(salt, fee, expectedImplementation);
+        created = factory.createPool(poolSalt, fee, expectedImplementation);
         pool = created;
         maxBatch = factory.maxAcquisitionsPerTx();
         IFWAPool(created).setPurchaseOperator(address(this));
@@ -95,14 +104,19 @@ contract PoolOwner is IPoolOwner, ReentrancyGuard, Governed {
     /// @notice FWA's purchase operator hook, called for every purchase (FWA's own site included) with a 100,000-gas
     ///         stipend; a revert or a false answer refuses the purchase before anything is paid. Reads only live FWA
     ///         state and this contract's gate settings, never the game's books, so it holds while nobody syncs.
-    ///         Refuses when: `maxInFlight` requests are unsettled; FWA's edge or inventory cooldown is above range; or
-    ///         the prizes in the draw, less every unsettled request and one full batch, would fall below `minListed`.
-    function canPurchase(address) external view returns (bool) {
+    ///         Refuses when: the purchaser is Shapes or Shape Packs (each refuses its own tokens, so FWA could never
+    ///         deliver the prize and only the purchaser, which cannot call FWA, could refund it: the prize would stay
+    ///         in FWA's escrow for good); `maxInFlight` requests are unsettled; FWA's edge or inventory cooldown is
+    ///         above range; or the prizes in the draw, less every unsettled request, one full batch and a live
+    ///         promotion's listing, would fall below `minListed` board prizes.
+    function canPurchase(address purchaser) external view returns (bool) {
+        if (purchaser == address(shapes) || purchaser == address(packs) || purchaser == address(0)) return false;
         IFWAPool p = IFWAPool(pool);
         uint256 u = p.unsettledAcquisitionCount();
         if (u >= maxInFlight) return false;
         if (factory.edgeBps() > maxEdgeBps || factory.inventoryChangeCooldown() > maxCooldown) return false;
-        return p.activeListingCount() >= u + maxBatch + minListed;
+        uint256 promo = game.promoListing() != 0 ? 1 : 0; // the promotion's listing is in the draw, not on the board
+        return p.activeListingCount() >= u + maxBatch + minListed + promo;
     }
 
     /// @notice Sets the purchase gate. The game only (from its capital settings and its board).

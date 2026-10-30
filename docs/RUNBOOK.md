@@ -60,7 +60,8 @@ call on a local fork.
 
 1. Governance: `PrizeVault.fundPromotion(amount)` (from vault capital) or anyone sends to `FwaGame.fundPromotion()`.
 2. Governance: `FwaGame.startPromotion(backing, priceBps, endBlock)`. The prize's full cost is reserved; it is listed
-   once and never repriced; at most 30 days; price ≥ 50% of backing and win probability ≤ 10%.
+   once and never repriced; at most 30 days; price ≥ 50% of backing and win probability ≤ 10% when it starts (the live
+   chance can rise above 10% as ordinary prizes are won, until replacements list).
 3. It ends at a win or at `endBlock` (the next maintenance withdraws and burns an unwon prize). Report:
    `Lens.accounts` (`promoFunded`, `promoSpent`, `promoProceeds`, `promoTurnover`).
 4. Governance: `FwaGame.releasePromotion(amount)` returns what is left to the vault as capital.
@@ -97,7 +98,8 @@ the notice. Raise the delay (`TimelockController.updateDelay`, itself a timelock
 ## A new game
 
 Deploy a new PoolOwner and FwaGame (same constructor `Config`, pointing at the new PoolOwner), `PoolOwner.wire(newGame)`,
-buy its FWA fee with `FwaFeeBuyer.buyTo(newPoolOwner, fee)` and call `PoolOwner.createPool`. Governance: `GenesisFarm.addLedger(newGame)`, `KeeperFund.setPayer(newGame, true)`,
+buy its FWA fee with `FwaFeeBuyer.buyTo(newPoolOwner, fee)` and call `PoolOwner.createPool()` (the salt is fixed in
+its constructor). The new game's farm ledger counts from the epoch `addLedger` is called in. Governance: `GenesisFarm.addLedger(newGame)`, `KeeperFund.setPayer(newGame, true)`,
 `KeeperFund.setOverflow(newGame)`, `Buyback.setSource(newGame, true)`, `PrizeVault.setActiveGame(newGame)`, and deploy
 a Converter for it (`GenesisFarm.setBonusPayer`, `EngineBuyer.setCaller`). Anyone: `PrizeVault.fund()`, `sync` to fill the board.
 Governance: `openGame()` (the farm clock does not restart). Rehearsed in `test/scenario/GenesisRehearsal.t.sol`.
@@ -105,8 +107,9 @@ Governance: `openGame()` (the farm clock does not restart). Rehearsed in `test/s
 ## Shutdown
 
 With no game active and the last game repaid, after `shutdownDelay` (30 days), anyone may call
-`PrizeVault.shutdown(minSqrtPriceX96)`: the whole vault goes into the protocol-owned ENGINE liquidity, with the
-half-swap capped at 5 % price impact; leftovers stay in ProtocolLiquidity for the next addition.
+`PrizeVault.shutdown()`: the vault's ETH goes into the protocol-owned ENGINE liquidity, with the half-swap capped at
+5 % price impact. Positions end at the start price, so near it little ETH fits; the rest stays in ProtocolLiquidity,
+and governance can add it later (`addLiquidity`) once the price has moved below the start.
 
 ## Incidents
 

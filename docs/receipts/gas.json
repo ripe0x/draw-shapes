@@ -1,11 +1,11 @@
 {
-  "acquire": 609937,
-  "claim_1_epoch": 126911,
-  "convert": 463661,
-  "finalize_1_epoch": 231744,
+  "acquire": 617639,
+  "claim_1_epoch": 129935,
+  "convert": 463682,
+  "finalize_1_epoch": 234785,
   "fork_block": 26279000,
   "process_buyback": 409894,
-  "sync_1": 1377074,
-  "sync_20": 9969589,
-  "sync_5": 3000604
+  "sync_1": 1379242,
+  "sync_20": 9971776,
+  "sync_5": 3002776
 }

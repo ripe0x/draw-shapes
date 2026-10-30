@@ -156,14 +156,15 @@ contract PrizeVault is ReentrancyGuard, Governed {
     }
 
     /// @notice With no game active, after the last game returned and `shutdownDelay` passed, moves the whole
-    ///         balance into the protocol-owned ENGINE liquidity. Anyone may call.
-    function shutdown(uint160 minSqrtPriceX96) external nonReentrant {
+    ///         balance into the protocol-owned ENGINE liquidity. Anyone may call. The half-swap is bounded only by
+    ///         ProtocolLiquidity's impact cap: a caller cannot pick a price limit that adds nothing and strands the ETH.
+    function shutdown() external nonReentrant {
         if (activeGame != address(0) || returnedAt == 0 || block.timestamp < returnedAt + shutdownDelay) {
             revert NotReady();
         }
         uint256 amount = address(this).balance;
         if (amount == 0) revert NothingToSend();
-        liquidity.addLiquidity{value: amount}(minSqrtPriceX96);
+        liquidity.addLiquidity{value: amount}(0);
         emit Shutdown(amount);
     }
 

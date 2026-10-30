@@ -28,7 +28,8 @@ import {IBurnable} from "../interfaces/IDrawShapes.sol";
 ///      price can never return above `startTick`: the ETH sellers can reach is exactly what buyers (and buybacks) put
 ///      in. ENGINE left over by liquidity rounding is burned. `addLiquidity` (an authorised adder: the vault on
 ///      shutdown, the timelock) buys ENGINE with about half the ETH, the swap capped at `maxImpactBps` and at the
-///      caller's `minSqrtPriceX96`, then adds both full range; leftovers stay for the next addition. Outflows: only
+///      caller's `minSqrtPriceX96`, then adds both over the same `[TICK_LOWER, startTick)` range, so the ceiling holds
+///      after any addition; leftovers stay for the next addition. Outflows: only
 ///      into the pool positions (and the rounding burn).
 contract ProtocolLiquidity is IUnlockCallback, ReentrancyGuard, Governed {
     using StateLibrary for IPoolManager;
@@ -59,6 +60,7 @@ contract ProtocolLiquidity is IUnlockCallback, ReentrancyGuard, Governed {
     error NotPoolManager();
     error PriceLimit();
     error BadTick();
+    error NothingAdded();
 
     enum Action {
         Seed,
@@ -115,7 +117,9 @@ contract ProtocolLiquidity is IUnlockCallback, ReentrancyGuard, Governed {
         emit Launched(startTick, tokens - dust, liquidity);
     }
 
-    /// @notice Adds `msg.value` plus any ETH and ENGINE already held to the protocol position.
+    /// @notice Adds `msg.value` plus any ETH and ENGINE already held to the protocol position, over the same range as the
+    ///         launch, `[TICK_LOWER, startTick)`, so no addition can let the price return above the start. Reverts when
+    ///         nothing would be added (the ETH then stays here for a later addition).
     function addLiquidity(uint160 minSqrtPriceX96) external payable nonReentrant returns (uint128 liquidity) {
         if (!isAdder[msg.sender] && msg.sender != governance) revert NotAuthorized();
         if (!launched) revert NotLaunched();
@@ -154,10 +158,11 @@ contract ProtocolLiquidity is IUnlockCallback, ReentrancyGuard, Governed {
             liquidity = LiquidityAmounts.getLiquidityForAmounts(
                 p,
                 TickMath.getSqrtPriceAtTick(TICK_LOWER),
-                TickMath.getSqrtPriceAtTick(TICK_UPPER),
+                TickMath.getSqrtPriceAtTick(startTick),
                 ethIn - ethSwapped,
                 tokensBought + SafeTransferLib.balanceOf(token, address(this))
             );
+            if (liquidity == 0) revert NothingAdded();
         }
         BalanceDelta delta;
         if (liquidity != 0) {
@@ -165,7 +170,7 @@ contract ProtocolLiquidity is IUnlockCallback, ReentrancyGuard, Governed {
                 key,
                 ModifyLiquidityParams({
                     tickLower: TICK_LOWER,
-                    tickUpper: action == Action.Seed ? startTick : TICK_UPPER,
+                    tickUpper: startTick, // every position ends at the start: the price can never return above it
                     liquidityDelta: int256(uint256(liquidity)),
                     salt: 0
                 }),

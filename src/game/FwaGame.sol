@@ -140,6 +140,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
     uint256 public distributed; // profit sent to the buyback
     uint256 public proceedsBooked; // owner proceeds booked (board and promotion), at the booking edge
     uint256 public proceedsCollected; // owner proceeds FWA actually paid
+    bool internal _promoSinceTrueUp; // a promotional capture was booked since the last true-up
 
     // promotions: a separate budget, never profit
     uint256 public promoBudget;
@@ -408,7 +409,16 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         }
         uint256 extra = proceedsCollected - proceedsBooked;
         proceedsBooked = proceedsCollected;
-        revenue += extra;
+        // The difference cannot be attributed capture by capture, so when a promotional capture is in the window it all
+        // goes to the promotion budget: promotion money never becomes ordinary profit (ordinary revenue is only ever
+        // understated, by at most the booking-edge margin of that window).
+        if (_promoSinceTrueUp) {
+            _promoSinceTrueUp = false;
+            promoBudget += extra;
+            promoProceeds += extra;
+        } else {
+            revenue += extra;
+        }
         emit TrueUp(extra);
     }
 
@@ -616,6 +626,7 @@ contract FwaGame is IFwaGame, ReentrancyGuard, Governed {
         proceedsBooked += proceeds;
         uint256 ops;
         if (it.row == PROMO_ROW) {
+            _promoSinceTrueUp = true;
             promoBudget += proceeds;
             promoProceeds += proceeds;
             promoSpent += it.cost;

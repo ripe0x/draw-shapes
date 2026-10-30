@@ -147,7 +147,7 @@ abstract contract DeploySystem {
             c.maxImpactBps,
             c.maxDeviationBps
         );
-        s.poolOwner = new PoolOwner(tl, c.shapes, c.packs, c.fwaFactory, c.fwaImplementation);
+        s.poolOwner = new PoolOwner(tl, c.shapes, c.packs, c.fwaFactory, c.fwaImplementation, c.poolSalt);
         s.game = new FwaGame(
             FwaGame.Config({
                 governance: tl,
@@ -173,7 +173,9 @@ abstract contract DeploySystem {
         if (c.createPool) {
             uint256 fee = _poolCreationFee(c);
             if (fee != 0) s.feeBuyer.buyTo{value: c.fwaFeeEth}(address(s.poolOwner), fee);
-            s.poolOwner.createPool(c.poolSalt);
+            // Anyone may call `createPool` once the fee is in place, always with the fixed salt; if someone already
+            // has, the pool is the intended one and there is nothing left to do.
+            if (s.poolOwner.pool() == address(0)) s.poolOwner.createPool();
         }
     }
 
@@ -357,6 +359,8 @@ abstract contract DeploySystem {
             _check(IOwnedView(pool).owner() == address(s.poolOwner), "pool owner");
             _check(IPurchaseView(pool).purchaseOperator() == address(s.poolOwner), "purchase operator");
             _check(s.poolOwner.pool() == pool, "pool recorded");
+            _check(s.poolOwner.poolSalt() == c.poolSalt, "pool salt");
+            _check(IFactoryBatch(c.fwaFactory).predictPoolAddress(address(s.poolOwner), c.poolSalt) == pool, "pool address");
             _check(s.poolOwner.maxInFlight() == c.capital.maxInFlight, "gate in flight");
             _check(
                 s.poolOwner.maxEdgeBps() == c.capital.maxEdgeBps && s.poolOwner.maxCooldown() == c.capital.maxCooldown,
@@ -396,4 +400,5 @@ interface IPurchaseView {
 
 interface IFactoryBatch {
     function maxAcquisitionsPerTx() external view returns (uint16);
+    function predictPoolAddress(address poolOwner, bytes32 userSalt) external view returns (address);
 }

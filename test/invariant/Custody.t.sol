@@ -57,13 +57,17 @@ contract CustodyInvariants is ForkBase {
         assertGe(sys.game.bookingEdgeBps(), factory.edgeBps(), "booking edge at least FWA's");
     }
 
-    /// @notice I11 gate: whenever the gate admits a purchase, the board keeps a full batch, every unsettled request and
-    ///         the floor; and it never admits past the in-flight limit.
+    /// @notice I11 gate: whenever the gate admits a purchase, the board (FWA's active listings less a live promotion's)
+    ///         keeps a full batch, every unsettled request and the floor; it never admits past the in-flight limit, nor
+    ///         for a purchaser FWA could never deliver to.
     function invariant_gateHeadroom() public view {
+        assertFalse(sys.poolOwner.canPurchase(SHAPES), "Shapes as purchaser");
+        assertFalse(sys.poolOwner.canPurchase(SHAPE_PACKS), "Shape Packs as purchaser");
         if (!sys.poolOwner.canPurchase(address(this))) return;
         uint256 u = pool.unsettledAcquisitionCount();
+        uint256 board = pool.activeListingCount() - (sys.game.promoListing() != 0 ? 1 : 0);
         assertLt(u, sys.poolOwner.maxInFlight(), "in flight");
-        assertGe(pool.activeListingCount(), u + sys.poolOwner.maxBatch() + sys.poolOwner.minListed(), "headroom");
+        assertGe(board, u + sys.poolOwner.maxBatch() + sys.poolOwner.minListed(), "headroom");
     }
 
     /// @notice I3 ledger: `accepted` = requests FWA issued (and the walk has seen) per epoch; weight never exceeds the

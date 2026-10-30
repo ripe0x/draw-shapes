@@ -1,7 +1,6 @@
 # Security notes
 
-What the contracts enforce, what they trust, and what is known to be open. **No independent security audit has been
-done.** An audit and a legal review are launch requirements and are outside this repository. Nothing is deployed.
+What the contracts enforce, what they trust, and what is known to be open. One independent audit has been run (D53); its findings are fixed and the fixes are not yet re-audited. An audit and a legal review are launch requirements and are outside this repository. Nothing is deployed.
 
 ## Trust model
 
@@ -51,9 +50,15 @@ raised before outside money is material (docs/RUNBOOK.md).
 
 ## Known limits and open items
 
-- **No audit.** The PoolOwner split, the gate, booking and true-up, Packs, keeper pay and the single-sided launch are
-  new in this round.
-- **FwaGame size**: 24,195 bytes, 381 under the limit (legacy pipeline, no via_ir). Further features need another split.
+- **One independent audit, findings fixed, fixes not re-audited.** A fresh-discovery audit of 5494c33 reported nine
+  findings (D53): an undeliverable purchaser locking prizes, the gate counting a promotion as a board prize,
+  promotional true-up reaching profit, the price ceiling broken by a full-range addition, late ledgers diluting
+  finalized epochs, a pool-creation front-run, a caller-chosen shutdown limit, a fee-buyer sweep, and the promotion
+  odds cap drifting. All are fixed (the last documented), with regressions in `test/fork/AuditFixes.t.sol`; the fixes
+  themselves have not been audited.
+- **Shutdown and the ceiling.** Positions end at the start price, so a shutdown near it places little ETH; the rest
+  waits in ProtocolLiquidity.
+- **FwaGame size**: 24,286 bytes, 290 under the limit (legacy pipeline, no via_ir). Further features need another split.
 - **Gate granularity**: FWA does not tell the operator a purchase's size, so the gate always assumes a batch of 5. A
   board needs at least floor + 5 rows; refunds from FWA's drift guard rise with the in-flight limit on small boards
   (`sim/results/throughput.md`).

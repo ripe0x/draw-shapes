@@ -49,7 +49,7 @@ is under 24,576 bytes.
    (FwaGame ledger, Converter bonus payer, keeper fund); SwapPolicy (hook, exempt EngineBuyer and ProtocolLiquidity,
    fixed); ProtocolLiquidity (hook, vault adder); EngineBuyer callers (Converter, Buyback); PoolOwner (FwaGame); vault (first game,
    KeeperFund and the 0.1 ETH top-up target); Buyback (FwaGame as its profit source).
-7. FWA pool: `FwaFeeBuyer.buyTo(poolOwner, fee)` buys FWA straight into PoolOwner; `PoolOwner.createPool(salt)` creates
+7. FWA pool: `FwaFeeBuyer.buyTo(poolOwner, fee)` buys FWA straight into PoolOwner; `PoolOwner.createPool()` (salt fixed in its constructor; skipped if someone already called it) creates
    the pool, makes PoolOwner its purchase operator, approves Shapes and Shape Packs, burns leftover FWA and reports
    the pool to FwaGame, which pushes the purchase gate's settings.
 
@@ -63,7 +63,7 @@ ProtocolLiquidity hook and vault adder; swap policy hook, exempt set, fee 300, a
 callers (Converter, Buyback; not FwaGame); farm ledger, bonus payer, keeper fund, 21 epochs of 7,200 blocks; vault
 active game and liquidity; FwaGame references, capital and admission settings, market lead; pricing; buyback limits;
 keeper seed, floor, payers, tip cap and flat fee; vault top-up wiring and target; PoolOwner references and
-collections; booking edge; start tick; FWA pool exists, its owner and `purchaseOperator` are PoolOwner, the gate's
+collections; booking edge; start tick; the pool salt and FWA's predicted pool address; FWA pool exists, its owner and `purchaseOperator` are PoolOwner, the gate's
 in-flight limit, range and batch (FWA's `maxAcquisitionsPerTx`); gate end equals genesis end (max before the game
 opens).
 

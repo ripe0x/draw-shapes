@@ -32,11 +32,12 @@ contract FwaFeeBuyer is IUnlockCallback {
 
     /// @notice Spends all of `msg.value` buying FWA for `recipient`; reverts unless at least `minOut` arrives.
     function buyTo(address recipient, uint256 minOut) external payable returns (uint256 out) {
+        uint256 prior = address(this).balance - msg.value; // ETH someone else left here is not this caller's
         uint256 before = SafeTransferLib.balanceOf(fwa, recipient);
         poolManager.unlock(abi.encode(recipient, msg.value));
         out = SafeTransferLib.balanceOf(fwa, recipient) - before;
         if (out < minOut) revert InsufficientOutput(out, minOut);
-        uint256 left = address(this).balance;
+        uint256 left = address(this).balance - prior;
         if (left != 0) SafeTransferLib.forceSafeTransferETH(msg.sender, left);
     }
 

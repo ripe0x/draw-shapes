@@ -1,11 +1,33 @@
 # Final report: Draw Shapes + ENGINE
 
-Date: 2026-10-29. Branch: `claude/relaxed-goodall-mmbzpd` (PR #9). This covers the original build (D1–D30), the
-sustainability follow-up (D31–D43) and the collection-games review (D44–D52). No independent audit has been done.
+Date: 2026-10-30. Branch: `claude/relaxed-goodall-mmbzpd` (PR #9). This covers the original build (D1–D30), the
+sustainability follow-up (D31–D43), the collection-games review (D44–D52) and the fixes for an independent audit of
+5494c33 (D53). The audit's findings are fixed; the fixes have not been re-audited.
 Nothing was broadcast to any live network. No private key was created or used. Time manipulation happened only in
 local fork tests and on a local anvil fork.
 
-## This round: designs adopted from collection-games (D44–D52)
+## Audit fixes (D53)
+
+A fresh-discovery audit of 5494c33 (`docs/AUDIT_PROMPT.md`) reported nine findings, each with a fork reproduction. All
+were verified and fixed, the ninth documented:
+
+| # | finding | fix |
+|---|---|---|
+| 1 | a purchase naming Shapes or Packs as purchaser locked the prize in FWA's quarantine for good | the gate refuses those purchasers |
+| 2 | the gate counted a live promotion as a board prize (a batch could leave 79 of 80) | the promotion is added to the floor |
+| 3 | the true-up put promotional proceeds into ordinary profit | the difference goes to the promotion budget when a promotional capture is in the window |
+| 4 | a full-range addition let ENGINE trade below its launch valuation | every position ends at the start price |
+| 5 | a late ledger could dilute finalized genesis epochs | ledgers count from the epoch they were added in |
+| 6 | `createPool` could be front-run with another salt between deploy transactions | salt fixed in the constructor; the deploy skips an existing pool; postflight checks the address |
+| 7 | a caller-chosen shutdown price limit could leave ETH idle | `shutdown()` has no limit; empty additions revert |
+| 8 | `FwaFeeBuyer` paid ETH left in it to the next caller | refunds only the caller's ETH |
+| 9 | the promotion odds cap is checked only at the start | documented |
+
+Consequence of fix 4: near the start price a shutdown places little ETH; the rest stays in ProtocolLiquidity for later
+additions. Tests: 110 pass (8 new regressions in `test/fork/AuditFixes.t.sol` and `test/unit/Farm.t.sol`; the gate
+invariant now subtracts a live promotion). FwaGame is 24,286 bytes (290 spare).
+
+## Designs adopted from collection-games (D44–D52)
 
 The owner asked which `ripe0x/collection-games` designs to adopt and approved: a zero-ETH single-sided launch; Shape
 Packs (mainnet `0xf21514B0…5cA7`) as a prize; the purchase gate, step recovery, fixed booking, keeper pay, restock
@@ -14,7 +36,7 @@ board kept with Pack boards presented; the opening valuation proposed from a mod
 
 - **PoolOwner** (D44) creates and owns the FWA pool, holds and lists prizes, mints Shapes and Packs with exactly the
   game's ETH, turns withdrawn or recovered prizes back into ETH, and is FWA's purchase operator. FwaGame keeps the
-  books (24,195 bytes, 381 under the limit).
+  books (24,195 bytes then; 24,286 after the audit fixes).
 - **Purchase gate** (D45) on live FWA state: refuses past 10 in flight, outside the edge/cooldown range, or when the
   board would fall below 80% + a batch of 5 + every unsettled request. It binds FWA's own site and holds while nobody
   syncs: in a day-long keeper outage direct purchases stopped with 84 prizes in the draw; one sync booked all 16 pulls
@@ -235,9 +257,9 @@ From docs/ECONOMICS.md.
 
 ## Blockers and limits
 
-- **No audit.** The accounting, admission, PoolOwner, gate, Packs, keeper and launch code is new and should be
-  reviewed independently (docs/SECURITY.md).
-- **FwaGame size.** FwaGame is 24,195 bytes, 381 under the limit; further features need another module split.
+- **Audit.** One independent audit was run and its findings are fixed (D53); the fixes are not yet re-audited, and
+  an audit is not a guarantee (docs/SECURITY.md).
+- **FwaGame size.** FwaGame is 24,286 bytes, 290 under the limit; further features need another module split.
 - **Keeper gas.** At base fees above about 1.6 gwei the operating allocation does not pay for every sync. Keepers wait;
   settlement does not.
 - **Buyback price check.** It defeats a same-block sandwich, not a manipulation held across a block boundary; the slice
@@ -264,7 +286,7 @@ From docs/ECONOMICS.md.
 1. Review docs/IMPLEMENTOR_DECISIONS.md D44–D52, especially the start valuation (D50) and farm selling (D52), and
    D31–D43 (supply split D40, reserve D41).
 2. Choose `START_TICK` (start price and rate cap), the opening capital and whether to adopt a Pack board.
-3. Commission an independent audit before outside money is material.
+3. Have the audit fixes (D53) reviewed, ideally by the same auditor, before outside money is material.
 4. Run the Sepolia simulation and CI with a private archive RPC; then `DRY_RUN=1 script/deploy.sh mainnet` and the
    owner's broadcast.
 5. Raise the timelock delay before outside money is material.

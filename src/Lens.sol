@@ -166,7 +166,7 @@ contract Lens {
             if (p.totalWeight() != 0) (v.quoteFee, v.quoteVrf,) = p.quoteAcquisitionPrice(1);
             v.inventoryVersion = p.inventoryVersion();
             v.purchasesResumeAt = p.purchasesResumeAt();
-            v.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(0));
+            v.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(this));
         }
     }
 
@@ -334,7 +334,7 @@ contract Lens {
             w.syncable = (last >= seen ? last - seen + 1 : 0) + g.openCount();
             w.admissionChange =
                 !g.retiring() && g.opened() && (!g.paused() && g.admissible()) != p.localPurchasesEnabled();
-            w.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(0));
+            w.gateOpen = IGate(address(g.poolOwner())).canPurchase(address(this));
         }
         uint256 rows = g.board().rowCount();
         w.unlistedRows = rows - _popcount(g.liveRows() & ((rows >= 256 ? 0 : (uint256(1) << rows)) - 1));

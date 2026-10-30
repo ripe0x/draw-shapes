@@ -39,6 +39,9 @@ contract GenesisFarm is ReentrancyGuard, Governed {
     uint256 public bonusPool;
 
     address[] internal _ledgers;
+    /// @notice The first epoch a ledger counts in: the epoch it was added in (0 for one added before the clock starts).
+    ///         Ended epochs never change when governance adds a ledger, so finalized pots and their shares are fixed.
+    mapping(address ledger => uint256) public ledgerFrom;
     mapping(address => bool) public isLedger;
     mapping(address => bool) public isBonusPayer;
 
@@ -142,14 +145,14 @@ contract GenesisFarm is ReentrancyGuard, Governed {
     function epochWeight(uint256 epoch) public view returns (uint256 w) {
         uint256 n = _ledgers.length;
         for (uint256 i; i < n; ++i) {
-            w += ILedger(_ledgers[i]).epochWeight(epoch);
+            if (epoch >= ledgerFrom[_ledgers[i]]) w += ILedger(_ledgers[i]).epochWeight(epoch);
         }
     }
 
     function userWeight(uint256 epoch, address purchaser) public view returns (uint256 w) {
         uint256 n = _ledgers.length;
         for (uint256 i; i < n; ++i) {
-            w += ILedger(_ledgers[i]).userWeight(epoch, purchaser);
+            if (epoch >= ledgerFrom[_ledgers[i]]) w += ILedger(_ledgers[i]).userWeight(epoch, purchaser);
         }
     }
 
@@ -158,7 +161,7 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         if (openBlock == 0 || block.number < openBlock + (epoch + 1) * EPOCH_BLOCKS) return false;
         uint256 n = _ledgers.length;
         for (uint256 i; i < n; ++i) {
-            if (!ILedger(_ledgers[i]).isEpochFinal(epoch)) return false;
+            if (epoch >= ledgerFrom[_ledgers[i]] && !ILedger(_ledgers[i]).isEpochFinal(epoch)) return false;
         }
         return true;
     }
@@ -293,6 +296,7 @@ contract GenesisFarm is ReentrancyGuard, Governed {
         if (ledger == address(0)) revert ZeroAddress();
         if (isLedger[ledger] || _ledgers.length >= MAX_LEDGERS) revert OutOfBounds();
         isLedger[ledger] = true;
+        ledgerFrom[ledger] = currentEpoch();
         _ledgers.push(ledger);
         emit LedgerAdded(ledger);
     }

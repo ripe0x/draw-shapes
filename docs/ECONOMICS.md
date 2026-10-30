@@ -68,14 +68,14 @@ Each figure is the call's execution gas plus the 21,000 base cost.
 
 | call | gas | ETH at 1 gwei | 5 gwei |
 |---|---|---|---|
-| a player's `acquire` (FWA; now includes the purchase gate) | 609,937 | 0.00061 | 0.00305 |
-| `sync`: 1 pull booked + its replacement minted and listed | 1,377,074 | 0.00138 | 0.00689 |
-| `sync`: 5 pulls + 5 replacements | 3,000,604 | 0.00300 | 0.01500 |
-| `sync`: 20 pulls + 20 replacements | 9,969,589 | 0.00997 | 0.04985 |
+| a player's `acquire` (FWA; now includes the purchase gate) | 617,639 | 0.00062 | 0.00309 |
+| `sync`: 1 pull booked + its replacement minted and listed | 1,379,242 | 0.00138 | 0.00690 |
+| `sync`: 5 pulls + 5 replacements | 3,002,776 | 0.00300 | 0.01501 |
+| `sync`: 20 pulls + 20 replacements | 9,971,776 | 0.00997 | 0.04986 |
 | `Buyback.process` (one slice, bought and burned) | 409,894 | 0.00041 | 0.00205 |
-| `Converter.convert` | 463,661 | 0.00046 | 0.00232 |
-| `GenesisFarm.finalize`, one epoch | 231,744 | 0.00023 | 0.00116 |
-| `GenesisFarm.claim`, one epoch | 126,911 | 0.00013 | 0.00063 |
+| `Converter.convert` | 463,682 | 0.00046 | 0.00232 |
+| `GenesisFarm.finalize`, one epoch | 234,785 | 0.00023 | 0.00117 |
+| `GenesisFarm.claim`, one epoch | 129,935 | 0.00013 | 0.00065 |
 
 Per pull, `sync` costs about 452k gas beyond the first pull of a call: almost all of it is the replacement (a
 Shapes mint through PoolOwner and an FWA listing). The 20-pull figure was measured with the gate's floor lowered to 50%
@@ -192,8 +192,8 @@ Single-sided, the start FDV is set by `START_TICK`, not by the split.
 
 ## 9. Sizes
 
-Runtime bytes (legacy codegen, optimizer 200), from `forge build --sizes`: FwaGame 24,195 (381 under 24,576), Lens
-18,992, PoolOwner 8,917, ProtocolLiquidity 8,699, GenesisFarm 6,953, EngineHook 6,123, KeeperFund 4,747, PrizeVault
+Runtime bytes (legacy codegen, optimizer 200), from `forge build --sizes`: FwaGame 24,286 (290 under 24,576), Lens
+18,992, PoolOwner 9,297, ProtocolLiquidity 8,723, GenesisFarm 7,228, EngineHook 6,123, KeeperFund 4,747, PrizeVault
 4,661, Converter 4,319, EngineBuyer 4,190, Buyback 3,936, EngineToken 2,940.
 Exact figures in `docs/FINAL_REPORT.md`.
 

@@ -255,6 +255,29 @@ contract FarmTest is Test {
         assertFalse(farm.isFinal(0));
     }
 
+    /// @notice A ledger governance adds later counts only from the epoch it was added in, so it cannot dilute a
+    ///         finalized epoch by reporting historical weight (audit finding 5).
+    function test_lateLedgerCannotDiluteFinalizedEpochs() public {
+        _open();
+        ledger.add(0, alice, 1 ether);
+        _toEpoch(1);
+        farm.finalize(_one(0));
+        uint256 pot = farm.potOf(0);
+        // governance registers a ledger that reports the same historical weight for bob
+        TestLedger late = new TestLedger();
+        late.add(0, bob, 1 ether);
+        late.add(1, bob, 1 ether);
+        vm.prank(tl);
+        farm.addLedger(address(late));
+        assertEq(farm.ledgerFrom(address(late)), 1);
+        assertEq(farm.epochWeight(0), 1 ether, "epoch 0 ignores the late ledger");
+        assertEq(farm.rewardOf(0, bob), 0);
+        assertEq(_claim(alice, 0), pot, "alice keeps the whole finalized pot");
+        // from its first epoch on the late ledger counts
+        assertEq(farm.epochWeight(1), 1 ether);
+        assertEq(farm.userWeight(1, bob), 1 ether);
+    }
+
     function test_settersAccess() public {
         vm.expectRevert(Governed.NotGovernance.selector);
         farm.addLedger(address(1));

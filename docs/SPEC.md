@@ -57,8 +57,8 @@ Holders (no upgrade path): `PrizeVault`, `PoolOwner`, `FwaGame`, `GenesisFarm`, 
 Removed in the follow-up: `Treasury` (its sink table could send revenue anywhere), `GrailFund`, `GrailPolicy` (per-pull
 GRAIL decay) and `EmissionSchedule` (the schedule is now frozen in the farm).
 
-Runtime sizes (legacy codegen, optimizer 200): see `docs/ECONOMICS.md` section 9; FwaGame is the largest at 24,195
-bytes, 381 under 24,576, after moving pool ownership, minting and the purchase gate into PoolOwner (D44).
+Runtime sizes (legacy codegen, optimizer 200): see `docs/ECONOMICS.md` section 9; FwaGame is the largest at 24,286
+bytes, 290 under 24,576, after moving pool ownership, minting and the purchase gate into PoolOwner (D44).
 
 ## 4. PrizeVault (capital)
 
@@ -73,7 +73,8 @@ bytes, 381 under 24,576, after moving pool ownership, minting and the purchase g
   retiring. All trading fees reach the game this way, even above its capital needs.
 - `fundPromotion(amount)` timelock: sends `amount` to the active game's promotion budget (`promotionsFunded`).
 - `retireGame()` timelock; `repay(final_)` from the active game; `shutdown(minSqrtPriceX96)` anyone, after the last game
-  returned and `shutdownDelay` (30 days at launch) passed: whole balance into `ProtocolLiquidity.addLiquidity`.
+  returned and `shutdownDelay` (30 days at launch) passed: whole balance into `ProtocolLiquidity.addLiquidity` with no
+  caller-chosen price limit (`shutdown()`, D53).
 
 ## 5. PoolOwner and FwaGame
 
@@ -81,14 +82,17 @@ bytes, 381 under 24,576, after moving pool ownership, minting and the purchase g
 
 PoolOwner (constructor: governance, Shapes, Shape Packs or zero, factory, expected FWA implementation; `wire(game)`):
 
-- `createPool(salt)` anyone, once: pays the FWA creation fee from FWA it holds (D4), stores the pool, reads FWA's
+- `createPool()` anyone, once, with the salt fixed at construction (a front-run creates the intended pool, D53): pays the
+  FWA creation fee from FWA it holds (D4), stores the pool, reads FWA's
   `maxAcquisitionsPerTx` (5) as `maxBatch`, becomes the pool's purchase operator, approves it for Shapes and Shape Packs,
   burns leftover FWA and reports the pool to the game (`poolCreated`), which pushes the gate settings. The pool's owner
   is PoolOwner forever.
 - `canPurchase(address)` (FWA's purchase operator hook; FWA calls it for every purchase, its own site included, with a
-  100,000-gas stipend and refuses on a revert or `false`), D45: false when FWA's unsettled requests ≥ `maxInFlight`
-  (10), when FWA's `edgeBps > maxEdgeBps` or `inventoryChangeCooldown > maxCooldown`, or when
-  `activeListingCount < unsettled + maxBatch + minListed`, `minListed = ceil(minLiveBps × rows)`. Reads only live FWA
+  100,000-gas stipend and refuses on a revert or `false`), D45, D53: false when the purchaser is Shapes, Shape Packs or
+  zero (FWA could never deliver the prize, and only the purchaser could refund it), when FWA's unsettled requests ≥
+  `maxInFlight` (10), when FWA's `edgeBps > maxEdgeBps` or `inventoryChangeCooldown > maxCooldown`, or when
+  `activeListingCount < unsettled + maxBatch + minListed + (1 while a promotion is listed)`,
+  `minListed = ceil(minLiveBps × rows)`. Reads only live FWA
   state and settings the game pushes (`setGate`, game only), so it holds whether or not anyone syncs.
 - Game only: `mintAndList(mints)` payable (mints each prize with exactly its cost: a Shape by `mintTo`, a Pack by
   `createPackTo` with the fewest Shapes, and lists them in one `listNFTs`; reverts unless the ETH sent equals the sum),
@@ -135,7 +139,8 @@ Inventory is capital carried at cost (backing + mint fee). Per captured board pr
 - revenue += owner proceeds `paid − (paid − base)/2`, `base = paid / (1 + bookingEdgeBps)`, where `bookingEdgeBps` is
   the highest FWA edge governance has ever accepted (D47), so a booked result never exceeds FWA's own split whatever the
   configuration later does; once no request is outstanding and FWA holds no proceeds for the game, the difference to
-  what FWA actually paid (`proceedsCollected − proceedsBooked`) is added to revenue (`TrueUp`);
+  what FWA actually paid (`proceedsCollected − proceedsBooked`) is added to revenue (`TrueUp`), or to the promotion
+  budget when a promotional capture was booked since the last true-up (D53);
 - prize expense += the prize's carried cost, once (the replacement purchase is a capital movement, not an expense);
 - operating allocation += the listing's `opsBps` (3%, fixed at listing) of the expected replacement cost
   `base / (1 + markup)`, the listing's markup also fixed at listing.
@@ -167,7 +172,8 @@ allocation are fixed per listing. A board change applies to a row when it is nex
 `fundPromotion()` payable (the vault, or anyone) adds to `promoBudget`. `startPromotion(backing, priceBps, endBlock)`
 timelock: one at a time, the prize's full cost reserved from the budget (its maximum obligation), listed once at
 `priceBps` of cost and never repriced (no per-pull decay), price ≥ 50% of backing and win probability ≤ 10%, end at a win
-or `endBlock` (≤ 30 days out). An unwon prize is withdrawn and burned at the next window after its end. Its proceeds and
+or `endBlock` (≤ 30 days out). The 10% probability cap is checked when the promotion starts; as ordinary prizes are won
+its live chance can rise above it until replacements list (D53). An unwon prize is withdrawn and burned at the next window after its end. Its proceeds and
 cost stay in the budget (`promoProceeds`, `promoSpent`); turnover seen while it is live is `promoTurnover`.
 `releasePromotion(amount)` timelock returns unspent budget to the vault as capital.
 
@@ -209,6 +215,9 @@ Counters `conversions`, `totalEthIn` (player conversion purchases), `totalEngine
   genesis end: burns what is left; conversion continues without a bonus.
 - Ledgers: up to 4 games (`addLedger`, never removed); weight and finality are summed/required across them.
 
+Ledgers: the first game is wired; governance may add others (`addLedger`), each counting only from the epoch it was
+added in (`ledgerFrom`), so ended and finalized epochs never change (D53).
+
 ## 8. Buyback and KeeperFund
 
 - `Buyback` (D39): receives profit only from registered sources (plain ETH from the game, counted as `profitReceived`), and
@@ -241,8 +250,9 @@ Counters `conversions`, `totalEthIn` (player conversion purchases), `totalEngine
   limit; unspent ETH back to the caller.
 - `ProtocolLiquidity` (D50): `launch()` timelock once, not payable: initialises the pool at the immutable `startTick`
   (a multiple of 200) and adds every ENGINE it holds as one single-sided position over `[TICK_LOWER, startTick)`. Buys
-  move the price into the range; it can never return above the start, and sellers can only take out ETH buyers put
-  in. `addLiquidity(minSqrtPriceX96)` (full range) by the vault or the timelock; no remove.
+  move the price into the range; no ENGINE ever trades below the launch valuation, and sellers can only take out ETH
+  that was put in. `addLiquidity(minSqrtPriceX96)` by the vault or the timelock adds over the same range (D53), and
+  reverts `NothingAdded` when it would add nothing; ETH it cannot place stays here for a later addition; no remove.
 
 ## 10. Launch sequence
 
