@@ -64,7 +64,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.contracts == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold against the public gateway (the RPC cache is evicted after seven unused days) a fork shard
+    # can take many times its warm duration; the nightly run keeps the caches warm.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -74,10 +76,10 @@ jobs:
             run: |
               forge build --sizes --skip test
               forge test --match-path "test/unit/*.t.sol"
-          - shard: invariant+scenario
-            run: |
-              forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
-              forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
+          - shard: invariant
+            run: forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
+          - shard: scenario
+            run: forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
           # The fork suite is split in two by file. fork-b is the complement of fork-a's list, so a
           # new fork test file always lands in a shard.
           - shard: fork-a
@@ -93,6 +95,8 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
+          # The action's own RPC cache is off: the per-shard cache below is the one keying scheme.
+          cache: false
       # Compiled artifacts, keyed on everything solc reads. A hit turns the build into a no-op; a
       # partial hit through restore-keys makes it incremental.
       - uses: actions/cache@v4
@@ -103,14 +107,28 @@ jobs:
           key: forge-build-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'lib/**/*.sol', 'foundry.toml') }}
           restore-keys: |
             forge-build-${{ runner.os }}-
-      # The fork tests read mainnet state at the pinned block. The RPC cache keyed on the block makes
-      # every run after the first serve from disk.
-      - uses: actions/cache@v4
+      # The fork tests read mainnet state at the pinned block. The RPC cache is keyed on the block and
+      # the shard: shards fetch different slots, and only the first save under a key wins, so one key
+      # for all shards would persist one shard's slots and leave the others cold forever. The nightly
+      # run keeps every entry inside GitHub's seven-day eviction window.
+      - uses: actions/cache/restore@v4
+        id: rpc-cache
         with:
           path: ~/.foundry/cache/rpc
-          key: foundry-rpc-${{ env.FORK_BLOCK }}
+          key: foundry-rpc-${{ env.FORK_BLOCK }}-${{ matrix.shard }}
+          # A shard without its own entry yet seeds from any other shard's at the same block.
+          restore-keys: |
+            foundry-rpc-${{ env.FORK_BLOCK }}-
       - name: ${{ matrix.shard }}
         run: ${{ matrix.run }}
+      # The default cache action saves only when the job succeeds, so a shard that times out cold
+      # against the gateway would stay cold on every later run. Save whatever was fetched, every time.
+      - name: Save Foundry fork RPC cache
+        if: always() && steps.rpc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.foundry/cache/rpc
+          key: foundry-rpc-${{ env.FORK_BLOCK }}-${{ matrix.shard }}
 
   web:
     name: web
