@@ -97,15 +97,18 @@ jobs:
           version: stable
           # The action's own RPC cache is off: the per-shard cache below is the one keying scheme.
           cache: false
-      # Compiled artifacts, keyed on everything solc reads. A hit turns the build into a no-op; a
-      # partial hit through restore-keys makes it incremental.
+      # Compiled artifacts, keyed on everything solc reads and on the shard: `forge test` with a path
+      # filter compiles only the matching test files, so each shard's artifacts differ and a cache
+      # shared across shards holds only the first saver's. A hit turns the build into a no-op; a
+      # partial hit through restore-keys (same shard first, then any shard) makes it incremental.
       - uses: actions/cache@v4
         with:
           path: |
             out
             cache
-          key: forge-build-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'lib/**/*.sol', 'foundry.toml') }}
+          key: forge-build-${{ runner.os }}-${{ matrix.shard }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'lib/**/*.sol', 'foundry.toml') }}
           restore-keys: |
+            forge-build-${{ runner.os }}-${{ matrix.shard }}-
             forge-build-${{ runner.os }}-
       # The fork tests read mainnet state at the pinned block. The RPC cache is keyed on the block and
       # the shard: shards fetch different slots, and only the first save under a key wins, so one key
