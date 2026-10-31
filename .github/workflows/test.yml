@@ -1,18 +1,91 @@
+# Per-change checks. `changes` reads the changed paths, every other job runs only when its paths
+# changed, and `ci-ok` always reports: it is the one status check to require, and it passes when
+# every job succeeded or was skipped. A push to main, the nightly schedule and a manual dispatch run
+# everything regardless of paths.
+#
+# The forge suites run as parallel shards that share one build cache. Each shard restores
+# out/ and cache/ keyed on the Solidity sources, so a warm run compiles nothing. The fork shards also
+# restore the RPC cache keyed on FORK_BLOCK, so a warm run reaches the gateway for nothing.
 name: test
 
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # nightly full run, 07:41 UTC
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+# An agent that pushes three times in two minutes pays for one run.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   FORK_BLOCK: "26170000"
   MAINNET_RPC_URL: https://gateway.tenderly.co/public/mainnet
 
 jobs:
-  forge:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+  changes:
+    name: changed paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      # The filter step runs only on pull requests. On push, schedule and dispatch it is skipped,
+      # its outputs are empty, and `|| 'true'` turns every job on.
+      contracts: ${{ steps.filter.outputs.contracts || 'true' }}
+      web: ${{ steps.filter.outputs.web || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          # Every list names the workflow file, so a pipeline change runs everything.
+          filters: |
+            contracts:
+              - 'src/**'
+              - 'test/**'
+              - 'lib/**'
+              - 'script/**'
+              - 'foundry.toml'
+              - '.gitmodules'
+              - '.github/workflows/test.yml'
+            web:
+              - 'web/**'
+              - '.github/workflows/test.yml'
+
+  contracts:
+    name: contracts (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.contracts == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Test-only contracts (PoolHarness) exceed EIP-170 by design; size-check the deployed set only.
+          - shard: unit
+            run: |
+              forge build --sizes --skip test
+              forge test --match-path "test/unit/*.t.sol"
+          - shard: invariant+scenario
+            run: |
+              forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
+              forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
+          # The fork suite is split in two by file. fork-b is the complement of fork-a's list, so a
+          # new fork test file always lands in a shard.
+          - shard: fork-a
+            run: |
+              forge test --match-path "test/fork/{Lens,PoolAcquire,PoolAdmin,PoolAdmission,PoolBoard,PoolDepth}.t.sol"
+          - shard: fork-b
+            run: |
+              forge test --match-path "test/fork/*.t.sol" --no-match-path "test/fork/{Lens,PoolAcquire,PoolAdmin,PoolAdmission,PoolBoard,PoolDepth}.t.sol"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,21 +93,30 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      # The fork tests read mainnet state at the pinned block. The RPC cache keyed on the block makes every run after
-      # the first serve from disk.
+      # Compiled artifacts, keyed on everything solc reads. A hit turns the build into a no-op; a
+      # partial hit through restore-keys makes it incremental.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            out
+            cache
+          key: forge-build-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'lib/**/*.sol', 'foundry.toml') }}
+          restore-keys: |
+            forge-build-${{ runner.os }}-
+      # The fork tests read mainnet state at the pinned block. The RPC cache keyed on the block makes
+      # every run after the first serve from disk.
       - uses: actions/cache@v4
         with:
           path: ~/.foundry/cache/rpc
           key: foundry-rpc-${{ env.FORK_BLOCK }}
-      # Test-only contracts (PoolHarness) exceed EIP-170 by design; size-check the deployed set only.
-      - run: forge build --sizes --skip test
-      - run: forge test --match-path "test/unit/*.t.sol"
-      - run: forge test --match-path "test/fork/*.t.sol"
-      - run: forge test --match-path "test/invariant/*.t.sol" --match-test test_handlerReachesEveryPath
-      - run: forge test --match-path test/scenario/PlayMonth.t.sol --match-test "test_play100PerDay|test_playPullPastHourEnd"
+      - name: ${{ matrix.shard }}
+        run: ${{ matrix.run }}
 
   web:
-    runs-on: ubuntu-latest
+    name: web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -52,3 +134,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
+
+  # The one check to require on main. Passes when every job succeeded or was skipped; a cancelled or
+  # failed job, including the `changes` job itself, fails it.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [changes, contracts, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ needs.changes.result }} ${{ needs.contracts.result }} ${{ needs.web.result }}
+        run: |
+          for r in $RESULTS; do
+            case "$r" in
+              success | skipped) ;;
+              *) echo "a job ended $r"; exit 1 ;;
+            esac
+          done
+          echo "all jobs succeeded or were skipped"
